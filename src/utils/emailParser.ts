@@ -11,6 +11,16 @@ function joinContinuationLines(lines: string[], startIdx: number): [string, numb
   return [value, i - 1];
 }
 
+function isUrlLine(line: string): boolean {
+  // Matches: \\ ( https://... ) or \ ( https://... )
+  return !!(line.match(/^\\\\\s*\(\s*https?:\/\//) || line.match(/^\\ \(\s*https?:\/\//));
+}
+
+function isAbstractSeparator(line: string): boolean {
+  // Exactly \\ on its own (two backslashes, nothing else after trim)
+  return line.trim() === '\\\\';
+}
+
 export function parseArxivEmail(
   emailBody: string,
   emailId: string,
@@ -19,7 +29,6 @@ export function parseArxivEmail(
 ): Paper[] {
   const papers: Paper[] = [];
 
-  // Normalize line endings
   const text = emailBody.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
   const lines = text.split('\n');
 
@@ -31,11 +40,12 @@ export function parseArxivEmail(
     if (trimmed === '\\\\' && i + 1 < lines.length && lines[i + 1].trim().startsWith('arXiv:')) {
       i++; // move to arXiv: line
 
-      // Strip cross-listing annotation e.g. "2605.04305 (*cross-listing*)"
-      const arxivId = lines[i].trim().replace('arXiv:', '').trim().split(/[\s(]/)[0];
+      const arxivLine = lines[i].trim();
+      // Strip cross-listing annotation and "replaced with revised version" suffix
+      const arxivId = arxivLine.replace('arXiv:', '').trim().split(/[\s(]/)[0];
       i++;
 
-      // Date line: "Date: Sat, 14 Feb 2026 20:46:47 GMT   (559kb)"
+      // Date line (new submissions only): "Date: Sat, 14 Feb 2026 20:46:47 GMT   (559kb)"
       let date = '';
       let size = '';
       if (i < lines.length && lines[i].trim().startsWith('Date:')) {
@@ -48,18 +58,44 @@ export function parseArxivEmail(
           date = dateLine;
         }
         i++;
+      } else if (arxivLine.includes('replaced with revised version')) {
+        // Date is embedded in the arXiv line for replacements — extract it
+        const revMatch = arxivLine.match(/replaced with revised version\s+(.+?)\s+\((\d+\w+)\)/);
+        if (revMatch) {
+          date = revMatch[1].trim();
+          size = revMatch[2];
+        }
       }
 
-      // Skip blank line
+      // Skip blank line after date/arXiv line
       if (i < lines.length && lines[i].trim() === '') i++;
 
-      // Parse metadata fields until we hit the abstract separator \\
+      // Skip extra lines that aren't recognized fields (e.g. bare "replaced with..." continuation)
+      while (
+        i < lines.length &&
+        lines[i].trim() !== '\\\\' &&
+        !isUrlLine(lines[i]) &&
+        !lines[i].startsWith('Title:') &&
+        !lines[i].startsWith('Authors:') &&
+        !lines[i].startsWith('Categories:') &&
+        !lines[i].startsWith('Comments:') &&
+        !lines[i].startsWith('Journal-ref:') &&
+        lines[i].trim() !== ''
+      ) {
+        i++;
+      }
+
+      // Parse metadata fields — stop at \\ or \\ ( URL ) line
       let title = '';
       let authors = '';
       let categories: string[] = [];
       let comments = '';
 
-      while (i < lines.length && lines[i].trim() !== '\\\\') {
+      while (
+        i < lines.length &&
+        !isAbstractSeparator(lines[i]) &&
+        !isUrlLine(lines[i])
+      ) {
         const line = lines[i];
         if (line.startsWith('Title:')) {
           const [val, endIdx] = joinContinuationLines(lines, i);
@@ -79,24 +115,20 @@ export function parseArxivEmail(
         i++;
       }
 
-      // Skip the \\ abstract separator line
-      if (i < lines.length && lines[i].trim() === '\\\\') i++;
-
-      // Collect abstract lines until \\ ( url ) line
+      // Collect abstract — only present when there's a \\ separator before it
       const abstractLines: string[] = [];
-      while (i < lines.length) {
-        const line = lines[i];
-        // End of abstract: line starting with \\ ( https://
-        if (line.match(/^\\\\\s*\(\s*https?:\/\//) || line.match(/^\\ \(\s*https?:\/\//)) {
-          break;
+      if (i < lines.length && isAbstractSeparator(lines[i])) {
+        i++; // skip the \\ separator
+        while (i < lines.length && !isUrlLine(lines[i])) {
+          abstractLines.push(lines[i]);
+          i++;
         }
-        abstractLines.push(line);
-        i++;
       }
+      // If we hit the URL line directly (no abstract for replacements), i is already there
 
       // Parse URL from the \\ ( url , size) line
       let url = `https://arxiv.org/abs/${arxivId}`;
-      if (i < lines.length) {
+      if (i < lines.length && isUrlLine(lines[i])) {
         const urlMatch = lines[i].match(/(https?:\/\/arxiv\.org\/abs\/[\w.]+)/);
         if (urlMatch) url = urlMatch[1];
       }
@@ -107,7 +139,8 @@ export function parseArxivEmail(
         .join(' ')
         .trim();
 
-      // Parse author list (split by "and" and commas)
+      if (!title) { i++; continue; } // skip malformed blocks
+
       const authorList = authors
         .split(/\s+and\s+|,\s+/)
         .map(a => a.trim())

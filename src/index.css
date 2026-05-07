@@ -2,8 +2,6 @@
 @tailwind components;
 @tailwind utilities;
 
-@import 'katex/dist/katex.min.css';
-
 * {
   box-sizing: border-box;
 }
