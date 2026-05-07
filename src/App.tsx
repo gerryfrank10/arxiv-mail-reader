@@ -6,6 +6,11 @@ import AppLayout from './components/AppLayout';
 
 const CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID;
 
+// useGoogleLogin() inside AuthProvider always needs GoogleOAuthProvider in the
+// tree or it throws. We always render the provider; hasGoogle controls whether
+// the Google button is shown and the login flow is reachable.
+const PROVIDER_CLIENT_ID = CLIENT_ID || 'not-configured';
+
 function AppInner() {
   const { user, isRestoring } = useAuth();
 
@@ -27,21 +32,11 @@ function AppInner() {
 }
 
 export default function App() {
-  // Google OAuth is optional — if no client ID is configured, IMAP providers
-  // still work. The Google sign-in button is simply hidden in that case.
-  if (CLIENT_ID) {
-    return (
-      <GoogleOAuthProvider clientId={CLIENT_ID}>
-        <AuthProvider hasGoogle>
-          <AppInner />
-        </AuthProvider>
-      </GoogleOAuthProvider>
-    );
-  }
-
   return (
-    <AuthProvider hasGoogle={false}>
-      <AppInner />
-    </AuthProvider>
+    <GoogleOAuthProvider clientId={PROVIDER_CLIENT_ID}>
+      <AuthProvider hasGoogle={!!CLIENT_ID}>
+        <AppInner />
+      </AuthProvider>
+    </GoogleOAuthProvider>
   );
 }
