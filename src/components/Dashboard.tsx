@@ -1,3 +1,4 @@
+import { useState, useEffect, useMemo } from 'react';
 import { usePapers } from '../contexts/PapersContext';
 import { useLibrary } from '../contexts/LibraryContext';
 import {
@@ -6,17 +7,18 @@ import {
 } from 'recharts';
 import { CHART_COLORS, getCategoryLabel } from '../utils/categories';
 import { computeAssessment, ASSESSMENT_BADGE } from '../utils/assessment';
+import { fetchCitationCounts } from '../utils/citations';
 import { format, startOfWeek, eachWeekOfInterval, min, max } from 'date-fns';
-import { BookOpen, Layers, Tag, CalendarDays, BookMarked, BarChart2 } from 'lucide-react';
+import { BookOpen, Layers, Tag, CalendarDays, BookMarked, BarChart2, Quote, TrendingUp } from 'lucide-react';
 
 function StatCard({ label, value, icon: Icon, color }: { label: string; value: string | number; icon: React.ElementType; color: string }) {
   return (
-    <div className="bg-white rounded-xl border border-slate-100 p-5 shadow-sm flex items-center gap-4">
-      <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${color}`}>
-        <Icon size={20} className="text-white" />
+    <div className="bg-white rounded-xl border border-slate-100 p-4 shadow-sm flex items-center gap-3">
+      <div className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${color}`}>
+        <Icon size={18} className="text-white" />
       </div>
-      <div>
-        <p className="text-2xl font-bold text-slate-800">{value}</p>
+      <div className="min-w-0">
+        <p className="text-xl font-bold text-slate-800 truncate">{value}</p>
         <p className="text-xs text-slate-500 mt-0.5">{label}</p>
       </div>
     </div>
@@ -26,6 +28,50 @@ function StatCard({ label, value, icon: Icon, color }: { label: string; value: s
 export default function Dashboard() {
   const { papers, setSelectedPaper } = usePapers();
   const { savedPapers } = useLibrary();
+  const [citations, setCitations]         = useState<Record<string, number>>({});
+  const [citLoading, setCitLoading]       = useState(false);
+
+  const dates      = papers.map(p => p.digestDate);
+  const earliest   = dates.length ? min(dates) : new Date();
+  const latest     = dates.length ? max(dates) : new Date();
+  const digestIds  = new Set(papers.map(p => p.emailId));
+  const allCats    = papers.flatMap(p => p.categories);
+  const uniqueCats = new Set(allCats);
+
+  // Top papers by assessment score (pre-citation sort)
+  const topByScore = useMemo(() =>
+    [...papers]
+      .map(p => ({ paper: p, assessment: computeAssessment(p) }))
+      .sort((a, b) => b.assessment.score - a.assessment.score)
+      .slice(0, 12),
+    [papers]
+  );
+
+  // Once we have papers, fetch citation counts for top 12
+  useEffect(() => {
+    if (!topByScore.length) return;
+    const ids = topByScore.map(x => x.paper.arxivId);
+    setCitLoading(true);
+    fetchCitationCounts(ids).then(data => {
+      setCitations(data);
+      setCitLoading(false);
+    });
+  }, [topByScore.map(x => x.paper.arxivId).join(',')]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Re-sort by citations (desc) once available, fall back to score
+  const topPapers = useMemo(() => {
+    const hasCit = Object.keys(citations).length > 0;
+    return [...topByScore]
+      .map(({ paper, assessment }) => ({ paper, assessment, cit: citations[paper.arxivId] ?? null }))
+      .sort((a, b) => {
+        if (hasCit) {
+          const diff = (b.cit ?? -1) - (a.cit ?? -1);
+          if (diff !== 0) return diff;
+        }
+        return b.assessment.score - a.assessment.score;
+      })
+      .slice(0, 10);
+  }, [topByScore, citations]);
 
   if (papers.length === 0) {
     return (
@@ -35,18 +81,11 @@ export default function Dashboard() {
         </div>
         <h2 className="text-xl font-semibold text-slate-700 mb-2">No papers yet</h2>
         <p className="text-slate-400 text-sm max-w-sm">
-          Connect your Gmail and sync to load arXiv digest emails. Papers will appear here.
+          Connect your email and sync to load arXiv digest emails.
         </p>
       </div>
     );
   }
-
-  const digestIds  = new Set(papers.map(p => p.emailId));
-  const allCats    = papers.flatMap(p => p.categories);
-  const uniqueCats = new Set(allCats);
-  const dates      = papers.map(p => p.digestDate);
-  const earliest   = min(dates);
-  const latest     = max(dates);
 
   const catCounts: Record<string, number> = {};
   for (const cat of allCats) catCounts[cat] = (catCounts[cat] ?? 0) + 1;
@@ -59,18 +98,12 @@ export default function Dashboard() {
   if (dates.length > 0) {
     const weeks = eachWeekOfInterval({ start: earliest, end: latest });
     weekData = weeks.map(w => {
-      const weekStart = startOfWeek(w);
-      const weekEnd   = new Date(weekStart.getTime() + 7 * 24 * 60 * 60 * 1000);
-      const count     = papers.filter(p => p.digestDate >= weekStart && p.digestDate < weekEnd).length;
-      return { week: format(w, 'MMM d'), papers: count };
+      const ws  = startOfWeek(w);
+      const we  = new Date(ws.getTime() + 7 * 24 * 60 * 60 * 1000);
+      const cnt = papers.filter(p => p.digestDate >= ws && p.digestDate < we).length;
+      return { week: format(w, 'MMM d'), papers: cnt };
     }).filter(d => d.papers > 0);
   }
-
-  // Top papers by assessment score
-  const topPapers = [...papers]
-    .map(p => ({ paper: p, assessment: computeAssessment(p) }))
-    .sort((a, b) => b.assessment.score - a.assessment.score)
-    .slice(0, 8);
 
   const recent = papers.slice(0, 5);
 
@@ -83,20 +116,22 @@ export default function Dashboard() {
         </div>
 
         {/* Stat cards */}
-        <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4 mb-8">
-          <StatCard label="Total Papers"   value={papers.length}     icon={BookOpen}    color="bg-blue-500" />
-          <StatCard label="Digest Emails"  value={digestIds.size}    icon={Layers}      color="bg-violet-500" />
-          <StatCard label="Categories"     value={uniqueCats.size}   icon={Tag}         color="bg-emerald-500" />
+        <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3 mb-8">
+          <StatCard label="Total Papers"   value={papers.length}      icon={BookOpen}    color="bg-blue-500" />
+          <StatCard label="Digest Emails"  value={digestIds.size}     icon={Layers}      color="bg-violet-500" />
+          <StatCard label="Categories"     value={uniqueCats.size}    icon={Tag}         color="bg-emerald-500" />
           <StatCard label="Saved Papers"   value={savedPapers.length} icon={BookMarked}  color="bg-amber-500" />
           <StatCard
             label="Date Range"
-            value={dates.length > 1 ? `${format(earliest, 'MMM yy')} – ${format(latest, 'MMM yy')}` : format(earliest, 'MMM yyyy')}
+            value={dates.length > 1
+              ? `${format(earliest, 'MMM yy')} – ${format(latest, 'MMM yy')}`
+              : format(earliest, 'MMM yyyy')}
             icon={CalendarDays}
             color="bg-orange-500"
           />
         </div>
 
-        {/* Charts row */}
+        {/* Charts */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 mb-8">
           <div className="bg-white rounded-xl border border-slate-100 p-5 shadow-sm">
             <h2 className="text-sm font-semibold text-slate-700 mb-4">Papers by Category</h2>
@@ -104,7 +139,7 @@ export default function Dashboard() {
               <BarChart data={catData} layout="vertical" margin={{ left: 8, right: 8 }}>
                 <XAxis type="number" tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
                 <YAxis dataKey="cat" type="category" tick={{ fontSize: 11, fill: '#64748b' }} width={60} axisLine={false} tickLine={false} />
-                <Tooltip formatter={(value, _name, props) => [value, props.payload.label]} contentStyle={{ fontSize: 12, borderRadius: 8, border: '1px solid #e2e8f0' }} />
+                <Tooltip formatter={(v, _n, p) => [v, p.payload.label]} contentStyle={{ fontSize: 12, borderRadius: 8, border: '1px solid #e2e8f0' }} />
                 <Bar dataKey="count" radius={[0, 4, 4, 0]}>
                   {catData.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
                 </Bar>
@@ -129,15 +164,18 @@ export default function Dashboard() {
           )}
         </div>
 
-        {/* Top scored papers */}
+        {/* Top papers by citations + score */}
         <div className="bg-white rounded-xl border border-slate-100 shadow-sm overflow-hidden mb-6">
           <div className="px-5 py-4 border-b border-slate-100 flex items-center gap-2">
-            <BarChart2 size={15} className="text-slate-500" />
-            <h2 className="text-sm font-semibold text-slate-700">Top Ranked Papers</h2>
-            <span className="text-xs text-slate-400 ml-auto">by depth score</span>
+            <TrendingUp size={15} className="text-emerald-500" />
+            <h2 className="text-sm font-semibold text-slate-700">Most Cited Papers</h2>
+            <span className="text-xs text-slate-400 ml-auto flex items-center gap-1">
+              <Quote size={11} />
+              {citLoading ? 'Fetching citations…' : 'via Semantic Scholar'}
+            </span>
           </div>
           <ul>
-            {topPapers.map(({ paper, assessment }, idx) => (
+            {topPapers.map(({ paper, assessment, cit }, idx) => (
               <li key={paper.id}>
                 <button
                   onClick={() => setSelectedPaper(paper)}
@@ -151,10 +189,18 @@ export default function Dashboard() {
                     </p>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
+                    {cit !== null ? (
+                      <span className="flex items-center gap-1 text-xs font-bold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
+                        <Quote size={10} />
+                        {cit.toLocaleString()}
+                      </span>
+                    ) : citLoading ? (
+                      <span className="text-xs text-slate-400 w-12 text-center">—</span>
+                    ) : null}
                     <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full border ${ASSESSMENT_BADGE[assessment.label]}`}>
                       {assessment.label}
                     </span>
-                    <span className="text-xs font-bold text-slate-500 w-8 text-right">{assessment.score}</span>
+                    <span className="text-xs font-bold text-slate-400 w-6 text-right">{assessment.score}</span>
                   </div>
                 </button>
               </li>
@@ -164,7 +210,8 @@ export default function Dashboard() {
 
         {/* Recent papers */}
         <div className="bg-white rounded-xl border border-slate-100 shadow-sm overflow-hidden">
-          <div className="px-5 py-4 border-b border-slate-100">
+          <div className="px-5 py-4 border-b border-slate-100 flex items-center gap-2">
+            <BarChart2 size={15} className="text-slate-500" />
             <h2 className="text-sm font-semibold text-slate-700">Recent Papers</h2>
           </div>
           <ul>
@@ -183,9 +230,7 @@ export default function Dashboard() {
                   </div>
                   <div className="flex gap-1 shrink-0">
                     {paper.categories.slice(0, 2).map(cat => (
-                      <span key={cat} className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">
-                        {cat}
-                      </span>
+                      <span key={cat} className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">{cat}</span>
                     ))}
                   </div>
                 </button>

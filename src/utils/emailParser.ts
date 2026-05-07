@@ -30,7 +30,8 @@ export function parseArxivEmail(
     if (trimmed === '\\\\' && i + 1 < lines.length && lines[i + 1].trim().startsWith('arXiv:')) {
       i++; // move to arXiv: line
 
-      const arxivId = lines[i].trim().replace('arXiv:', '').trim();
+      // Strip cross-listing annotation e.g. "2605.04305 (*cross-listing*)"
+      const arxivId = lines[i].trim().replace('arXiv:', '').trim().split(/[\s(]/)[0];
       i++;
 
       // Date line: "Date: Sat, 14 Feb 2026 20:46:47 GMT   (559kb)"

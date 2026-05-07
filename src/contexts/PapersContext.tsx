@@ -3,11 +3,11 @@ import { Paper, Settings, SortField, SortDir } from '../types';
 import { fetchArxivPapers } from '../utils/gmailApi';
 import { fetchArxivPapersImap } from '../utils/imapApi';
 import { computeAssessment } from '../utils/assessment';
+import { dbGetAllPapers, dbUpsertPapers, dbGetMeta, dbSetMeta } from '../utils/paperDb';
 import { useAuth } from './AuthContext';
+import { AssessmentLabel } from '../utils/assessment';
 
 const SETTINGS_KEY = 'arxiv_reader_settings';
-const CACHE_KEY    = 'arxiv_reader_papers';
-const CACHE_TTL    = 30 * 60 * 1000;
 
 function loadSettings(): Settings {
   try {
@@ -15,22 +15,6 @@ function loadSettings(): Settings {
     if (s) return JSON.parse(s) as Settings;
   } catch { /* ignore */ }
   return { senderEmail: 'no-reply@arxiv.org', maxEmails: 30 };
-}
-
-function loadCache(): Paper[] | null {
-  try {
-    const c = localStorage.getItem(CACHE_KEY);
-    if (!c) return null;
-    const { papers, ts } = JSON.parse(c) as { papers: Paper[]; ts: number };
-    if (Date.now() - ts > CACHE_TTL) return null;
-    return papers.map(p => ({ ...p, digestDate: new Date(p.digestDate) }));
-  } catch { return null; }
-}
-
-function saveCache(papers: Paper[]) {
-  try {
-    localStorage.setItem(CACHE_KEY, JSON.stringify({ papers, ts: Date.now() }));
-  } catch { /* ignore */ }
 }
 
 interface PapersContextValue {
@@ -42,17 +26,24 @@ interface PapersContextValue {
   selectedPaper: Paper | null;
   searchQuery: string;
   selectedCategory: string;
+  authorFilter: string;
+  assessmentFilter: AssessmentLabel | '';
   sortBy: SortField;
   sortDir: SortDir;
+  lastSynced: Date | null;
   sync: (force?: boolean) => Promise<void>;
   setSelectedPaper: (p: Paper | null) => void;
   setSearchQuery: (q: string) => void;
   setSelectedCategory: (c: string) => void;
+  setAuthorFilter: (a: string) => void;
+  setAssessmentFilter: (f: AssessmentLabel | '') => void;
   setSortBy: (f: SortField) => void;
   setSortDir: (d: SortDir) => void;
   updateSettings: (s: Partial<Settings>) => void;
   filteredPapers: Paper[];
   allCategories: string[];
+  allAuthors: string[];
+  activeFilterCount: number;
 }
 
 const PapersContext = createContext<PapersContextValue | null>(null);
@@ -67,29 +58,42 @@ export function PapersProvider({ children }: { children: React.ReactNode }) {
   const [selectedPaper, setSelectedPaper] = useState<Paper | null>(null);
   const [searchQuery, setSearchQuery]     = useState('');
   const [selectedCategory, setSelectedCategory] = useState('');
+  const [authorFilter, setAuthorFilter]   = useState('');
+  const [assessmentFilter, setAssessmentFilter] = useState<AssessmentLabel | ''>('');
   const [sortBy, setSortBy]               = useState<SortField>('date');
   const [sortDir, setSortDir]             = useState<SortDir>('desc');
+  const [lastSynced, setLastSynced]       = useState<Date | null>(null);
+  const [dbReady, setDbReady]             = useState(false);
+
+  // Load persisted papers from IndexedDB on mount
+  useEffect(() => {
+    (async () => {
+      try {
+        const stored = await dbGetAllPapers();
+        if (stored.length) setPapers(stored);
+        const ts = await dbGetMeta('lastSynced');
+        if (ts) setLastSynced(new Date(ts as string));
+      } catch { /* IndexedDB unavailable */ }
+      setDbReady(true);
+    })();
+  }, []);
 
   const sync = useCallback(async (force = false) => {
-    if (!user) return;
-    if (!force) {
-      const cached = loadCache();
-      if (cached) { setPapers(cached); return; }
-    }
+    if (!user || (!dbReady && !force)) return;
     setLoading(true);
     setError(null);
     setProgress(0);
     try {
-      let result: Paper[];
+      let newPapers: Paper[];
       if (user.provider === 'google' && user.accessToken) {
-        result = await fetchArxivPapers(
+        newPapers = await fetchArxivPapers(
           user.accessToken,
           settings.senderEmail,
           settings.maxEmails,
           (loaded, total) => setProgress(Math.round((loaded / total) * 100))
         );
       } else if (user.provider === 'imap' && user.imapConfig) {
-        result = await fetchArxivPapersImap(
+        newPapers = await fetchArxivPapersImap(
           user.imapConfig,
           settings.senderEmail,
           settings.maxEmails,
@@ -98,19 +102,29 @@ export function PapersProvider({ children }: { children: React.ReactNode }) {
       } else {
         throw new Error('No valid credentials.');
       }
-      setPapers(result);
-      saveCache(result);
+
+      // Merge new papers into IndexedDB (upsert — existing unchanged)
+      await dbUpsertPapers(newPapers);
+
+      // Reload full set from DB so old papers are preserved
+      const all = await dbGetAllPapers();
+      setPapers(all);
+
+      const now = new Date();
+      await dbSetMeta('lastSynced', now.toISOString());
+      setLastSynced(now);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to fetch emails');
     } finally {
       setLoading(false);
       setProgress(100);
     }
-  }, [user, settings]);
+  }, [user, settings, dbReady]);
 
+  // Auto-sync when user logs in and DB is ready
   useEffect(() => {
-    if (user) sync();
-  }, [user?.email]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (user && dbReady) sync();
+  }, [user?.email, dbReady]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const updateSettings = useCallback((updates: Partial<Settings>) => {
     setSettings(prev => {
@@ -125,48 +139,58 @@ export function PapersProvider({ children }: { children: React.ReactNode }) {
     [papers]
   );
 
+  const allAuthors = useMemo(
+    () => [...new Set(papers.flatMap(p => p.authorList))].sort(),
+    [papers]
+  );
+
   const filteredPapers = useMemo(() => {
-    const q = searchQuery.toLowerCase();
+    const q  = searchQuery.toLowerCase();
+    const af = authorFilter.toLowerCase();
+
     const filtered = papers.filter(p => {
       const matchesSearch = !q ||
         p.title.toLowerCase().includes(q) ||
         p.authors.toLowerCase().includes(q) ||
         p.abstract.toLowerCase().includes(q) ||
         p.arxivId.includes(q);
+
       const matchesCat = !selectedCategory || p.categories.includes(selectedCategory);
-      return matchesSearch && matchesCat;
+
+      const matchesAuthor = !af ||
+        p.authorList.some(a => a.toLowerCase().includes(af)) ||
+        p.authors.toLowerCase().includes(af);
+
+      const matchesAssessment = !assessmentFilter ||
+        computeAssessment(p).label === assessmentFilter;
+
+      return matchesSearch && matchesCat && matchesAuthor && matchesAssessment;
     });
 
     filtered.sort((a, b) => {
       let cmp = 0;
       switch (sortBy) {
-        case 'date':
-          cmp = a.digestDate.getTime() - b.digestDate.getTime();
-          break;
-        case 'title':
-          cmp = a.title.localeCompare(b.title);
-          break;
-        case 'authors':
-          cmp = (a.authorList[0] ?? '').localeCompare(b.authorList[0] ?? '');
-          break;
-        case 'score':
-          cmp = computeAssessment(a).score - computeAssessment(b).score;
-          break;
+        case 'date':    cmp = a.digestDate.getTime() - b.digestDate.getTime(); break;
+        case 'title':   cmp = a.title.localeCompare(b.title); break;
+        case 'authors': cmp = (a.authorList[0] ?? '').localeCompare(b.authorList[0] ?? ''); break;
+        case 'score':   cmp = computeAssessment(a).score - computeAssessment(b).score; break;
       }
       return sortDir === 'asc' ? cmp : -cmp;
     });
 
     return filtered;
-  }, [papers, searchQuery, selectedCategory, sortBy, sortDir]);
+  }, [papers, searchQuery, selectedCategory, authorFilter, assessmentFilter, sortBy, sortDir]);
+
+  const activeFilterCount = [selectedCategory, authorFilter, assessmentFilter].filter(Boolean).length;
 
   return (
     <PapersContext.Provider value={{
       papers, loading, progress, error, settings, selectedPaper, searchQuery, selectedCategory,
-      sortBy, sortDir,
+      authorFilter, assessmentFilter, sortBy, sortDir, lastSynced,
       sync, setSelectedPaper, setSearchQuery, setSelectedCategory,
-      setSortBy, setSortDir,
+      setAuthorFilter, setAssessmentFilter, setSortBy, setSortDir,
       updateSettings,
-      filteredPapers, allCategories,
+      filteredPapers, allCategories, allAuthors, activeFilterCount,
     }}>
       {children}
     </PapersContext.Provider>

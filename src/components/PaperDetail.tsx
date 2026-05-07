@@ -1,9 +1,11 @@
-import { ExternalLink, FileText, Code2, Calendar, HardDrive, MessageSquare, Bookmark, BookmarkCheck, Users, BarChart2, Layers } from 'lucide-react';
+import { ExternalLink, FileText, Code2, Calendar, HardDrive, MessageSquare, Bookmark, BookmarkCheck, Users, BarChart2, Layers, Quote } from 'lucide-react';
+import { useState, useEffect } from 'react';
 import { Paper } from '../types';
 import { CATEGORY_COLORS_LIGHT, getCategoryLabel, CATEGORY_COLORS } from '../utils/categories';
 import { renderAbstract } from '../utils/latex';
 import { computeAssessment, ASSESSMENT_BADGE, ASSESSMENT_BAR } from '../utils/assessment';
 import { getRelatedPapers } from '../utils/related';
+import { fetchCitationCounts } from '../utils/citations';
 import { useLibrary } from '../contexts/LibraryContext';
 import { usePapers } from '../contexts/PapersContext';
 import { format } from 'date-fns';
@@ -14,6 +16,15 @@ interface Props {
 
 export default function PaperDetail({ paper }: Props) {
   const { papers, setSelectedPaper } = usePapers();
+  const [citationCount, setCitationCount] = useState<number | null>(null);
+
+  useEffect(() => {
+    setCitationCount(null);
+    fetchCitationCounts([paper.arxivId]).then(data => {
+      const c = data[paper.arxivId];
+      if (c !== undefined) setCitationCount(c);
+    });
+  }, [paper.arxivId]);
   const { savePaper, unsavePaper, isSaved } = useLibrary();
   const saved = isSaved(paper.id);
   const abstractHtml = renderAbstract(paper.abstract);
@@ -77,6 +88,12 @@ export default function PaperDetail({ paper }: Props) {
             <span className="flex items-center gap-1.5">
               <MessageSquare size={14} />
               {paper.comments}
+            </span>
+          )}
+          {citationCount !== null && (
+            <span className="flex items-center gap-1.5 text-emerald-600 font-medium">
+              <Quote size={14} />
+              {citationCount.toLocaleString()} citation{citationCount !== 1 ? 's' : ''}
             </span>
           )}
         </div>
