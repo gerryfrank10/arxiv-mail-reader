@@ -42,6 +42,7 @@ function loadSession(): AuthUser | null {
 
 interface AuthContextValue {
   user: AuthUser | null;
+  hasGoogle: boolean;
   loginWithGoogle: () => void;
   loginWithImap: (config: ImapConfig, email: string) => void;
   logout: () => void;
@@ -54,7 +55,7 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
-export function AuthProvider({ children }: { children: React.ReactNode }) {
+export function AuthProvider({ children, hasGoogle = false }: { children: React.ReactNode; hasGoogle?: boolean }) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [isRestoring, setIsRestoring] = useState(true);
@@ -119,7 +120,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const clearError = useCallback(() => setLoginError(null), []);
 
   return (
-    <AuthContext.Provider value={{ user, loginWithGoogle, loginWithImap, logout, isLoggingIn, loginError, clearError, isRestoring }}>
+    <AuthContext.Provider value={{ user, hasGoogle, loginWithGoogle, loginWithImap, logout, isLoggingIn, loginError, clearError, isRestoring }}>
       {children}
     </AuthContext.Provider>
   );

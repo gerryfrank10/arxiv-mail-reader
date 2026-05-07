@@ -69,7 +69,7 @@ function GoogleButton({ onClick, loading }: { onClick: () => void; loading: bool
 }
 
 export default function LoginPage() {
-  const { loginWithGoogle, loginWithImap, isLoggingIn, loginError, clearError } = useAuth();
+  const { loginWithGoogle, loginWithImap, isLoggingIn, loginError, clearError, hasGoogle } = useAuth();
 
   const [step, setStep] = useState<Step>('pick');
   const [preset, setPreset] = useState<Preset>('icloud');
@@ -140,15 +140,24 @@ export default function LoginPage() {
               )}
 
               <div className="space-y-3">
-                {/* Google */}
-                <GoogleButton onClick={loginWithGoogle} loading={isLoggingIn} />
+                {/* Google — only shown when VITE_GOOGLE_CLIENT_ID is configured */}
+                {hasGoogle && (
+                  <>
+                    <GoogleButton onClick={loginWithGoogle} loading={isLoggingIn} />
+                    <div className="relative flex items-center gap-3 py-1">
+                      <div className="flex-1 h-px bg-slate-700" />
+                      <span className="text-xs text-slate-500">or use IMAP</span>
+                      <div className="flex-1 h-px bg-slate-700" />
+                    </div>
+                  </>
+                )}
 
-                {/* Divider */}
-                <div className="relative flex items-center gap-3 py-1">
-                  <div className="flex-1 h-px bg-slate-700" />
-                  <span className="text-xs text-slate-500">or use IMAP</span>
-                  <div className="flex-1 h-px bg-slate-700" />
-                </div>
+                {!hasGoogle && (
+                  <p className="text-xs text-slate-500 text-center pb-1">
+                    Gmail is not configured on this deployment.{' '}
+                    <a href="https://github.com/gerryfrank10/arxiv-mail-reader#2-add-your-google-oauth-client-id-as-a-secret" target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline">Set it up →</a>
+                  </p>
+                )}
 
                 {/* IMAP providers */}
                 {(['icloud', 'outlook', 'yahoo', 'other'] as Preset[]).map(p => (
@@ -163,11 +172,13 @@ export default function LoginPage() {
                 ))}
               </div>
 
-              <p className="mt-6 text-xs text-slate-500 text-center leading-relaxed">
-                Gmail uses OAuth — no password needed.
-                <br />
-                IMAP providers use your email credentials locally.
-              </p>
+              {hasGoogle && (
+                <p className="mt-6 text-xs text-slate-500 text-center leading-relaxed">
+                  Gmail uses OAuth — no password needed.
+                  <br />
+                  IMAP providers use your email credentials locally.
+                </p>
+              )}
             </>
           ) : (
             <>
