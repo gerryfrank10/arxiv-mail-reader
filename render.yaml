@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: arxiv-mail-reader
+    env: node
+    region: oregon
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: VITE_GOOGLE_CLIENT_ID
+        sync: false   # set manually in Render dashboard
