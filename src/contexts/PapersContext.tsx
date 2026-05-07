@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
 import { Paper, Settings } from '../types';
 import { fetchArxivPapers } from '../utils/gmailApi';
+import { fetchArxivPapersImap } from '../utils/imapApi';
 import { useAuth } from './AuthContext';
 
 const SETTINGS_KEY = 'arxiv_reader_settings';
@@ -63,7 +64,7 @@ export function PapersProvider({ children }: { children: React.ReactNode }) {
   const [selectedCategory, setSelectedCategory] = useState('');
 
   const sync = useCallback(async (force = false) => {
-    if (!user?.accessToken) return;
+    if (!user) return;
     if (!force) {
       const cached = loadCache();
       if (cached) { setPapers(cached); return; }
@@ -72,12 +73,24 @@ export function PapersProvider({ children }: { children: React.ReactNode }) {
     setError(null);
     setProgress(0);
     try {
-      const result = await fetchArxivPapers(
-        user.accessToken,
-        settings.senderEmail,
-        settings.maxEmails,
-        (loaded, total) => setProgress(Math.round((loaded / total) * 100))
-      );
+      let result: Paper[];
+      if (user.provider === 'google' && user.accessToken) {
+        result = await fetchArxivPapers(
+          user.accessToken,
+          settings.senderEmail,
+          settings.maxEmails,
+          (loaded, total) => setProgress(Math.round((loaded / total) * 100))
+        );
+      } else if (user.provider === 'imap' && user.imapConfig) {
+        result = await fetchArxivPapersImap(
+          user.imapConfig,
+          settings.senderEmail,
+          settings.maxEmails,
+          (loaded, total) => setProgress(Math.round((loaded / total) * 100))
+        );
+      } else {
+        throw new Error('No valid credentials.');
+      }
       setPapers(result);
       saveCache(result);
     } catch (e) {
@@ -86,11 +99,11 @@ export function PapersProvider({ children }: { children: React.ReactNode }) {
       setLoading(false);
       setProgress(100);
     }
-  }, [user?.accessToken, settings]);
+  }, [user, settings]);
 
   useEffect(() => {
-    if (user?.accessToken) sync();
-  }, [user?.accessToken]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (user) sync();
+  }, [user?.email]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const updateSettings = useCallback((updates: Partial<Settings>) => {
     setSettings(prev => {

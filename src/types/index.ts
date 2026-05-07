@@ -20,3 +20,12 @@ export interface Settings {
   senderEmail: string;
   maxEmails: number;
 }
+
+export type Provider = 'google' | 'imap';
+
+export interface ImapConfig {
+  host: string;
+  port: number;
+  username: string;
+  password: string;
+}
