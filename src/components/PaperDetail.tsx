@@ -1,7 +1,11 @@
-import { ExternalLink, FileText, Code2, Calendar, HardDrive, MessageSquare } from 'lucide-react';
+import { ExternalLink, FileText, Code2, Calendar, HardDrive, MessageSquare, Bookmark, BookmarkCheck, Users, BarChart2, Layers } from 'lucide-react';
 import { Paper } from '../types';
-import { CATEGORY_COLORS_LIGHT, getCategoryLabel } from '../utils/categories';
+import { CATEGORY_COLORS_LIGHT, getCategoryLabel, CATEGORY_COLORS } from '../utils/categories';
 import { renderAbstract } from '../utils/latex';
+import { computeAssessment, ASSESSMENT_BADGE, ASSESSMENT_BAR } from '../utils/assessment';
+import { getRelatedPapers } from '../utils/related';
+import { useLibrary } from '../contexts/LibraryContext';
+import { usePapers } from '../contexts/PapersContext';
 import { format } from 'date-fns';
 
 interface Props {
@@ -9,7 +13,12 @@ interface Props {
 }
 
 export default function PaperDetail({ paper }: Props) {
+  const { papers, setSelectedPaper } = usePapers();
+  const { savePaper, unsavePaper, isSaved } = useLibrary();
+  const saved = isSaved(paper.id);
   const abstractHtml = renderAbstract(paper.abstract);
+  const assessment   = computeAssessment(paper);
+  const related      = getRelatedPapers(paper, papers, 6);
 
   return (
     <div className="h-full overflow-y-auto main-scroll">
@@ -26,10 +35,23 @@ export default function PaperDetail({ paper }: Props) {
           })}
         </div>
 
-        {/* Title */}
-        <h1 className="text-2xl font-bold text-slate-900 leading-tight mb-4">
-          {paper.title}
-        </h1>
+        {/* Title + save button */}
+        <div className="flex items-start gap-3 mb-4">
+          <h1 className="text-2xl font-bold text-slate-900 leading-tight flex-1">
+            {paper.title}
+          </h1>
+          <button
+            onClick={() => saved ? unsavePaper(paper.id) : savePaper(paper)}
+            title={saved ? 'Remove from library' : 'Save to library'}
+            className={`shrink-0 mt-1 p-2 rounded-lg border transition-all ${
+              saved
+                ? 'bg-amber-50 border-amber-200 text-amber-600 hover:bg-amber-100'
+                : 'bg-slate-50 border-slate-200 text-slate-400 hover:bg-slate-100 hover:text-amber-500'
+            }`}
+          >
+            {saved ? <BookmarkCheck size={18} /> : <Bookmark size={18} />}
+          </button>
+        </div>
 
         {/* Authors */}
         <p className="text-base text-slate-600 mb-5 leading-relaxed">
@@ -40,18 +62,77 @@ export default function PaperDetail({ paper }: Props) {
         <div className="flex flex-wrap gap-4 text-sm text-slate-500 mb-7 pb-6 border-b border-slate-200">
           <span className="flex items-center gap-1.5">
             <Calendar size={14} />
-            Submitted: {paper.date || format(paper.digestDate, 'PPP')}
+            {paper.date || format(paper.digestDate, 'PPP')}
           </span>
           <span className="flex items-center gap-1.5">
             <HardDrive size={14} />
             arXiv:{paper.arxivId}
             {paper.size && ` · ${paper.size}`}
           </span>
+          <span className="flex items-center gap-1.5">
+            <Users size={14} />
+            {paper.authorList.length} author{paper.authorList.length !== 1 ? 's' : ''}
+          </span>
           {paper.comments && (
             <span className="flex items-center gap-1.5">
               <MessageSquare size={14} />
               {paper.comments}
             </span>
+          )}
+        </div>
+
+        {/* Assessment panel */}
+        <div className="mb-8 rounded-xl border border-slate-200 bg-slate-50 p-5">
+          <div className="flex items-center gap-2 mb-4">
+            <BarChart2 size={15} className="text-slate-500" />
+            <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-500">Assessment</h2>
+            <span className={`ml-auto text-xs font-semibold px-2.5 py-1 rounded-full border ${ASSESSMENT_BADGE[assessment.label]}`}>
+              {assessment.label}
+            </span>
+          </div>
+
+          {/* Score bar */}
+          <div className="mb-4">
+            <div className="flex items-center justify-between mb-1.5">
+              <span className="text-xs text-slate-500">Depth score</span>
+              <span className="text-xs font-bold text-slate-700">{assessment.score}/100</span>
+            </div>
+            <div className="w-full h-2 rounded-full bg-slate-200 overflow-hidden">
+              <div
+                className={`h-full rounded-full transition-all ${ASSESSMENT_BAR[assessment.label]}`}
+                style={{ width: `${assessment.score}%` }}
+              />
+            </div>
+          </div>
+
+          {/* Stats */}
+          <div className="grid grid-cols-3 gap-3 mb-4">
+            <div className="bg-white rounded-lg border border-slate-200 px-3 py-2 text-center">
+              <p className="text-base font-bold text-slate-800">{assessment.wordCount}</p>
+              <p className="text-[10px] text-slate-500">abstract words</p>
+            </div>
+            <div className="bg-white rounded-lg border border-slate-200 px-3 py-2 text-center">
+              <p className="text-base font-bold text-slate-800">{paper.authorList.length}</p>
+              <p className="text-[10px] text-slate-500">authors</p>
+            </div>
+            <div className="bg-white rounded-lg border border-slate-200 px-3 py-2 text-center">
+              <p className="text-base font-bold text-slate-800">{paper.categories.length}</p>
+              <p className="text-[10px] text-slate-500">categories</p>
+            </div>
+          </div>
+
+          {/* Signals */}
+          {assessment.signals.length > 0 && (
+            <div>
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 mb-2">Research signals</p>
+              <div className="flex flex-wrap gap-1.5">
+                {assessment.signals.map(s => (
+                  <span key={s} className="text-[11px] px-2 py-0.5 rounded-full bg-white border border-slate-200 text-slate-600">
+                    {s}
+                  </span>
+                ))}
+              </div>
+            </div>
           )}
         </div>
 
@@ -65,7 +146,7 @@ export default function PaperDetail({ paper }: Props) {
         </div>
 
         {/* Action buttons */}
-        <div className="flex flex-wrap gap-3">
+        <div className="flex flex-wrap gap-3 mb-10 pb-8 border-b border-slate-200">
           <a
             href={paper.url}
             target="_blank"
@@ -93,7 +174,74 @@ export default function PaperDetail({ paper }: Props) {
             <Code2 size={15} />
             HTML Version
           </a>
+          <a
+            href={`https://scholar.google.com/scholar?q=${encodeURIComponent(paper.title)}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-2 px-5 py-2.5 border border-slate-200 text-slate-700 text-sm font-medium rounded-lg hover:bg-slate-50 transition-colors"
+          >
+            <Layers size={15} />
+            Google Scholar
+          </a>
         </div>
+
+        {/* Related papers */}
+        {related.length > 0 && (
+          <div>
+            <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-400 mb-4">Related Papers</h2>
+            <div className="space-y-3">
+              {related.map(({ paper: rp, reasons }) => {
+                const rAssessment = computeAssessment(rp);
+                return (
+                  <button
+                    key={rp.id}
+                    onClick={() => setSelectedPaper(rp)}
+                    className="w-full text-left rounded-xl border border-slate-200 bg-white p-4 hover:border-blue-300 hover:shadow-sm transition-all group"
+                  >
+                    <div className="flex items-start gap-3">
+                      <div className="flex-1 min-w-0">
+                        {/* Categories */}
+                        <div className="flex flex-wrap gap-1 mb-2">
+                          {rp.categories.slice(0, 3).map(cat => {
+                            const color = CATEGORY_COLORS[cat] ?? CATEGORY_COLORS.default;
+                            return (
+                              <span key={cat} className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${color}`}>
+                                {cat}
+                              </span>
+                            );
+                          })}
+                        </div>
+                        <p className="text-sm font-medium text-slate-800 leading-snug line-clamp-2 group-hover:text-blue-700 transition-colors">
+                          {rp.title}
+                        </p>
+                        <p className="text-xs text-slate-400 mt-1 truncate">
+                          {rp.authorList[0]}{rp.authorList.length > 1 ? ' et al.' : ''} · {format(rp.digestDate, 'MMM d, yyyy')}
+                        </p>
+                        {/* Reasons */}
+                        <div className="flex flex-wrap gap-1 mt-2">
+                          {reasons.map(r => (
+                            <span key={r} className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">
+                              {r}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                      <span className={`shrink-0 text-[10px] font-semibold px-2 py-1 rounded-full border mt-0.5 ${ASSESSMENT_BADGE[rAssessment.label]}`}>
+                        {rAssessment.label}
+                      </span>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {related.length === 0 && (
+          <div className="text-center py-6 text-slate-400 text-sm">
+            No related papers found in your current inbox.
+          </div>
+        )}
       </div>
     </div>
   );

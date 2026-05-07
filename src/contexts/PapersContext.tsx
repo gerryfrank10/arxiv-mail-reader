@@ -1,12 +1,13 @@
-import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
-import { Paper, Settings } from '../types';
+import React, { createContext, useContext, useState, useCallback, useEffect, useMemo } from 'react';
+import { Paper, Settings, SortField, SortDir } from '../types';
 import { fetchArxivPapers } from '../utils/gmailApi';
 import { fetchArxivPapersImap } from '../utils/imapApi';
+import { computeAssessment } from '../utils/assessment';
 import { useAuth } from './AuthContext';
 
 const SETTINGS_KEY = 'arxiv_reader_settings';
-const CACHE_KEY = 'arxiv_reader_papers';
-const CACHE_TTL = 30 * 60 * 1000;
+const CACHE_KEY    = 'arxiv_reader_papers';
+const CACHE_TTL    = 30 * 60 * 1000;
 
 function loadSettings(): Settings {
   try {
@@ -41,10 +42,14 @@ interface PapersContextValue {
   selectedPaper: Paper | null;
   searchQuery: string;
   selectedCategory: string;
+  sortBy: SortField;
+  sortDir: SortDir;
   sync: (force?: boolean) => Promise<void>;
   setSelectedPaper: (p: Paper | null) => void;
   setSearchQuery: (q: string) => void;
   setSelectedCategory: (c: string) => void;
+  setSortBy: (f: SortField) => void;
+  setSortDir: (d: SortDir) => void;
   updateSettings: (s: Partial<Settings>) => void;
   filteredPapers: Paper[];
   allCategories: string[];
@@ -54,14 +59,16 @@ const PapersContext = createContext<PapersContextValue | null>(null);
 
 export function PapersProvider({ children }: { children: React.ReactNode }) {
   const { user } = useAuth();
-  const [papers, setPapers] = useState<Paper[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [error, setError] = useState<string | null>(null);
-  const [settings, setSettings] = useState<Settings>(loadSettings);
+  const [papers, setPapers]               = useState<Paper[]>([]);
+  const [loading, setLoading]             = useState(false);
+  const [progress, setProgress]           = useState(0);
+  const [error, setError]                 = useState<string | null>(null);
+  const [settings, setSettings]           = useState<Settings>(loadSettings);
   const [selectedPaper, setSelectedPaper] = useState<Paper | null>(null);
-  const [searchQuery, setSearchQuery] = useState('');
+  const [searchQuery, setSearchQuery]     = useState('');
   const [selectedCategory, setSelectedCategory] = useState('');
+  const [sortBy, setSortBy]               = useState<SortField>('date');
+  const [sortDir, setSortDir]             = useState<SortDir>('desc');
 
   const sync = useCallback(async (force = false) => {
     if (!user) return;
@@ -113,23 +120,52 @@ export function PapersProvider({ children }: { children: React.ReactNode }) {
     });
   }, []);
 
-  const allCategories = [...new Set(papers.flatMap(p => p.categories))].sort();
+  const allCategories = useMemo(
+    () => [...new Set(papers.flatMap(p => p.categories))].sort(),
+    [papers]
+  );
 
-  const filteredPapers = papers.filter(p => {
+  const filteredPapers = useMemo(() => {
     const q = searchQuery.toLowerCase();
-    const matchesSearch = !q ||
-      p.title.toLowerCase().includes(q) ||
-      p.authors.toLowerCase().includes(q) ||
-      p.abstract.toLowerCase().includes(q) ||
-      p.arxivId.includes(q);
-    const matchesCat = !selectedCategory || p.categories.includes(selectedCategory);
-    return matchesSearch && matchesCat;
-  });
+    const filtered = papers.filter(p => {
+      const matchesSearch = !q ||
+        p.title.toLowerCase().includes(q) ||
+        p.authors.toLowerCase().includes(q) ||
+        p.abstract.toLowerCase().includes(q) ||
+        p.arxivId.includes(q);
+      const matchesCat = !selectedCategory || p.categories.includes(selectedCategory);
+      return matchesSearch && matchesCat;
+    });
+
+    filtered.sort((a, b) => {
+      let cmp = 0;
+      switch (sortBy) {
+        case 'date':
+          cmp = a.digestDate.getTime() - b.digestDate.getTime();
+          break;
+        case 'title':
+          cmp = a.title.localeCompare(b.title);
+          break;
+        case 'authors':
+          cmp = (a.authorList[0] ?? '').localeCompare(b.authorList[0] ?? '');
+          break;
+        case 'score':
+          cmp = computeAssessment(a).score - computeAssessment(b).score;
+          break;
+      }
+      return sortDir === 'asc' ? cmp : -cmp;
+    });
+
+    return filtered;
+  }, [papers, searchQuery, selectedCategory, sortBy, sortDir]);
 
   return (
     <PapersContext.Provider value={{
       papers, loading, progress, error, settings, selectedPaper, searchQuery, selectedCategory,
-      sync, setSelectedPaper, setSearchQuery, setSelectedCategory, updateSettings,
+      sortBy, sortDir,
+      sync, setSelectedPaper, setSearchQuery, setSelectedCategory,
+      setSortBy, setSortDir,
+      updateSettings,
       filteredPapers, allCategories,
     }}>
       {children}

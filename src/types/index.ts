@@ -29,3 +29,6 @@ export interface ImapConfig {
   username: string;
   password: string;
 }
+
+export type SortField = 'date' | 'title' | 'authors' | 'score';
+export type SortDir   = 'asc' | 'desc';
