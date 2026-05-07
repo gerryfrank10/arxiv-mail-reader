@@ -8,6 +8,15 @@ import { useAuth } from './AuthContext';
 import { AssessmentLabel } from '../utils/assessment';
 
 const SETTINGS_KEY = 'arxiv_reader_settings';
+const READ_KEY     = 'arxiv_read_ids';
+
+function loadReadIds(): Set<string> {
+  try { return new Set(JSON.parse(localStorage.getItem(READ_KEY) ?? '[]') as string[]); }
+  catch { return new Set(); }
+}
+function saveReadIds(ids: Set<string>) {
+  try { localStorage.setItem(READ_KEY, JSON.stringify([...ids])); } catch { /* ignore */ }
+}
 
 function loadSettings(): Settings {
   try {
@@ -31,8 +40,11 @@ interface PapersContextValue {
   sortBy: SortField;
   sortDir: SortDir;
   lastSynced: Date | null;
+  readIds: Set<string>;
+  unreadCount: number;
   sync: (force?: boolean) => Promise<void>;
   setSelectedPaper: (p: Paper | null) => void;
+  markRead: (id: string) => void;
   setSearchQuery: (q: string) => void;
   setSelectedCategory: (c: string) => void;
   setAuthorFilter: (a: string) => void;
@@ -55,7 +67,8 @@ export function PapersProvider({ children }: { children: React.ReactNode }) {
   const [progress, setProgress]           = useState(0);
   const [error, setError]                 = useState<string | null>(null);
   const [settings, setSettings]           = useState<Settings>(loadSettings);
-  const [selectedPaper, setSelectedPaper] = useState<Paper | null>(null);
+  const [_selectedPaper, _setSelectedPaper] = useState<Paper | null>(null);
+  const selectedPaper = _selectedPaper;
   const [searchQuery, setSearchQuery]     = useState('');
   const [selectedCategory, setSelectedCategory] = useState('');
   const [authorFilter, setAuthorFilter]   = useState('');
@@ -64,6 +77,7 @@ export function PapersProvider({ children }: { children: React.ReactNode }) {
   const [sortDir, setSortDir]             = useState<SortDir>('desc');
   const [lastSynced, setLastSynced]       = useState<Date | null>(null);
   const [dbReady, setDbReady]             = useState(false);
+  const [readIds, setReadIds]             = useState<Set<string>>(loadReadIds);
 
   // Load persisted papers from IndexedDB on mount
   useEffect(() => {
@@ -126,6 +140,22 @@ export function PapersProvider({ children }: { children: React.ReactNode }) {
     if (user && dbReady) sync();
   }, [user?.email, dbReady]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const markRead = useCallback((id: string) => {
+    setReadIds(prev => {
+      if (prev.has(id)) return prev;
+      const next = new Set(prev);
+      next.add(id);
+      saveReadIds(next);
+      return next;
+    });
+  }, []);
+
+  // Wrap setSelectedPaper to auto-mark as read
+  const setSelectedPaperFn = useCallback((p: Paper | null) => {
+    if (p) markRead(p.id);
+    _setSelectedPaper(p);
+  }, [markRead]);
+
   const updateSettings = useCallback((updates: Partial<Settings>) => {
     setSettings(prev => {
       const next = { ...prev, ...updates };
@@ -182,12 +212,14 @@ export function PapersProvider({ children }: { children: React.ReactNode }) {
   }, [papers, searchQuery, selectedCategory, authorFilter, assessmentFilter, sortBy, sortDir]);
 
   const activeFilterCount = [selectedCategory, authorFilter, assessmentFilter].filter(Boolean).length;
+  const unreadCount = useMemo(() => papers.filter(p => !readIds.has(p.id)).length, [papers, readIds]);
 
   return (
     <PapersContext.Provider value={{
       papers, loading, progress, error, settings, selectedPaper, searchQuery, selectedCategory,
-      authorFilter, assessmentFilter, sortBy, sortDir, lastSynced,
-      sync, setSelectedPaper, setSearchQuery, setSelectedCategory,
+      authorFilter, assessmentFilter, sortBy, sortDir, lastSynced, readIds, unreadCount,
+      sync, setSelectedPaper: setSelectedPaperFn, markRead,
+      setSearchQuery, setSelectedCategory,
       setAuthorFilter, setAssessmentFilter, setSortBy, setSortDir,
       updateSettings,
       filteredPapers, allCategories, allAuthors, activeFilterCount,

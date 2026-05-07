@@ -1,64 +1,64 @@
 import { useState, useEffect, useMemo } from 'react';
 import { usePapers } from '../contexts/PapersContext';
 import { useLibrary } from '../contexts/LibraryContext';
-import {
-  BarChart, Bar, Cell, XAxis, YAxis, Tooltip, ResponsiveContainer,
-  LineChart, Line, CartesianGrid, Legend,
-} from 'recharts';
-import { CHART_COLORS, getCategoryLabel } from '../utils/categories';
 import { computeAssessment, ASSESSMENT_BADGE } from '../utils/assessment';
 import { fetchCitationCounts } from '../utils/citations';
-import { format, startOfWeek, eachWeekOfInterval, min, max } from 'date-fns';
-import { BookOpen, Layers, Tag, CalendarDays, BookMarked, BarChart2, Quote, TrendingUp } from 'lucide-react';
+import { CATEGORY_COLORS, CATEGORY_COLORS_LIGHT, getCategoryLabel } from '../utils/categories';
+import { format, subDays, isAfter } from 'date-fns';
+import { BookOpen, BookMarked, Quote, TrendingUp, Clock, Filter } from 'lucide-react';
 
-function StatCard({ label, value, icon: Icon, color }: { label: string; value: string | number; icon: React.ElementType; color: string }) {
-  return (
-    <div className="bg-white rounded-xl border border-slate-100 p-4 shadow-sm flex items-center gap-3">
-      <div className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${color}`}>
-        <Icon size={18} className="text-white" />
-      </div>
-      <div className="min-w-0">
-        <p className="text-xl font-bold text-slate-800 truncate">{value}</p>
-        <p className="text-xs text-slate-500 mt-0.5">{label}</p>
-      </div>
-    </div>
-  );
-}
+type Period = 'all' | '7d' | '30d' | '90d';
+const PERIODS: Array<{ value: Period; label: string }> = [
+  { value: '7d',  label: '7 days' },
+  { value: '30d', label: '30 days' },
+  { value: '90d', label: '90 days' },
+  { value: 'all', label: 'All time' },
+];
 
 export default function Dashboard() {
   const { papers, setSelectedPaper } = usePapers();
   const { savedPapers } = useLibrary();
-  const [citations, setCitations]         = useState<Record<string, number>>({});
-  const [citLoading, setCitLoading]       = useState(false);
+  const [dashCat, setDashCat]     = useState('');
+  const [period, setPeriod]       = useState<Period>('all');
+  const [citations, setCitations] = useState<Record<string, number>>({});
+  const [citLoading, setCitLoading] = useState(false);
 
-  const dates      = papers.map(p => p.digestDate);
-  const earliest   = dates.length ? min(dates) : new Date();
-  const latest     = dates.length ? max(dates) : new Date();
-  const digestIds  = new Set(papers.map(p => p.emailId));
-  const allCats    = papers.flatMap(p => p.categories);
-  const uniqueCats = new Set(allCats);
+  // Category counts (from ALL papers, unfiltered)
+  const catCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const p of papers)
+      for (const c of p.categories) counts[c] = (counts[c] ?? 0) + 1;
+    return Object.entries(counts).sort((a, b) => b[1] - a[1]);
+  }, [papers]);
 
-  // Top papers by assessment score (pre-citation sort)
+  // Dashboard-local filtered papers
+  const dashPapers = useMemo(() => {
+    let result = papers;
+    if (dashCat) result = result.filter(p => p.categories.includes(dashCat));
+    if (period !== 'all') {
+      const cutoff = subDays(new Date(), period === '7d' ? 7 : period === '30d' ? 30 : 90);
+      result = result.filter(p => isAfter(p.digestDate, cutoff));
+    }
+    return result;
+  }, [papers, dashCat, period]);
+
   const topByScore = useMemo(() =>
-    [...papers]
+    [...dashPapers]
       .map(p => ({ paper: p, assessment: computeAssessment(p) }))
       .sort((a, b) => b.assessment.score - a.assessment.score)
       .slice(0, 12),
-    [papers]
+    [dashPapers]
   );
 
-  // Once we have papers, fetch citation counts for top 12
   useEffect(() => {
     if (!topByScore.length) return;
-    const ids = topByScore.map(x => x.paper.arxivId);
     setCitLoading(true);
-    fetchCitationCounts(ids).then(data => {
+    fetchCitationCounts(topByScore.map(x => x.paper.arxivId)).then(data => {
       setCitations(data);
       setCitLoading(false);
     });
   }, [topByScore.map(x => x.paper.arxivId).join(',')]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Re-sort by citations (desc) once available, fall back to score
   const topPapers = useMemo(() => {
     const hasCit = Object.keys(citations).length > 0;
     return [...topByScore]
@@ -73,6 +73,11 @@ export default function Dashboard() {
       .slice(0, 10);
   }, [topByScore, citations]);
 
+  const recentPapers = useMemo(() =>
+    [...dashPapers].sort((a, b) => b.digestDate.getTime() - a.digestDate.getTime()).slice(0, 8),
+    [dashPapers]
+  );
+
   if (papers.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center h-full text-center px-8">
@@ -80,164 +85,209 @@ export default function Dashboard() {
           <BookOpen size={28} className="text-slate-400" />
         </div>
         <h2 className="text-xl font-semibold text-slate-700 mb-2">No papers yet</h2>
-        <p className="text-slate-400 text-sm max-w-sm">
-          Connect your email and sync to load arXiv digest emails.
-        </p>
+        <p className="text-slate-400 text-sm max-w-sm">Connect your email and sync to load arXiv digest emails.</p>
       </div>
     );
   }
 
-  const catCounts: Record<string, number> = {};
-  for (const cat of allCats) catCounts[cat] = (catCounts[cat] ?? 0) + 1;
-  const catData = Object.entries(catCounts)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 12)
-    .map(([cat, count]) => ({ cat, count, label: getCategoryLabel(cat) }));
-
-  let weekData: Array<{ week: string; papers: number }> = [];
-  if (dates.length > 0) {
-    const weeks = eachWeekOfInterval({ start: earliest, end: latest });
-    weekData = weeks.map(w => {
-      const ws  = startOfWeek(w);
-      const we  = new Date(ws.getTime() + 7 * 24 * 60 * 60 * 1000);
-      const cnt = papers.filter(p => p.digestDate >= ws && p.digestDate < we).length;
-      return { week: format(w, 'MMM d'), papers: cnt };
-    }).filter(d => d.papers > 0);
-  }
-
-  const recent = papers.slice(0, 5);
+  const digestCount  = new Set(papers.map(p => p.emailId)).size;
+  const datesSorted  = [...papers].sort((a, b) => a.digestDate.getTime() - b.digestDate.getTime());
+  const firstDate    = datesSorted[0]?.digestDate;
+  const lastDate     = datesSorted[datesSorted.length - 1]?.digestDate;
 
   return (
-    <div className="h-full overflow-y-auto main-scroll">
-      <div className="max-w-5xl mx-auto px-8 py-8 fade-in">
-        <div className="mb-7">
-          <h1 className="text-2xl font-bold text-slate-800">Dashboard</h1>
-          <p className="text-slate-500 text-sm mt-1">Overview of your arXiv paper digests</p>
-        </div>
-
-        {/* Stat cards */}
-        <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3 mb-8">
-          <StatCard label="Total Papers"   value={papers.length}      icon={BookOpen}    color="bg-blue-500" />
-          <StatCard label="Digest Emails"  value={digestIds.size}     icon={Layers}      color="bg-violet-500" />
-          <StatCard label="Categories"     value={uniqueCats.size}    icon={Tag}         color="bg-emerald-500" />
-          <StatCard label="Saved Papers"   value={savedPapers.length} icon={BookMarked}  color="bg-amber-500" />
-          <StatCard
-            label="Date Range"
-            value={dates.length > 1
-              ? `${format(earliest, 'MMM yy')} – ${format(latest, 'MMM yy')}`
-              : format(earliest, 'MMM yyyy')}
-            icon={CalendarDays}
-            color="bg-orange-500"
-          />
-        </div>
-
-        {/* Charts */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 mb-8">
-          <div className="bg-white rounded-xl border border-slate-100 p-5 shadow-sm">
-            <h2 className="text-sm font-semibold text-slate-700 mb-4">Papers by Category</h2>
-            <ResponsiveContainer width="100%" height={220}>
-              <BarChart data={catData} layout="vertical" margin={{ left: 8, right: 8 }}>
-                <XAxis type="number" tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
-                <YAxis dataKey="cat" type="category" tick={{ fontSize: 11, fill: '#64748b' }} width={60} axisLine={false} tickLine={false} />
-                <Tooltip formatter={(v, _n, p) => [v, p.payload.label]} contentStyle={{ fontSize: 12, borderRadius: 8, border: '1px solid #e2e8f0' }} />
-                <Bar dataKey="count" radius={[0, 4, 4, 0]}>
-                  {catData.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
+    <div className="h-full overflow-y-auto main-scroll bg-slate-50">
+      {/* ── Page header ── */}
+      <div className="bg-white border-b border-slate-200 px-8 pt-6 pb-0">
+        <div className="max-w-5xl mx-auto">
+          <div className="flex items-start justify-between mb-4">
+            <div>
+              <h1 className="text-2xl font-bold text-slate-900">arXiv Papers</h1>
+              <p className="text-sm text-slate-500 mt-0.5">
+                {papers.length} papers · {digestCount} digest{digestCount !== 1 ? 's' : ''}
+                {firstDate && lastDate && firstDate.getTime() !== lastDate.getTime() && (
+                  <> · <span className="text-slate-400">{format(firstDate, 'MMM d, yyyy')} – {format(lastDate, 'MMM d, yyyy')}</span></>
+                )}
+              </p>
+            </div>
+            {/* Quick stats row */}
+            <div className="flex items-center gap-4 text-sm">
+              <div className="flex items-center gap-1.5 text-slate-500">
+                <BookOpen size={14} className="text-blue-500" />
+                <span className="font-semibold text-slate-800">{papers.length}</span> papers
+              </div>
+              <div className="flex items-center gap-1.5 text-slate-500">
+                <BookMarked size={14} className="text-amber-500" />
+                <span className="font-semibold text-slate-800">{savedPapers.length}</span> saved
+              </div>
+            </div>
           </div>
 
-          {weekData.length > 1 && (
-            <div className="bg-white rounded-xl border border-slate-100 p-5 shadow-sm">
-              <h2 className="text-sm font-semibold text-slate-700 mb-4">Papers Over Time</h2>
-              <ResponsiveContainer width="100%" height={220}>
-                <LineChart data={weekData} margin={{ left: 0, right: 8 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
-                  <XAxis dataKey="week" tick={{ fontSize: 10, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
-                  <YAxis tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} width={28} />
-                  <Tooltip contentStyle={{ fontSize: 12, borderRadius: 8, border: '1px solid #e2e8f0' }} />
-                  <Legend wrapperStyle={{ fontSize: 11 }} />
-                  <Line type="monotone" dataKey="papers" stroke="#3b82f6" strokeWidth={2} dot={{ r: 3 }} name="Papers" />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
+          {/* ── Category filter bar ── */}
+          <div className="flex items-center gap-2 overflow-x-auto pb-0 hide-scrollbar -mx-1 px-1">
+            <button
+              onClick={() => setDashCat('')}
+              className={`flex items-center gap-1.5 px-3 py-2 rounded-t-lg text-xs font-semibold border-b-2 whitespace-nowrap transition-all ${
+                !dashCat
+                  ? 'border-blue-500 text-blue-600 bg-blue-50/50'
+                  : 'border-transparent text-slate-500 hover:text-slate-700 hover:bg-slate-50'
+              }`}
+            >
+              <Filter size={11} />
+              All
+              <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-bold ${!dashCat ? 'bg-blue-100 text-blue-600' : 'bg-slate-100 text-slate-500'}`}>
+                {papers.length}
+              </span>
+            </button>
+            {catCounts.slice(0, 14).map(([cat, count]) => {
+              const lightColor = CATEGORY_COLORS_LIGHT[cat] ?? CATEGORY_COLORS_LIGHT.default;
+              const active = dashCat === cat;
+              return (
+                <button
+                  key={cat}
+                  onClick={() => setDashCat(active ? '' : cat)}
+                  title={getCategoryLabel(cat)}
+                  className={`flex items-center gap-1.5 px-3 py-2 rounded-t-lg text-xs font-semibold border-b-2 whitespace-nowrap transition-all ${
+                    active
+                      ? `border-current ${lightColor}`
+                      : 'border-transparent text-slate-500 hover:text-slate-700 hover:bg-slate-50'
+                  }`}
+                >
+                  {cat}
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-bold ${active ? 'bg-white/60' : 'bg-slate-100 text-slate-500'}`}>
+                    {count}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+
+      <div className="max-w-5xl mx-auto px-8 py-6 space-y-6">
+        {/* ── Period filter ── */}
+        <div className="flex items-center gap-2">
+          <Clock size={13} className="text-slate-400" />
+          <span className="text-xs text-slate-500 mr-1">Show:</span>
+          {PERIODS.map(p => (
+            <button key={p.value}
+              onClick={() => setPeriod(p.value)}
+              className={`px-3 py-1 rounded-full text-xs font-medium transition-all ${
+                period === p.value
+                  ? 'bg-slate-800 text-white'
+                  : 'bg-white text-slate-500 border border-slate-200 hover:border-slate-300 hover:text-slate-700'
+              }`}>
+              {p.label}
+            </button>
+          ))}
+          {dashPapers.length !== papers.length && (
+            <span className="text-xs text-slate-400 ml-1">· {dashPapers.length} paper{dashPapers.length !== 1 ? 's' : ''}</span>
           )}
         </div>
 
-        {/* Top papers by citations + score */}
-        <div className="bg-white rounded-xl border border-slate-100 shadow-sm overflow-hidden mb-6">
-          <div className="px-5 py-4 border-b border-slate-100 flex items-center gap-2">
+        {/* ── Most Cited / Top Ranked ── */}
+        <section>
+          <div className="flex items-center gap-2 mb-3">
             <TrendingUp size={15} className="text-emerald-500" />
-            <h2 className="text-sm font-semibold text-slate-700">Most Cited Papers</h2>
+            <h2 className="text-sm font-bold text-slate-700">
+              {Object.keys(citations).length > 0 ? 'Most Cited Papers' : 'Top Ranked Papers'}
+            </h2>
             <span className="text-xs text-slate-400 ml-auto flex items-center gap-1">
-              <Quote size={11} />
-              {citLoading ? 'Fetching citations…' : 'via Semantic Scholar'}
+              <Quote size={10} />
+              {citLoading ? 'fetching citations…' : Object.keys(citations).length > 0 ? 'Semantic Scholar' : 'by depth score'}
             </span>
           </div>
-          <ul>
-            {topPapers.map(({ paper, assessment, cit }, idx) => (
-              <li key={paper.id}>
-                <button
-                  onClick={() => setSelectedPaper(paper)}
-                  className={`w-full text-left px-5 py-3.5 hover:bg-slate-50 transition-colors flex items-start gap-3 ${idx < topPapers.length - 1 ? 'border-b border-slate-100' : ''}`}
-                >
-                  <span className="text-xs font-bold text-slate-300 mt-0.5 w-5 shrink-0">{idx + 1}</span>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-slate-800 leading-snug line-clamp-1">{paper.title}</p>
-                    <p className="text-xs text-slate-400 mt-0.5">
-                      {paper.authorList[0]}{paper.authorList.length > 1 ? ' et al.' : ''} · {format(paper.digestDate, 'MMM d, yyyy')}
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-2 shrink-0">
-                    {cit !== null ? (
-                      <span className="flex items-center gap-1 text-xs font-bold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
-                        <Quote size={10} />
-                        {cit.toLocaleString()}
-                      </span>
-                    ) : citLoading ? (
-                      <span className="text-xs text-slate-400 w-12 text-center">—</span>
-                    ) : null}
-                    <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full border ${ASSESSMENT_BADGE[assessment.label]}`}>
-                      {assessment.label}
-                    </span>
-                    <span className="text-xs font-bold text-slate-400 w-6 text-right">{assessment.score}</span>
-                  </div>
-                </button>
-              </li>
-            ))}
-          </ul>
-        </div>
 
-        {/* Recent papers */}
-        <div className="bg-white rounded-xl border border-slate-100 shadow-sm overflow-hidden">
-          <div className="px-5 py-4 border-b border-slate-100 flex items-center gap-2">
-            <BarChart2 size={15} className="text-slate-500" />
-            <h2 className="text-sm font-semibold text-slate-700">Recent Papers</h2>
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+            {topPapers.length === 0 ? (
+              <p className="text-center text-slate-400 text-sm py-8">No papers in this filter.</p>
+            ) : topPapers.map(({ paper, assessment, cit }, idx) => (
+              <button
+                key={paper.id}
+                onClick={() => setSelectedPaper(paper)}
+                className={`w-full text-left px-5 py-4 flex items-start gap-4 hover:bg-slate-50 transition-colors group ${idx < topPapers.length - 1 ? 'border-b border-slate-100' : ''}`}
+              >
+                {/* Rank badge */}
+                <div className={`w-7 h-7 rounded-full flex items-center justify-center shrink-0 mt-0.5 font-bold text-xs ${
+                  idx === 0 ? 'bg-amber-100 text-amber-700' :
+                  idx === 1 ? 'bg-slate-100 text-slate-600' :
+                  idx === 2 ? 'bg-orange-100 text-orange-700' :
+                  'bg-slate-50 text-slate-500'
+                }`}>
+                  {idx + 1}
+                </div>
+
+                <div className="flex-1 min-w-0">
+                  {/* Categories */}
+                  <div className="flex flex-wrap gap-1 mb-1.5">
+                    {paper.categories.slice(0, 3).map(cat => {
+                      const color = CATEGORY_COLORS[cat] ?? CATEGORY_COLORS.default;
+                      return <span key={cat} className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${color}`}>{cat}</span>;
+                    })}
+                  </div>
+                  <p className="text-sm font-semibold text-slate-800 leading-snug line-clamp-1 group-hover:text-blue-700 transition-colors">
+                    {paper.title}
+                  </p>
+                  <p className="text-xs text-slate-400 mt-1 truncate">
+                    {paper.authorList[0]}{paper.authorList.length > 1 ? ` +${paper.authorList.length - 1}` : ''} · {format(paper.digestDate, 'MMM d, yyyy')}
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-2 shrink-0">
+                  {cit !== null && (
+                    <span className="flex items-center gap-1 text-xs font-bold text-emerald-600 bg-emerald-50 px-2 py-1 rounded-full border border-emerald-200">
+                      <Quote size={10} /> {cit.toLocaleString()}
+                    </span>
+                  )}
+                  <span className={`text-[10px] font-semibold px-2 py-1 rounded-full border ${ASSESSMENT_BADGE[assessment.label]}`}>
+                    {assessment.label}
+                  </span>
+                </div>
+              </button>
+            ))}
           </div>
-          <ul>
-            {recent.map((paper, idx) => (
-              <li key={paper.id}>
+        </section>
+
+        {/* ── Recent papers ── */}
+        <section>
+          <div className="flex items-center gap-2 mb-3">
+            <Clock size={15} className="text-blue-500" />
+            <h2 className="text-sm font-bold text-slate-700">Recent Papers</h2>
+          </div>
+
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+            {recentPapers.length === 0 ? (
+              <p className="text-center text-slate-400 text-sm py-8">No papers in this filter.</p>
+            ) : recentPapers.map((paper, idx) => {
+              const assessment = computeAssessment(paper);
+              return (
                 <button
+                  key={paper.id}
                   onClick={() => setSelectedPaper(paper)}
-                  className={`w-full text-left px-5 py-3.5 hover:bg-slate-50 transition-colors flex items-start gap-3 ${idx < recent.length - 1 ? 'border-b border-slate-100' : ''}`}
+                  className={`w-full text-left px-5 py-3.5 flex items-center gap-4 hover:bg-slate-50 transition-colors group ${idx < recentPapers.length - 1 ? 'border-b border-slate-100' : ''}`}
                 >
-                  <span className="text-xs font-bold text-slate-300 mt-0.5 w-5 shrink-0">{idx + 1}</span>
+                  <div className="w-7 h-7 rounded-full bg-slate-50 border border-slate-200 flex items-center justify-center shrink-0 text-xs font-bold text-slate-500">
+                    {idx + 1}
+                  </div>
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-slate-800 leading-snug line-clamp-1">{paper.title}</p>
-                    <p className="text-xs text-slate-400 mt-0.5">
-                      {paper.authorList[0]}{paper.authorList.length > 1 ? ' et al.' : ''} · {format(paper.digestDate, 'MMM d, yyyy')}
+                    <p className="text-sm font-medium text-slate-800 line-clamp-1 group-hover:text-blue-700 transition-colors">{paper.title}</p>
+                    <p className="text-xs text-slate-400 mt-0.5 truncate">
+                      {paper.authorList[0]}{paper.authorList.length > 1 ? ` et al.` : ''} · {format(paper.digestDate, 'MMM d, yyyy')}
                     </p>
                   </div>
-                  <div className="flex gap-1 shrink-0">
+                  <div className="flex items-center gap-1.5 shrink-0">
                     {paper.categories.slice(0, 2).map(cat => (
                       <span key={cat} className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">{cat}</span>
                     ))}
+                    <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full border ${ASSESSMENT_BADGE[assessment.label]}`}>
+                      {assessment.label}
+                    </span>
                   </div>
                 </button>
-              </li>
-            ))}
-          </ul>
-        </div>
+              );
+            })}
+          </div>
+        </section>
       </div>
     </div>
   );

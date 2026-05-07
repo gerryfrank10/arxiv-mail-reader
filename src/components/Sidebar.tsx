@@ -1,4 +1,4 @@
-import { Search, RefreshCw, Settings, LogOut, ChevronDown, SortAsc, SortDesc, Inbox, BookMarked, X, User } from 'lucide-react';
+import { Search, RefreshCw, Settings, LogOut, ChevronDown, SortAsc, SortDesc, Inbox, BookMarked, X, User, Sparkles } from 'lucide-react';
 import { useState, useRef, useEffect, useMemo } from 'react';
 import { usePapers } from '../contexts/PapersContext';
 import { useAuth } from '../contexts/AuthContext';
@@ -15,6 +15,7 @@ import { formatDistanceToNow } from 'date-fns';
 interface Props {
   activeView: ActiveView;
   setActiveView: (v: ActiveView) => void;
+  onAISuggest: () => void;
 }
 
 const SORT_OPTIONS: Array<{ value: SortField; label: string }> = [
@@ -26,7 +27,7 @@ const SORT_OPTIONS: Array<{ value: SortField; label: string }> = [
 
 const ASSESSMENT_LEVELS: AssessmentLabel[] = ['In Depth', 'Notable', 'Standard', 'Brief'];
 
-export default function Sidebar({ activeView, setActiveView }: Props) {
+export default function Sidebar({ activeView, setActiveView, onAISuggest }: Props) {
   const {
     filteredPapers, papers, loading, progress, error,
     selectedPaper, setSelectedPaper,
@@ -36,7 +37,7 @@ export default function Sidebar({ activeView, setActiveView }: Props) {
     assessmentFilter, setAssessmentFilter,
     allCategories, allAuthors, sync,
     sortBy, setSortBy, sortDir, setSortDir,
-    lastSynced, activeFilterCount,
+    lastSynced, activeFilterCount, unreadCount, readIds,
   } = usePapers();
   const { user, logout } = useAuth();
   const { savedPapers, isSaved } = useLibrary();
@@ -112,6 +113,10 @@ export default function Sidebar({ activeView, setActiveView }: Props) {
                   <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
                 </button>
               )}
+              <button onClick={onAISuggest} title="AI Paper Suggestions"
+                className="p-1.5 rounded-lg text-violet-400 hover:text-violet-300 hover:bg-slate-800 transition-all">
+                <Sparkles size={14} />
+              </button>
               <button onClick={() => setShowSettings(true)} title="Settings"
                 className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-all">
                 <Settings size={14} />
@@ -144,9 +149,9 @@ export default function Sidebar({ activeView, setActiveView }: Props) {
             }`}>
             <Inbox size={13} />
             Inbox
-            {papers.length > 0 && (
+            {unreadCount > 0 && (
               <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${activeView === 'inbox' ? 'bg-blue-600 text-white' : 'bg-slate-700 text-slate-400'}`}>
-                {papers.length}
+                {unreadCount}
               </span>
             )}
           </button>
@@ -387,6 +392,7 @@ export default function Sidebar({ activeView, setActiveView }: Props) {
               paper={paper}
               isSelected={selectedPaper?.id === paper.id}
               isSaved={isSaved(paper.id)}
+              isRead={readIds.has(paper.id)}
               onClick={() => setSelectedPaper(paper)}
             />
           ))}

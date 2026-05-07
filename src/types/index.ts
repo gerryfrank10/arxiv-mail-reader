@@ -19,6 +19,7 @@ export interface Paper {
 export interface Settings {
   senderEmail: string;
   maxEmails: number;
+  claudeApiKey?: string;
 }
 
 export type Provider = 'google' | 'imap';

@@ -1,5 +1,5 @@
-import { ExternalLink, FileText, Code2, Calendar, HardDrive, MessageSquare, Bookmark, BookmarkCheck, Users, BarChart2, Layers, Quote } from 'lucide-react';
-import { useState, useEffect } from 'react';
+import { ExternalLink, FileText, Code2, Calendar, HardDrive, MessageSquare, Bookmark, BookmarkCheck, Users, BarChart2, Layers, Quote, BookOpen, Check } from 'lucide-react';
+import { useState, useEffect, useCallback } from 'react';
 import { Paper } from '../types';
 import { CATEGORY_COLORS_LIGHT, getCategoryLabel, CATEGORY_COLORS } from '../utils/categories';
 import { renderAbstract } from '../utils/latex';
@@ -27,6 +27,14 @@ export default function PaperDetail({ paper }: Props) {
   }, [paper.arxivId]);
   const { savePaper, unsavePaper, isSaved } = useLibrary();
   const saved = isSaved(paper.id);
+  const [notebookCopied, setNotebookCopied] = useState(false);
+
+  const openNotebookLM = useCallback(() => {
+    navigator.clipboard.writeText(paper.pdfUrl).catch(() => {});
+    setNotebookCopied(true);
+    setTimeout(() => setNotebookCopied(false), 2500);
+    window.open('https://notebooklm.google.com', '_blank', 'noopener,noreferrer');
+  }, [paper.pdfUrl]);
   const abstractHtml = renderAbstract(paper.abstract);
   const assessment   = computeAssessment(paper);
   const related      = getRelatedPapers(paper, papers, 6);
@@ -200,6 +208,18 @@ export default function PaperDetail({ paper }: Props) {
             <Layers size={15} />
             Google Scholar
           </a>
+          <button
+            onClick={openNotebookLM}
+            title="Copy PDF URL and open NotebookLM"
+            className={`flex items-center gap-2 px-5 py-2.5 border text-sm font-medium rounded-lg transition-all ${
+              notebookCopied
+                ? 'border-emerald-300 bg-emerald-50 text-emerald-700'
+                : 'border-violet-200 bg-violet-50 text-violet-700 hover:bg-violet-100'
+            }`}
+          >
+            {notebookCopied ? <Check size={15} /> : <BookOpen size={15} />}
+            {notebookCopied ? 'PDF URL copied!' : 'Open in NotebookLM'}
+          </button>
         </div>
 
         {/* Related papers */}

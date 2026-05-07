@@ -1,4 +1,5 @@
 import { Paper } from '../types';
+import { decodeLatex } from './latexDecode';
 
 function joinContinuationLines(lines: string[], startIdx: number): [string, number] {
   let value = lines[startIdx];
@@ -112,14 +113,18 @@ export function parseArxivEmail(
         .map(a => a.trim())
         .filter(Boolean);
 
+      const decodedTitle   = decodeLatex(title);
+      const decodedAuthors = decodeLatex(authors);
+      const decodedList    = authorList.map(decodeLatex);
+
       papers.push({
         id: `${emailId}_${arxivId}`,
         arxivId,
         date,
         size,
-        title,
-        authors,
-        authorList,
+        title:      decodedTitle,
+        authors:    decodedAuthors,
+        authorList: decodedList,
         categories,
         comments,
         abstract,

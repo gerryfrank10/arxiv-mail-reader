@@ -9,10 +9,11 @@ interface Props {
   paper: Paper;
   isSelected: boolean;
   isSaved: boolean;
+  isRead?: boolean;
   onClick: () => void;
 }
 
-export default function PaperCard({ paper, isSelected, isSaved, onClick }: Props) {
+export default function PaperCard({ paper, isSelected, isSaved, isRead = true, onClick }: Props) {
   const { savePaper, unsavePaper } = useLibrary();
   const firstAuthor = paper.authorList[0] ?? paper.authors;
   const coauthors   = paper.authorList.length > 1;
@@ -58,9 +59,14 @@ export default function PaperCard({ paper, isSelected, isSaved, onClick }: Props
       </div>
 
       {/* Title */}
-      <p className={`text-sm font-medium leading-snug mb-1.5 line-clamp-2 ${isSelected ? 'text-white' : 'text-slate-200 group-hover:text-white'}`}>
-        {paper.title}
-      </p>
+      <div className="flex items-start gap-1.5 mb-1.5">
+        {!isRead && !isSelected && (
+          <span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-blue-400 shrink-0" />
+        )}
+        <p className={`text-sm font-medium leading-snug line-clamp-2 ${isSelected ? 'text-white' : 'text-slate-200 group-hover:text-white'}`}>
+          {paper.title}
+        </p>
+      </div>
 
       {/* Authors */}
       <p className="text-xs text-slate-400 truncate mb-1.5">

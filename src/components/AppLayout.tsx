@@ -3,6 +3,7 @@ import Sidebar from './Sidebar';
 import Dashboard from './Dashboard';
 import PaperDetail from './PaperDetail';
 import LibraryView from './LibraryView';
+import AISuggestPanel from './AISuggestPanel';
 import { usePapers } from '../contexts/PapersContext';
 import { LibraryProvider } from '../contexts/LibraryContext';
 
@@ -11,13 +12,7 @@ export type ActiveView = 'inbox' | 'library';
 function AppLayoutInner() {
   const { selectedPaper } = usePapers();
   const [activeView, setActiveView] = useState<ActiveView>('inbox');
-
-  function handleSelectPaper(p: import('../types').Paper | null) {
-    // Expose via usePapers setter — just set it
-    // (selectedPaper setter is in context)
-    void p; // used by Sidebar directly
-  }
-  void handleSelectPaper;
+  const [showAISuggest, setShowAISuggest] = useState(false);
 
   const mainContent = () => {
     if (selectedPaper) return <PaperDetail paper={selectedPaper} />;
@@ -27,10 +22,11 @@ function AppLayoutInner() {
 
   return (
     <div className="flex h-screen overflow-hidden bg-slate-50">
-      <Sidebar activeView={activeView} setActiveView={setActiveView} />
+      <Sidebar activeView={activeView} setActiveView={setActiveView} onAISuggest={() => setShowAISuggest(true)} />
       <main className="flex-1 overflow-hidden">
         {mainContent()}
       </main>
+      {showAISuggest && <AISuggestPanel onClose={() => setShowAISuggest(false)} />}
     </div>
   );
 }
