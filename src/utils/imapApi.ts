@@ -15,6 +15,19 @@ export async function fetchArxivPapersImap(
   maxEmails = 30,
   onProgress?: (loaded: number, total: number) => void
 ): Promise<Paper[]> {
+  // Check backend reachability first with a clear error message
+  try {
+    const health = await fetch('/api/health', { signal: AbortSignal.timeout(3000) });
+    if (!health.ok) throw new Error();
+  } catch {
+    throw new Error(
+      'Cannot reach the IMAP backend server.\n\n' +
+      'If you are using the hosted version (GitHub Pages), IMAP is not available there — only Gmail works. ' +
+      'Run the app locally with `npm run dev:all` to use iCloud, Outlook, or Yahoo.\n\n' +
+      'If running locally, start the backend with: npm run dev:server'
+    );
+  }
+
   const res = await fetch('/api/fetch-imap-emails', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
