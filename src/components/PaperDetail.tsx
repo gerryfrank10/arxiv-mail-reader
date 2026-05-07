@@ -17,6 +17,8 @@ interface Props {
 export default function PaperDetail({ paper }: Props) {
   const { papers, setSelectedPaper } = usePapers();
   const [citationCount, setCitationCount] = useState<number | null>(null);
+  const [fetchedAbstract, setFetchedAbstract] = useState<string | null>(null);
+  const [abstractLoading, setAbstractLoading] = useState(false);
 
   useEffect(() => {
     setCitationCount(null);
@@ -25,6 +27,22 @@ export default function PaperDetail({ paper }: Props) {
       if (c !== undefined) setCitationCount(c);
     });
   }, [paper.arxivId]);
+
+  // Auto-fetch abstract from arXiv API when digest email didn't include it
+  useEffect(() => {
+    setFetchedAbstract(null);
+    if (paper.abstract) return;
+    setAbstractLoading(true);
+    fetch(`https://export.arxiv.org/api/query?id_list=${paper.arxivId}`)
+      .then(r => r.text())
+      .then(xml => {
+        const match = xml.match(/<summary[^>]*>([\s\S]*?)<\/summary>/);
+        if (match) setFetchedAbstract(match[1].trim().replace(/\s+/g, ' '));
+      })
+      .catch(() => {})
+      .finally(() => setAbstractLoading(false));
+  }, [paper.arxivId, paper.abstract]);
+
   const { savePaper, unsavePaper, isSaved } = useLibrary();
   const saved = isSaved(paper.id);
   const [notebookCopied, setNotebookCopied] = useState(false);
@@ -35,7 +53,9 @@ export default function PaperDetail({ paper }: Props) {
     setTimeout(() => setNotebookCopied(false), 2500);
     window.open('https://notebooklm.google.com', '_blank', 'noopener,noreferrer');
   }, [paper.pdfUrl]);
-  const abstractHtml = renderAbstract(paper.abstract);
+
+  const displayAbstract = paper.abstract || fetchedAbstract || '';
+  const abstractHtml = renderAbstract(displayAbstract);
   const assessment   = computeAssessment(paper);
   const related      = getRelatedPapers(paper, papers, 6);
 
@@ -164,10 +184,16 @@ export default function PaperDetail({ paper }: Props) {
         {/* Abstract */}
         <div className="mb-8">
           <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-400 mb-3">Abstract</h2>
-          <div
-            className="abstract-text text-slate-700 leading-relaxed text-[15px] space-y-3"
-            dangerouslySetInnerHTML={{ __html: abstractHtml }}
-          />
+          {abstractLoading ? (
+            <p className="text-sm text-slate-400 italic">Fetching abstract from arXiv…</p>
+          ) : displayAbstract ? (
+            <div
+              className="abstract-text text-slate-700 leading-relaxed text-[15px] space-y-3"
+              dangerouslySetInnerHTML={{ __html: abstractHtml }}
+            />
+          ) : (
+            <p className="text-sm text-slate-400 italic">Abstract not available in digest.</p>
+          )}
         </div>
 
         {/* Action buttons */}
