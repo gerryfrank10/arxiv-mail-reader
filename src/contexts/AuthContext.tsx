@@ -1,67 +1,50 @@
 import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
 import { useGoogleLogin, googleLogout } from '@react-oauth/google';
-import { Provider, ImapConfig } from '../types';
 
 const SESSION_KEY = 'arxiv_auth_session';
-// Google access tokens last 1 hour; we treat them as valid for 55 min.
 const GOOGLE_TOKEN_TTL = 55 * 60 * 1000;
 
-export interface AuthUser {
-  provider: Provider;
-  accessToken?: string;
-  tokenExpiry?: number;   // ms epoch — only set for Google
-  imapConfig?: ImapConfig; // stored for IMAP persistence
+interface AuthUser {
+  accessToken: string;
+  tokenExpiry: number;
   email?: string;
   name?: string;
   picture?: string;
 }
 
-function saveSession(user: AuthUser) {
-  try { localStorage.setItem(SESSION_KEY, JSON.stringify(user)); } catch { /* ignore */ }
-}
-
-function clearSession() {
-  try { localStorage.removeItem(SESSION_KEY); } catch { /* ignore */ }
-}
-
-function loadSession(): AuthUser | null {
-  try {
-    const raw = localStorage.getItem(SESSION_KEY);
-    if (!raw) return null;
-    const user = JSON.parse(raw) as AuthUser;
-    if (user.provider === 'google') {
-      // Discard expired Google tokens
-      if (!user.tokenExpiry || Date.now() > user.tokenExpiry) {
-        clearSession();
-        return null;
-      }
-    }
-    return user;
-  } catch { return null; }
-}
-
 interface AuthContextValue {
   user: AuthUser | null;
-  hasGoogle: boolean;
-  loginWithGoogle: () => void;
-  loginWithImap: (config: ImapConfig, email: string) => void;
+  login: () => void;
   logout: () => void;
   isLoggingIn: boolean;
   loginError: string | null;
-  clearError: () => void;
-  /** True while we restore a saved Google session silently */
   isRestoring: boolean;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
-export function AuthProvider({ children, hasGoogle = false }: { children: React.ReactNode; hasGoogle?: boolean }) {
+function saveSession(user: AuthUser) {
+  try { localStorage.setItem(SESSION_KEY, JSON.stringify(user)); } catch { /* ignore */ }
+}
+function clearSession() {
+  try { localStorage.removeItem(SESSION_KEY); } catch { /* ignore */ }
+}
+function loadSession(): AuthUser | null {
+  try {
+    const raw = localStorage.getItem(SESSION_KEY);
+    if (!raw) return null;
+    const user = JSON.parse(raw) as AuthUser;
+    if (Date.now() > user.tokenExpiry) { clearSession(); return null; }
+    return user;
+  } catch { return null; }
+}
+
+export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [isRestoring, setIsRestoring] = useState(true);
   const [loginError, setLoginError] = useState<string | null>(null);
 
-  // Restore saved session on mount
   useEffect(() => {
     const saved = loadSession();
     if (saved) setUser(saved);
@@ -80,7 +63,6 @@ export function AuthProvider({ children, hasGoogle = false }: { children: React.
         profile = await r.json();
       } catch { /* use empty profile */ }
       const next: AuthUser = {
-        provider: 'google',
         accessToken: token,
         tokenExpiry: Date.now() + GOOGLE_TOKEN_TTL,
         email: profile.email,
@@ -93,34 +75,25 @@ export function AuthProvider({ children, hasGoogle = false }: { children: React.
       setLoginError(null);
     },
     onError: (err) => {
-      setLoginError(err.error_description ?? 'Google sign-in failed.');
+      setLoginError(err.error_description ?? 'Sign-in failed.');
       setIsLoggingIn(false);
     },
   });
 
-  const loginWithGoogle = useCallback(() => {
+  const login = useCallback(() => {
     setIsLoggingIn(true);
     setLoginError(null);
     googleLogin();
   }, [googleLogin]);
 
-  const loginWithImap = useCallback((config: ImapConfig, email: string) => {
-    const next: AuthUser = { provider: 'imap', imapConfig: config, email };
-    setUser(next);
-    saveSession(next); // persists indefinitely — no expiry for IMAP
-    setLoginError(null);
-  }, []);
-
   const logout = useCallback(() => {
-    if (user?.provider === 'google') googleLogout();
+    googleLogout();
     clearSession();
     setUser(null);
-  }, [user]);
-
-  const clearError = useCallback(() => setLoginError(null), []);
+  }, []);
 
   return (
-    <AuthContext.Provider value={{ user, hasGoogle, loginWithGoogle, loginWithImap, logout, isLoggingIn, loginError, clearError, isRestoring }}>
+    <AuthContext.Provider value={{ user, login, logout, isLoggingIn, loginError, isRestoring }}>
       {children}
     </AuthContext.Provider>
   );

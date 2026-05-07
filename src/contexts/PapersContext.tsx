@@ -1,7 +1,6 @@
 import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
 import { Paper, Settings } from '../types';
 import { fetchArxivPapers } from '../utils/gmailApi';
-import { fetchArxivPapersImap } from '../utils/imapApi';
 import { useAuth } from './AuthContext';
 
 const SETTINGS_KEY = 'arxiv_reader_settings';
@@ -13,8 +12,6 @@ function loadSettings(): Settings {
     const s = localStorage.getItem(SETTINGS_KEY);
     if (s) return JSON.parse(s) as Settings;
   } catch { /* ignore */ }
-  // arXiv digest emails arrive from no-reply@arxiv.org (most common)
-  // or cs@arxiv.org depending on the list. Change in Settings if needed.
   return { senderEmail: 'no-reply@arxiv.org', maxEmails: 30 };
 }
 
@@ -66,7 +63,7 @@ export function PapersProvider({ children }: { children: React.ReactNode }) {
   const [selectedCategory, setSelectedCategory] = useState('');
 
   const sync = useCallback(async (force = false) => {
-    if (!user) return;
+    if (!user?.accessToken) return;
     if (!force) {
       const cached = loadCache();
       if (cached) { setPapers(cached); return; }
@@ -75,24 +72,12 @@ export function PapersProvider({ children }: { children: React.ReactNode }) {
     setError(null);
     setProgress(0);
     try {
-      let result: Paper[];
-      if (user.provider === 'google' && user.accessToken) {
-        result = await fetchArxivPapers(
-          user.accessToken,
-          settings.senderEmail,
-          settings.maxEmails,
-          (loaded, total) => setProgress(Math.round((loaded / total) * 100))
-        );
-      } else if (user.provider === 'imap' && user.imapConfig) {
-        result = await fetchArxivPapersImap(
-          user.imapConfig,
-          settings.senderEmail,
-          settings.maxEmails,
-          (loaded, total) => setProgress(Math.round((loaded / total) * 100))
-        );
-      } else {
-        throw new Error('No valid auth credentials found.');
-      }
+      const result = await fetchArxivPapers(
+        user.accessToken,
+        settings.senderEmail,
+        settings.maxEmails,
+        (loaded, total) => setProgress(Math.round((loaded / total) * 100))
+      );
       setPapers(result);
       saveCache(result);
     } catch (e) {
@@ -101,11 +86,11 @@ export function PapersProvider({ children }: { children: React.ReactNode }) {
       setLoading(false);
       setProgress(100);
     }
-  }, [user, settings]);
+  }, [user?.accessToken, settings]);
 
   useEffect(() => {
-    if (user) sync();
-  }, [user?.email]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (user?.accessToken) sync();
+  }, [user?.accessToken]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const updateSettings = useCallback((updates: Partial<Settings>) => {
     setSettings(prev => {
