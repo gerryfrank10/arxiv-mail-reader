@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Eye, EyeOff, Server, ChevronLeft, AlertCircle, Loader2 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { ImapConfig } from '../types';
@@ -80,6 +80,17 @@ export default function LoginPage() {
   const [showPass, setShowPass] = useState(false);
   const [imapError, setImapError] = useState('');
   const [imapLoading, setImapLoading] = useState(false);
+  // null = not yet checked, true = reachable, false = unreachable
+  const [backendAvailable, setBackendAvailable] = useState<boolean | null>(null);
+
+  // Probe the backend as soon as the IMAP form is shown
+  useEffect(() => {
+    if (step !== 'imap') return;
+    setBackendAvailable(null);
+    fetch('/api/health', { signal: AbortSignal.timeout(3000) })
+      .then(r => setBackendAvailable(r.ok))
+      .catch(() => setBackendAvailable(false));
+  }, [step]);
 
   function selectPreset(p: Preset) {
     setPreset(p);
@@ -94,19 +105,9 @@ export default function LoginPage() {
       setImapError('All fields are required.');
       return;
     }
+    if (!backendAvailable) return;
     setImapLoading(true);
     setImapError('');
-
-    // Test the connection by hitting the health + a quick validate
-    try {
-      const res = await fetch('/api/health');
-      if (!res.ok) throw new Error('Backend server is not running. Start it with: npm run dev:server');
-    } catch {
-      setImapError('Cannot reach the local backend server. Run: npm run dev:server in a separate terminal.');
-      setImapLoading(false);
-      return;
-    }
-
     const config: ImapConfig = { host, port, username, password };
     loginWithImap(config, username);
     setImapLoading(false);
@@ -208,6 +209,22 @@ export default function LoginPage() {
                 ))}
               </div>
 
+              {/* Backend availability banner */}
+              {backendAvailable === false && (
+                <div className="mb-4 rounded-xl border border-amber-700/60 bg-amber-900/30 px-4 py-3 text-xs text-amber-300 leading-relaxed">
+                  <p className="font-semibold mb-1">IMAP is not available here</p>
+                  <p>
+                    This hosted version only supports <strong>Gmail</strong>. To use iCloud, Outlook, or Yahoo, run the app locally:
+                  </p>
+                  <pre className="mt-2 bg-slate-900/60 rounded px-2 py-1.5 text-amber-200 text-[11px] select-all">npm run dev:all</pre>
+                </div>
+              )}
+              {backendAvailable === null && (
+                <div className="mb-4 flex items-center gap-2 text-xs text-slate-500">
+                  <Loader2 size={12} className="animate-spin" /> Checking backend…
+                </div>
+              )}
+
               <form onSubmit={handleImapSubmit} className="space-y-3">
                 {/* Host + Port */}
                 <div className="flex gap-2">
@@ -279,11 +296,11 @@ export default function LoginPage() {
 
                 <button
                   type="submit"
-                  disabled={imapLoading}
-                  className="w-full flex items-center justify-center gap-2 py-3 rounded-xl bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 transition-colors disabled:opacity-60 mt-1"
+                  disabled={imapLoading || backendAvailable === false || backendAvailable === null}
+                  className="w-full flex items-center justify-center gap-2 py-3 rounded-xl bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed mt-1"
                 >
                   {imapLoading && <Loader2 size={14} className="animate-spin" />}
-                  {imapLoading ? 'Connecting…' : 'Connect'}
+                  {imapLoading ? 'Connecting…' : backendAvailable === false ? 'Not available on hosted version' : 'Connect'}
                 </button>
               </form>
 
