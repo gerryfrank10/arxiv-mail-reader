@@ -27,6 +27,20 @@ const PRESETS = {
 app.get('/api/presets', (_req, res) => res.json(PRESETS));
 app.get('/api/health',  (_req, res) => res.json({ ok: true }));
 
+// Proxy arXiv API to avoid CORS issues in the browser
+app.get('/api/arxiv-abstract', async (req, res) => {
+  const { id } = req.query;
+  if (!id) return res.status(400).json({ error: 'id is required' });
+  try {
+    const upstream = await fetch(`https://arxiv.org/api/query?id_list=${encodeURIComponent(id)}`);
+    const xml = await upstream.text();
+    res.setHeader('Content-Type', 'application/xml');
+    res.send(xml);
+  } catch (err) {
+    res.status(502).json({ error: `Failed to fetch from arXiv: ${err.message}` });
+  }
+});
+
 app.post('/api/fetch-imap-emails', async (req, res) => {
   const { host, port = 993, username, password, senderEmail, maxEmails = 30 } = req.body;
 

@@ -33,10 +33,9 @@ export default function PaperDetail({ paper }: Props) {
     setFetchedAbstract(null);
     if (paper.abstract) return;
     setAbstractLoading(true);
-    fetch(`https://arxiv.org/api/query?id_list=${paper.arxivId}`)
+    fetch(`/api/arxiv-abstract?id=${encodeURIComponent(paper.arxivId)}`)
       .then(r => r.text())
       .then(xml => {
-        // Use DOMParser for reliable XML parsing instead of regex
         const doc = new DOMParser().parseFromString(xml, 'text/xml');
         const summary = doc.querySelector('entry > summary');
         const text = summary?.textContent?.trim().replace(/\s+/g, ' ') ?? '';
