@@ -36,9 +36,16 @@ export default function PaperDetail({ paper }: Props) {
     fetch(`/api/arxiv-abstract?id=${encodeURIComponent(paper.arxivId)}`)
       .then(r => r.text())
       .then(xml => {
-        const doc = new DOMParser().parseFromString(xml, 'text/xml');
-        const summary = doc.querySelector('entry > summary');
-        const text = summary?.textContent?.trim().replace(/\s+/g, ' ') ?? '';
+        // Parse as XML — arXiv responses use the Atom default namespace, so we use
+        // getElementsByTagNameNS('*', ...) to match by local name regardless of NS.
+        const doc = new DOMParser().parseFromString(xml, 'application/xml');
+        // Bail if the parse produced a <parsererror> element
+        if (doc.getElementsByTagName('parsererror').length > 0) return;
+        const entries  = doc.getElementsByTagNameNS('*', 'entry');
+        const entry    = entries.item(0);
+        if (!entry) return;
+        const summary  = entry.getElementsByTagNameNS('*', 'summary').item(0);
+        const text     = summary?.textContent?.trim().replace(/\s+/g, ' ') ?? '';
         if (text) {
           setFetchedAbstract(text);
           updatePaperAbstract(paper.id, text);
