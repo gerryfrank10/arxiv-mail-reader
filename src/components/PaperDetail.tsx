@@ -36,11 +36,14 @@ export default function PaperDetail({ paper }: Props) {
     fetch(`/api/arxiv-abstract?id=${encodeURIComponent(paper.arxivId)}`)
       .then(r => r.text())
       .then(xml => {
-        // Parse as XML — arXiv responses use the Atom default namespace, so we use
-        // getElementsByTagNameNS('*', ...) to match by local name regardless of NS.
+        // Refuse to parse if the response is clearly not arXiv's Atom XML
+        // (e.g. an HTML error page that would break DOMParser noisily)
+        const trimmed = xml.trimStart();
+        if (!trimmed.startsWith('<?xml') && !trimmed.startsWith('<feed')) return;
         const doc = new DOMParser().parseFromString(xml, 'application/xml');
         // Bail if the parse produced a <parsererror> element
         if (doc.getElementsByTagName('parsererror').length > 0) return;
+        // arXiv uses Atom default namespace, so match by local name regardless of NS
         const entries  = doc.getElementsByTagNameNS('*', 'entry');
         const entry    = entries.item(0);
         if (!entry) return;

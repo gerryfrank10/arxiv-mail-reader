@@ -28,14 +28,49 @@ app.get('/api/presets', (_req, res) => res.json(PRESETS));
 app.get('/api/health',  (_req, res) => res.json({ ok: true }));
 
 // Proxy arXiv API to avoid CORS issues in the browser
+// Simple in-memory cache + throttle to play nicely with arXiv's rate limits.
+// arXiv asks for a 3-second min delay between programmatic requests.
+const arxivCache = new Map(); // id -> { xml, ts }
+const ARXIV_CACHE_TTL = 24 * 60 * 60 * 1000; // 24h
+const ARXIV_MIN_GAP_MS = 3100;
+let lastArxivCall = 0;
+let arxivQueue = Promise.resolve();
+
+function fetchArxivThrottled(id) {
+  const job = arxivQueue.then(async () => {
+    const wait = Math.max(0, ARXIV_MIN_GAP_MS - (Date.now() - lastArxivCall));
+    if (wait > 0) await new Promise(r => setTimeout(r, wait));
+    lastArxivCall = Date.now();
+    const upstream = await fetch(`https://export.arxiv.org/api/query?id_list=${encodeURIComponent(id)}`);
+    return { status: upstream.status, body: await upstream.text() };
+  });
+  // Keep the queue chain alive even when a request fails
+  arxivQueue = job.catch(() => {});
+  return job;
+}
+
 app.get('/api/arxiv-abstract', async (req, res) => {
   const { id } = req.query;
   if (!id) return res.status(400).json({ error: 'id is required' });
-  try {
-    const upstream = await fetch(`https://arxiv.org/api/query?id_list=${encodeURIComponent(id)}`);
-    const xml = await upstream.text();
+
+  // Serve from cache when fresh
+  const cached = arxivCache.get(id);
+  if (cached && Date.now() - cached.ts < ARXIV_CACHE_TTL) {
     res.setHeader('Content-Type', 'application/xml');
-    res.send(xml);
+    return res.send(cached.xml);
+  }
+
+  try {
+    const { status, body } = await fetchArxivThrottled(id);
+    const trimmed = body.trimStart();
+    // arXiv API returns Atom XML. If we got HTML/plain text instead (rate-limit
+    // page, 4xx error, etc.) surface a 502 so the client doesn't try to parse it.
+    if (status !== 200 || (!trimmed.startsWith('<?xml') && !trimmed.startsWith('<feed'))) {
+      return res.status(502).json({ error: `arXiv ${status}: ${body.slice(0, 120).trim()}` });
+    }
+    arxivCache.set(id, { xml: body, ts: Date.now() });
+    res.setHeader('Content-Type', 'application/xml');
+    res.send(body);
   } catch (err) {
     res.status(502).json({ error: `Failed to fetch from arXiv: ${err.message}` });
   }
