@@ -15,7 +15,7 @@ interface Props {
 }
 
 export default function PaperDetail({ paper }: Props) {
-  const { papers, setSelectedPaper } = usePapers();
+  const { papers, setSelectedPaper, updatePaperAbstract } = usePapers();
   const [citationCount, setCitationCount] = useState<number | null>(null);
   const [fetchedAbstract, setFetchedAbstract] = useState<string | null>(null);
   const [abstractLoading, setAbstractLoading] = useState(false);
@@ -28,7 +28,7 @@ export default function PaperDetail({ paper }: Props) {
     });
   }, [paper.arxivId]);
 
-  // Auto-fetch abstract from arXiv API when digest email didn't include it
+  // Auto-fetch abstract from arXiv API when digest email didn't include it, then persist it
   useEffect(() => {
     setFetchedAbstract(null);
     if (paper.abstract) return;
@@ -37,11 +37,15 @@ export default function PaperDetail({ paper }: Props) {
       .then(r => r.text())
       .then(xml => {
         const match = xml.match(/<summary[^>]*>([\s\S]*?)<\/summary>/);
-        if (match) setFetchedAbstract(match[1].trim().replace(/\s+/g, ' '));
+        if (match) {
+          const abstract = match[1].trim().replace(/\s+/g, ' ');
+          setFetchedAbstract(abstract);
+          updatePaperAbstract(paper.id, abstract); // persist to DB + context
+        }
       })
       .catch(() => {})
       .finally(() => setAbstractLoading(false));
-  }, [paper.arxivId, paper.abstract]);
+  }, [paper.arxivId, paper.abstract, paper.id, updatePaperAbstract]);
 
   const { savePaper, unsavePaper, isSaved } = useLibrary();
   const saved = isSaved(paper.id);

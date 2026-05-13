@@ -3,7 +3,7 @@ import { Paper, Settings, SortField, SortDir } from '../types';
 import { fetchArxivPapers } from '../utils/gmailApi';
 import { fetchArxivPapersImap } from '../utils/imapApi';
 import { computeAssessment } from '../utils/assessment';
-import { dbGetAllPapers, dbUpsertPapers, dbGetMeta, dbSetMeta } from '../utils/paperDb';
+import { dbGetAllPapers, dbUpsertPapers, dbGetMeta, dbSetMeta, dbUpdateAbstract } from '../utils/paperDb';
 import { useAuth } from './AuthContext';
 import { AssessmentLabel } from '../utils/assessment';
 
@@ -52,6 +52,7 @@ interface PapersContextValue {
   setSortBy: (f: SortField) => void;
   setSortDir: (d: SortDir) => void;
   updateSettings: (s: Partial<Settings>) => void;
+  updatePaperAbstract: (id: string, abstract: string) => void;
   filteredPapers: Paper[];
   allCategories: string[];
   allAuthors: string[];
@@ -156,6 +157,13 @@ export function PapersProvider({ children }: { children: React.ReactNode }) {
     _setSelectedPaper(p);
   }, [markRead]);
 
+  const updatePaperAbstract = useCallback((id: string, abstract: string) => {
+    // Persist to IndexedDB and update in-memory state so the abstract is available everywhere
+    dbUpdateAbstract(id, abstract).catch(() => {});
+    setPapers(prev => prev.map(p => p.id === id ? { ...p, abstract } : p));
+    _setSelectedPaper(prev => prev?.id === id ? { ...prev, abstract } : prev);
+  }, []);
+
   const updateSettings = useCallback((updates: Partial<Settings>) => {
     setSettings(prev => {
       const next = { ...prev, ...updates };
@@ -221,7 +229,7 @@ export function PapersProvider({ children }: { children: React.ReactNode }) {
       sync, setSelectedPaper: setSelectedPaperFn, markRead,
       setSearchQuery, setSelectedCategory,
       setAuthorFilter, setAssessmentFilter, setSortBy, setSortDir,
-      updateSettings,
+      updateSettings, updatePaperAbstract,
       filteredPapers, allCategories, allAuthors, activeFilterCount,
     }}>
       {children}

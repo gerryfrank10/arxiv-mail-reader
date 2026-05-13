@@ -56,6 +56,22 @@ export async function dbUpsertPapers(papers: Paper[]): Promise<void> {
   });
 }
 
+export async function dbUpdateAbstract(id: string, abstract: string): Promise<void> {
+  const db = await open();
+  return new Promise((resolve, reject) => {
+    const tx    = db.transaction(PAPERS, 'readwrite');
+    const store = tx.objectStore(PAPERS);
+    const req   = store.get(id);
+    req.onsuccess = () => {
+      if (!req.result) { resolve(); return; }
+      const updated = { ...req.result, abstract };
+      store.put(updated);
+    };
+    tx.oncomplete = () => resolve();
+    tx.onerror    = () => reject(tx.error);
+  });
+}
+
 export async function dbGetMeta(key: string): Promise<unknown> {
   const db = await open();
   return new Promise((resolve, reject) => {
