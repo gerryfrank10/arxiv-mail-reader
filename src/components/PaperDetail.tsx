@@ -1,4 +1,4 @@
-import { ExternalLink, FileText, Code2, Calendar, HardDrive, MessageSquare, Bookmark, BookmarkCheck, Users, BarChart2, Layers, Quote, BookOpen, Check } from 'lucide-react';
+import { ExternalLink, FileText, Code2, Calendar, HardDrive, MessageSquare, Bookmark, BookmarkCheck, Users, BarChart2, Layers, Quote, BookOpen, Check, Sparkles, ChevronUp } from 'lucide-react';
 import { useState, useEffect, useCallback } from 'react';
 import { Paper } from '../types';
 import { CATEGORY_COLORS_LIGHT, getCategoryLabel, CATEGORY_COLORS } from '../utils/categories';
@@ -52,6 +52,85 @@ export default function PaperDetail({ paper }: Props) {
   const saved = isSaved(paper.id);
   const [notebookCopied, setNotebookCopied] = useState(false);
 
+  // AI Summary
+  const [summaryOpen,    setSummaryOpen]    = useState(false);
+  const [summaryLoading, setSummaryLoading] = useState(false);
+  const [summaryError,   setSummaryError]   = useState<string | null>(null);
+  const [summary,        setSummary]        = useState<{
+    tldr: string;
+    contributions: string[];
+    methodology: string;
+    results: string;
+    impact: string;
+  } | null>(null);
+
+  const { settings } = usePapers();
+  const displayAbstract = paper.abstract || fetchedAbstract || '';
+
+  // Reset summary when switching papers
+  useEffect(() => {
+    setSummary(null);
+    setSummaryOpen(false);
+    setSummaryError(null);
+  }, [paper.id]);
+
+  const handleSummarize = useCallback(async () => {
+    if (!settings.claudeApiKey) return;
+    if (summary) { setSummaryOpen(v => !v); return; }
+    setSummaryOpen(true);
+    setSummaryLoading(true);
+    setSummaryError(null);
+
+    const abstract = displayAbstract || 'Abstract not available.';
+    const prompt = `You are a research paper assistant. Summarize this paper concisely and return ONLY a JSON object.
+
+Title: ${paper.title}
+Authors: ${paper.authors}
+Abstract: ${abstract}
+
+Return exactly this JSON structure (no other text):
+{
+  "tldr": "1-2 sentence plain-English summary for a non-specialist",
+  "contributions": ["key contribution 1", "key contribution 2", "key contribution 3"],
+  "methodology": "brief description of methods/approach used",
+  "results": "main findings or outcomes",
+  "impact": "why this matters and potential applications"
+}`;
+
+    try {
+      const resp = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'x-api-key': settings.claudeApiKey,
+          'anthropic-version': '2023-06-01',
+          'anthropic-dangerous-direct-browser-access': 'true',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: 'claude-haiku-4-5-20251001',
+          max_tokens: 800,
+          messages: [{ role: 'user', content: prompt }],
+        }),
+        signal: AbortSignal.timeout(25000),
+      });
+
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({})) as { error?: { message?: string } };
+        throw new Error(err.error?.message ?? `API error ${resp.status}`);
+      }
+
+      const data = await resp.json() as { content: Array<{ text: string }> };
+      const text = data.content[0]?.text ?? '';
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) throw new Error('Could not parse response');
+      setSummary(JSON.parse(jsonMatch[0]));
+    } catch (e) {
+      setSummaryError(e instanceof Error ? e.message : 'Request failed');
+    } finally {
+      setSummaryLoading(false);
+    }
+  }, [settings.claudeApiKey, summary, paper.title, paper.authors, displayAbstract]);
+
   const openNotebookLM = useCallback(() => {
     navigator.clipboard.writeText(paper.pdfUrl).catch(() => {});
     setNotebookCopied(true);
@@ -59,7 +138,6 @@ export default function PaperDetail({ paper }: Props) {
     window.open('https://notebooklm.google.com', '_blank', 'noopener,noreferrer');
   }, [paper.pdfUrl]);
 
-  const displayAbstract = paper.abstract || fetchedAbstract || '';
   const abstractHtml = renderAbstract(displayAbstract);
   const assessment   = computeAssessment(paper);
   const related      = getRelatedPapers(paper, papers, 6);
@@ -255,7 +333,96 @@ export default function PaperDetail({ paper }: Props) {
             {notebookCopied ? <Check size={15} /> : <BookOpen size={15} />}
             {notebookCopied ? 'PDF URL copied!' : 'Open in NotebookLM'}
           </button>
+          <button
+            onClick={handleSummarize}
+            disabled={summaryLoading || !settings.claudeApiKey}
+            title={!settings.claudeApiKey ? 'Add a Claude API key in Settings to use AI summaries' : 'Summarize with Claude AI'}
+            className={`flex items-center gap-2 px-5 py-2.5 border text-sm font-medium rounded-lg transition-all disabled:opacity-40 disabled:cursor-not-allowed ${
+              summary && summaryOpen
+                ? 'border-purple-300 bg-purple-50 text-purple-700 hover:bg-purple-100'
+                : 'border-purple-200 bg-white text-purple-700 hover:bg-purple-50'
+            }`}
+          >
+            {summaryLoading ? (
+              <svg className="animate-spin w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+              </svg>
+            ) : summary && summaryOpen ? (
+              <ChevronUp size={15} />
+            ) : (
+              <Sparkles size={15} />
+            )}
+            {summaryLoading ? 'Summarizing…' : summary ? (summaryOpen ? 'Hide Summary' : 'Show Summary') : 'Summarize'}
+          </button>
         </div>
+
+        {/* AI Summary panel */}
+        {summaryOpen && (
+          <div className="mb-8 rounded-xl border border-purple-200 bg-purple-50/40 p-5 space-y-4">
+            <div className="flex items-center gap-2">
+              <Sparkles size={14} className="text-purple-500" />
+              <h2 className="text-xs font-semibold uppercase tracking-widest text-purple-600">AI Summary</h2>
+            </div>
+            {summaryLoading && (
+              <div className="flex items-center gap-2 text-sm text-purple-500">
+                <svg className="animate-spin w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                </svg>
+                Generating summary…
+              </div>
+            )}
+            {summaryError && (
+              <p className="text-sm text-red-500 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{summaryError}</p>
+            )}
+            {summary && (
+              <div className="space-y-4">
+                {/* TL;DR */}
+                <div className="bg-white rounded-lg border border-purple-200 p-4">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-purple-400 mb-1.5">TL;DR</p>
+                  <p className="text-sm text-slate-700 leading-relaxed">{summary.tldr}</p>
+                </div>
+                {/* Contributions */}
+                {summary.contributions?.length > 0 && (
+                  <div>
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-purple-400 mb-2">Key Contributions</p>
+                    <ul className="space-y-1.5">
+                      {summary.contributions.map((c, i) => (
+                        <li key={i} className="flex items-start gap-2 text-sm text-slate-700">
+                          <span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-purple-400 shrink-0" />
+                          {c}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {/* Methodology + Results grid */}
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  {summary.methodology && (
+                    <div className="bg-white rounded-lg border border-purple-200 p-3">
+                      <p className="text-[10px] font-semibold uppercase tracking-wider text-purple-400 mb-1">Methodology</p>
+                      <p className="text-sm text-slate-700 leading-relaxed">{summary.methodology}</p>
+                    </div>
+                  )}
+                  {summary.results && (
+                    <div className="bg-white rounded-lg border border-purple-200 p-3">
+                      <p className="text-[10px] font-semibold uppercase tracking-wider text-purple-400 mb-1">Results</p>
+                      <p className="text-sm text-slate-700 leading-relaxed">{summary.results}</p>
+                    </div>
+                  )}
+                </div>
+                {/* Impact */}
+                {summary.impact && (
+                  <div className="bg-purple-100/60 rounded-lg border border-purple-200 p-3">
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-purple-400 mb-1">Impact & Applications</p>
+                    <p className="text-sm text-slate-700 leading-relaxed">{summary.impact}</p>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Related papers */}
         {related.length > 0 && (
