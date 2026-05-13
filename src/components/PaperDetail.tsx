@@ -33,14 +33,16 @@ export default function PaperDetail({ paper }: Props) {
     setFetchedAbstract(null);
     if (paper.abstract) return;
     setAbstractLoading(true);
-    fetch(`https://export.arxiv.org/api/query?id_list=${paper.arxivId}`)
+    fetch(`https://arxiv.org/api/query?id_list=${paper.arxivId}`)
       .then(r => r.text())
       .then(xml => {
-        const match = xml.match(/<summary[^>]*>([\s\S]*?)<\/summary>/);
-        if (match) {
-          const abstract = match[1].trim().replace(/\s+/g, ' ');
-          setFetchedAbstract(abstract);
-          updatePaperAbstract(paper.id, abstract); // persist to DB + context
+        // Use DOMParser for reliable XML parsing instead of regex
+        const doc = new DOMParser().parseFromString(xml, 'text/xml');
+        const summary = doc.querySelector('entry > summary');
+        const text = summary?.textContent?.trim().replace(/\s+/g, ' ') ?? '';
+        if (text) {
+          setFetchedAbstract(text);
+          updatePaperAbstract(paper.id, text);
         }
       })
       .catch(() => {})
