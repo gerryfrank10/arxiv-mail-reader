@@ -81,7 +81,7 @@ export default function PaperDetail({ paper }: Props) {
     setSummaryLoading(true);
     setSummaryError(null);
 
-    const abstract = displayAbstract || 'Abstract not available.';
+    const abstract = (paper.abstract || fetchedAbstract || '') || 'Abstract not available.';
     const prompt = `You are a research paper assistant. Summarize this paper concisely and return ONLY a JSON object.
 
 Title: ${paper.title}
@@ -129,7 +129,7 @@ Return exactly this JSON structure (no other text):
     } finally {
       setSummaryLoading(false);
     }
-  }, [settings.claudeApiKey, summary, paper.title, paper.authors, displayAbstract]);
+  }, [settings.claudeApiKey, summary, paper.title, paper.authors, paper.abstract, fetchedAbstract]);
 
   const openNotebookLM = useCallback(() => {
     navigator.clipboard.writeText(paper.pdfUrl).catch(() => {});
