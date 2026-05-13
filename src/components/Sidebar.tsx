@@ -138,7 +138,11 @@ export default function Sidebar({ activeView, setActiveView, onAISuggest }: Prop
         )}
 
         {error && (
-          <div className="mx-3 mt-3 px-3 py-2 rounded-lg bg-red-900/30 border border-red-800 text-red-400 text-xs">{error}</div>
+          <div className={`mx-3 mt-3 px-3 py-2 rounded-lg border text-xs ${
+            error.startsWith('You are offline')
+              ? 'bg-amber-900/20 border-amber-700 text-amber-400'
+              : 'bg-red-900/30 border-red-800 text-red-400'
+          }`}>{error}</div>
         )}
 
         {/* Inbox / Library tabs */}

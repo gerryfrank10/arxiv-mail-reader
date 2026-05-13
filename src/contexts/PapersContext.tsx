@@ -95,6 +95,10 @@ export function PapersProvider({ children }: { children: React.ReactNode }) {
 
   const sync = useCallback(async (force = false) => {
     if (!user || (!dbReady && !force)) return;
+    if (!navigator.onLine) {
+      setError('You are offline. Showing cached papers.');
+      return;
+    }
     setLoading(true);
     setError(null);
     setProgress(0);
