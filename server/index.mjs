@@ -32,17 +32,30 @@ app.get('/api/health',  (_req, res) => res.json({ ok: true }));
 // arXiv asks for a 3-second min delay between programmatic requests.
 const arxivCache = new Map(); // id -> { xml, ts }
 const ARXIV_CACHE_TTL = 24 * 60 * 60 * 1000; // 24h
-const ARXIV_MIN_GAP_MS = 3100;
+const ARXIV_MIN_GAP_MS = 3200;
+const ARXIV_MAX_RETRIES = 3;
 let lastArxivCall = 0;
 let arxivQueue = Promise.resolve();
 
+async function doFetchArxiv(id) {
+  const wait = Math.max(0, ARXIV_MIN_GAP_MS - (Date.now() - lastArxivCall));
+  if (wait > 0) await new Promise(r => setTimeout(r, wait));
+  lastArxivCall = Date.now();
+  const upstream = await fetch(`https://export.arxiv.org/api/query?id_list=${encodeURIComponent(id)}`);
+  return { status: upstream.status, body: await upstream.text() };
+}
+
 function fetchArxivThrottled(id) {
   const job = arxivQueue.then(async () => {
-    const wait = Math.max(0, ARXIV_MIN_GAP_MS - (Date.now() - lastArxivCall));
-    if (wait > 0) await new Promise(r => setTimeout(r, wait));
-    lastArxivCall = Date.now();
-    const upstream = await fetch(`https://export.arxiv.org/api/query?id_list=${encodeURIComponent(id)}`);
-    return { status: upstream.status, body: await upstream.text() };
+    let result = await doFetchArxiv(id);
+    // Retry on rate-limit with exponential backoff
+    for (let attempt = 1; attempt <= ARXIV_MAX_RETRIES && result.status === 429; attempt++) {
+      const backoff = 4000 * Math.pow(2, attempt - 1); // 4s, 8s, 16s
+      console.warn(`[arxiv] rate-limited on id=${id}, retry ${attempt}/${ARXIV_MAX_RETRIES} in ${backoff}ms`);
+      await new Promise(r => setTimeout(r, backoff));
+      result = await doFetchArxiv(id);
+    }
+    return result;
   });
   // Keep the queue chain alive even when a request fails
   arxivQueue = job.catch(() => {});

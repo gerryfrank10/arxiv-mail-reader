@@ -20,6 +20,8 @@ export default function PaperDetail({ paper }: Props) {
   const [citationCount, setCitationCount] = useState<number | null>(null);
   const [fetchedAbstract, setFetchedAbstract] = useState<string | null>(null);
   const [abstractLoading, setAbstractLoading] = useState(false);
+  const [abstractError, setAbstractError] = useState<string | null>(null);
+  const [abstractRetryNonce, setAbstractRetryNonce] = useState(0);
 
   useEffect(() => {
     setCitationCount(null);
@@ -32,32 +34,55 @@ export default function PaperDetail({ paper }: Props) {
   // Auto-fetch abstract from arXiv API when digest email didn't include it, then persist it
   useEffect(() => {
     setFetchedAbstract(null);
+    setAbstractError(null);
     if (paper.abstract) return;
     setAbstractLoading(true);
-    fetch(`/api/arxiv-abstract?id=${encodeURIComponent(paper.arxivId)}`)
-      .then(r => r.text())
-      .then(xml => {
-        // Refuse to parse if the response is clearly not arXiv's Atom XML
-        // (e.g. an HTML error page that would break DOMParser noisily)
+    let cancelled = false;
+    (async () => {
+      try {
+        const resp = await fetch(`/api/arxiv-abstract?id=${encodeURIComponent(paper.arxivId)}`);
+        if (cancelled) return;
+        if (!resp.ok) {
+          const err = await resp.json().catch(() => ({})) as { error?: string };
+          const msg = err.error?.includes('429') || err.error?.toLowerCase().includes('rate')
+            ? 'arXiv is rate-limiting us — try again in a few seconds.'
+            : err.error ?? `Could not fetch abstract (HTTP ${resp.status})`;
+          setAbstractError(msg);
+          return;
+        }
+        const xml = await resp.text();
         const trimmed = xml.trimStart();
-        if (!trimmed.startsWith('<?xml') && !trimmed.startsWith('<feed')) return;
+        if (!trimmed.startsWith('<?xml') && !trimmed.startsWith('<feed')) {
+          setAbstractError('Unexpected response from arXiv.');
+          return;
+        }
         const doc = new DOMParser().parseFromString(xml, 'application/xml');
-        // Bail if the parse produced a <parsererror> element
-        if (doc.getElementsByTagName('parsererror').length > 0) return;
-        // arXiv uses Atom default namespace, so match by local name regardless of NS
-        const entries  = doc.getElementsByTagNameNS('*', 'entry');
-        const entry    = entries.item(0);
-        if (!entry) return;
-        const summary  = entry.getElementsByTagNameNS('*', 'summary').item(0);
-        const text     = summary?.textContent?.trim().replace(/\s+/g, ' ') ?? '';
+        if (doc.getElementsByTagName('parsererror').length > 0) {
+          setAbstractError('Could not parse arXiv response.');
+          return;
+        }
+        const entry = doc.getElementsByTagNameNS('*', 'entry').item(0);
+        if (!entry) {
+          setAbstractError('arXiv has no entry for this ID.');
+          return;
+        }
+        const summary = entry.getElementsByTagNameNS('*', 'summary').item(0);
+        const text    = summary?.textContent?.trim().replace(/\s+/g, ' ') ?? '';
+        if (cancelled) return;
         if (text) {
           setFetchedAbstract(text);
           updatePaperAbstract(paper.id, text);
+        } else {
+          setAbstractError('No abstract found in arXiv response.');
         }
-      })
-      .catch(() => {})
-      .finally(() => setAbstractLoading(false));
-  }, [paper.arxivId, paper.abstract, paper.id, updatePaperAbstract]);
+      } catch (e) {
+        if (!cancelled) setAbstractError(e instanceof Error ? e.message : 'Network error');
+      } finally {
+        if (!cancelled) setAbstractLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [paper.arxivId, paper.abstract, paper.id, updatePaperAbstract, abstractRetryNonce]);
 
   const { savePaper, unsavePaper, isSaved } = useLibrary();
   const saved = isSaved(paper.id);
@@ -285,6 +310,16 @@ Return exactly this JSON structure (no other text):
                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
               </svg>
               Fetching abstract from arXiv…
+            </div>
+          ) : abstractError && !displayAbstract ? (
+            <div className="flex items-center gap-3 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2.5">
+              <span className="flex-1">{abstractError}</span>
+              <button
+                onClick={() => setAbstractRetryNonce(n => n + 1)}
+                className="px-3 py-1 text-xs font-medium bg-white border border-amber-300 text-amber-700 rounded-md hover:bg-amber-100 transition-colors"
+              >
+                Retry
+              </button>
             </div>
           ) : (
             <div
