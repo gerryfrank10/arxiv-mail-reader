@@ -1,9 +1,10 @@
 import { useState } from 'react';
-import { BookMarked, Search, Trash2, ExternalLink, BarChart2 } from 'lucide-react';
+import { BookMarked, Search, Trash2, ExternalLink, BarChart2, Download } from 'lucide-react';
 import { useLibrary } from '../contexts/LibraryContext';
 import { usePapers } from '../contexts/PapersContext';
 import { computeAssessment, ASSESSMENT_BADGE, ASSESSMENT_BAR } from '../utils/assessment';
 import { CATEGORY_COLORS_LIGHT, getCategoryLabel } from '../utils/categories';
+import { downloadBibFile } from '../utils/citationFormats';
 import { format } from 'date-fns';
 
 export default function LibraryView() {
@@ -46,7 +47,7 @@ export default function LibraryView() {
     <div className="h-full overflow-y-auto main-scroll">
       <div className="max-w-5xl mx-auto px-8 py-8 fade-in">
         {/* Header */}
-        <div className="flex items-center justify-between mb-6">
+        <div className="flex items-center justify-between mb-6 gap-3">
           <div>
             <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
               <BookMarked size={22} className="text-amber-500" />
@@ -56,6 +57,14 @@ export default function LibraryView() {
               {totalSaved} saved paper{totalSaved !== 1 ? 's' : ''} — stored permanently
             </p>
           </div>
+          <button
+            onClick={() => downloadBibFile(savedPapers, `arxiv-library-${format(new Date(), 'yyyy-MM-dd')}.bib`)}
+            title="Export all saved papers as a BibTeX file"
+            className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 text-slate-700 text-sm font-medium rounded-lg hover:bg-slate-50 hover:border-slate-300 transition-all shadow-sm"
+          >
+            <Download size={14} />
+            Export .bib
+          </button>
         </div>
 
         {/* Quick stats */}

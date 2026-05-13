@@ -9,6 +9,7 @@ import { fetchCitationCounts } from '../utils/citations';
 import { useLibrary } from '../contexts/LibraryContext';
 import { usePapers } from '../contexts/PapersContext';
 import { format } from 'date-fns';
+import CiteMenu from './CiteMenu';
 
 interface Props {
   paper: Paper;
@@ -331,6 +332,7 @@ Return exactly this JSON structure (no other text):
             <Layers size={15} />
             Google Scholar
           </a>
+          <CiteMenu paper={paper} />
           <button
             onClick={openNotebookLM}
             title="Copy PDF URL and open NotebookLM"
