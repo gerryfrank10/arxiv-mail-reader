@@ -26,9 +26,12 @@ export default function PaperCard({ paper, isSelected, isSaved, isRead = true, o
   }
 
   return (
-    <button
+    <div
       onClick={onClick}
-      className={`w-full text-left px-4 py-3.5 border-b border-slate-800/60 transition-all group ${
+      role="button"
+      tabIndex={0}
+      onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') onClick(); }}
+      className={`w-full text-left px-4 py-3.5 border-b border-slate-800/60 transition-all group cursor-pointer ${
         isSelected
           ? 'bg-blue-600/20 border-l-2 border-l-blue-500'
           : 'hover:bg-slate-800/40 border-l-2 border-l-transparent'
@@ -85,6 +88,6 @@ export default function PaperCard({ paper, isSelected, isSaved, isRead = true, o
           {assessment.label}
         </span>
       </div>
-    </button>
+    </div>
   );
 }
