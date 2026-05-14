@@ -23,6 +23,7 @@ export default function DiscoverView() {
   const [error, setError]               = useState<string | null>(null);
   const [groups, setGroups]             = useState<DiscoverGroups | null>(null);
   const [total, setTotal]               = useState<number>(0);
+  const [source, setSource]             = useState<'semantic-scholar' | 'openalex' | null>(null);
 
   const runSearch = useCallback(async (q: string) => {
     const trimmed = q.trim();
@@ -34,6 +35,7 @@ export default function DiscoverView() {
     try {
       const result = await s2Search(trimmed, { limit: 100, settings });
       setTotal(result.total ?? result.data.length);
+      setSource(result.source ?? 'semantic-scholar');
       setGroups(groupForDiscover(result.data));
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Search failed';
@@ -164,9 +166,16 @@ export default function DiscoverView() {
         {/* Results */}
         {!loading && hasResults && groups && (
           <div className="mt-10">
-            <p className="text-sm text-slate-500 mb-6">
-              Found <span className="font-semibold text-slate-700">{total.toLocaleString()}</span> papers on{' '}
-              <span className="font-semibold text-slate-700">"{activeQuery}"</span>. Showing the highest-signal results.
+            <p className="text-sm text-slate-500 mb-6 flex flex-wrap items-center gap-2">
+              <span>
+                Found <span className="font-semibold text-slate-700">{total.toLocaleString()}</span> papers on{' '}
+                <span className="font-semibold text-slate-700">"{activeQuery}"</span>. Showing the highest-signal results.
+              </span>
+              {source === 'openalex' && (
+                <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-amber-50 border border-amber-200 text-amber-700" title="Semantic Scholar rate-limited the request — results from OpenAlex (which doesn't have TLDRs).">
+                  via OpenAlex (S2 rate-limited)
+                </span>
+              )}
             </p>
 
             {groups.foundational.length > 0 && (

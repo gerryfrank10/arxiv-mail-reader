@@ -28,6 +28,7 @@ export default function PaperDiscoveryPanel({ paper }: Props) {
   const [references,  setReferences]  = useState<S2ReferenceRow[] | null>(null);
   const [citations,   setCitations]   = useState<S2CitationRow[] | null>(null);
   const [similar,     setSimilar]     = useState<S2Paper[] | null>(null);
+  const [source,      setSource]      = useState<'semantic-scholar' | 'openalex' | null>(null);
   const [retryNonce,  setRetryNonce]  = useState(0);
 
   const load = useCallback(async (which: Tab, ctrl: AbortController) => {
@@ -37,12 +38,15 @@ export default function PaperDiscoveryPanel({ paper }: Props) {
       if (which === 'references') {
         const r = await s2References(paper.arxivId, { limit: 40, signal: ctrl.signal, settings });
         setReferences(r.data ?? []);
+        setSource(r.source ?? 'semantic-scholar');
       } else if (which === 'citations') {
         const r = await s2Citations(paper.arxivId, { limit: 40, signal: ctrl.signal, settings });
         setCitations(r.data ?? []);
+        setSource(r.source ?? 'semantic-scholar');
       } else {
         const r = await s2Recommendations(paper.arxivId, { limit: 20, signal: ctrl.signal, settings });
         setSimilar(r.recommendedPapers ?? []);
+        setSource('semantic-scholar');
       }
     } catch (e) {
       if (e instanceof DOMException && e.name === 'AbortError') return;
@@ -84,7 +88,9 @@ export default function PaperDiscoveryPanel({ paper }: Props) {
       <div className="flex items-center gap-2 mb-4">
         <GitFork size={15} className="text-slate-500" />
         <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-500">Explore citation graph</h2>
-        <span className="text-[10px] text-slate-400 ml-1">via Semantic Scholar</span>
+        <span className="text-[10px] text-slate-400 ml-1">
+          via {source === 'openalex' ? 'OpenAlex' : 'Semantic Scholar'}
+        </span>
       </div>
 
       {/* Tabs */}

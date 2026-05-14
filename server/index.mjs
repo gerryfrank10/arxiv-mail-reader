@@ -132,6 +132,14 @@ const S2_PAPER_FIELDS = [
   'publicationTypes', 'openAccessPdf', 'url', 'tldr',
 ].join(',');
 
+// References/citations endpoints don't accept the dotted author or tldr
+// sub-fields under the nested citedPaper./citingPaper. prefix.
+const S2_NESTED_PAPER_FIELDS = [
+  'paperId', 'externalIds', 'title', 'abstract', 'authors',
+  'year', 'venue', 'citationCount', 'influentialCitationCount',
+  'publicationTypes', 'openAccessPdf', 'url',
+].join(',');
+
 async function s2Get(pathWithQuery, apiKey) {
   const cached = s2Cache.get(pathWithQuery);
   if (cached && Date.now() - cached.ts < S2_CACHE_TTL_MS) return cached.data;
@@ -145,8 +153,8 @@ async function s2Get(pathWithQuery, apiKey) {
       'User-Agent': 'arxiv-mail-reader/1.0 (https://github.com/gerryfrank10/arxiv-mail-reader)',
     };
     if (apiKey) headers['x-api-key'] = apiKey;
-    // Retry on 429 with backoff: 3s, 8s, 20s
-    const BACKOFFS = [3000, 8000, 20000];
+    // Short backoff because we have OpenAlex as a fallback for search
+    const BACKOFFS = [2000, 5000];
     let r;
     for (let i = 0; i <= BACKOFFS.length; i++) {
       r = await fetch(url, { headers });
@@ -157,12 +165,89 @@ async function s2Get(pathWithQuery, apiKey) {
     }
     if (!r.ok) {
       const text = await r.text().catch(() => '');
-      throw new Error(`S2 ${r.status}: ${text.slice(0, 140)}`);
+      const err = new Error(`S2 ${r.status}: ${text.slice(0, 140)}`);
+      err.status = r.status;
+      throw err;
     }
     const data = await r.json();
     s2Cache.set(pathWithQuery, { data, ts: Date.now() });
     return data;
   }).catch(err => { throw err; });
+}
+
+// ---------- OpenAlex fallback (no rate limits, polite-pool via mailto) ----------
+const POLITE_MAILTO = process.env.OPENALEX_MAILTO || 'arxiv-mail-reader@example.com';
+const OPENALEX_MIN_GAP_MS = 200; // very generous, OpenAlex doesn't really throttle
+let lastOpenAlexCall = 0;
+let openAlexQueue = Promise.resolve();
+
+async function openAlexGet(pathWithQuery) {
+  const cacheKey = `oa:${pathWithQuery}`;
+  const cached = s2Cache.get(cacheKey);
+  if (cached && Date.now() - cached.ts < S2_CACHE_TTL_MS) return cached.data;
+  return openAlexQueue = openAlexQueue.then(async () => {
+    const wait = Math.max(0, OPENALEX_MIN_GAP_MS - (Date.now() - lastOpenAlexCall));
+    if (wait > 0) await new Promise(r => setTimeout(r, wait));
+    lastOpenAlexCall = Date.now();
+    const sep = pathWithQuery.includes('?') ? '&' : '?';
+    const url = `https://api.openalex.org${pathWithQuery}${sep}mailto=${encodeURIComponent(POLITE_MAILTO)}`;
+    const r = await fetch(url, {
+      headers: {
+        Accept: 'application/json',
+        'User-Agent': `arxiv-mail-reader/1.0 (mailto:${POLITE_MAILTO})`,
+      },
+    });
+    if (!r.ok) {
+      const text = await r.text().catch(() => '');
+      throw new Error(`OpenAlex ${r.status}: ${text.slice(0, 140)}`);
+    }
+    const data = await r.json();
+    s2Cache.set(cacheKey, { data, ts: Date.now() });
+    return data;
+  }).catch(err => { throw err; });
+}
+
+// Map an OpenAlex Work to the S2Paper shape used by the client
+function openAlexToS2Paper(w) {
+  const arxivId = (() => {
+    // OpenAlex sometimes puts arXiv in `ids.arxiv` (full URL) or in `locations`
+    const fromIds = w.ids?.arxiv;
+    if (typeof fromIds === 'string') {
+      const m = fromIds.match(/(\d{4}\.\d{4,5}(v\d+)?)/);
+      if (m) return m[1];
+    }
+    // Look in primary_location and locations for arxiv urls
+    const urls = [w.primary_location?.landing_page_url, ...(w.locations ?? []).map(l => l?.landing_page_url)].filter(Boolean);
+    for (const u of urls) {
+      const m = String(u).match(/arxiv\.org\/abs\/(\d{4}\.\d{4,5}(v\d+)?)/i);
+      if (m) return m[1];
+    }
+    return undefined;
+  })();
+  const doi = w.doi?.replace(/^https?:\/\/(dx\.)?doi\.org\//i, '');
+  const oaUrl = w.open_access?.oa_url || w.primary_location?.pdf_url;
+  return {
+    paperId: String(w.id ?? '').replace('https://openalex.org/', ''),
+    externalIds: {
+      ...(arxivId ? { ArXiv: arxivId } : {}),
+      ...(doi     ? { DOI: doi }       : {}),
+      OpenAlex: String(w.id ?? '').replace('https://openalex.org/', ''),
+    },
+    title:        w.title || w.display_name || '(untitled)',
+    abstract:     null,
+    authors:      (w.authorships ?? []).map(a => ({
+      authorId: String(a?.author?.id ?? '').replace('https://openalex.org/', '') || undefined,
+      name:     a?.author?.display_name ?? '',
+    })),
+    year:         w.publication_year ?? null,
+    venue:        w.primary_location?.source?.display_name ?? w.host_venue?.display_name ?? null,
+    citationCount: w.cited_by_count ?? 0,
+    influentialCitationCount: 0,
+    publicationTypes: w.type ? [w.type] : null,
+    openAccessPdf: oaUrl ? { url: oaUrl } : null,
+    url:          w.id,
+    tldr:         null,
+  };
 }
 
 // Pull optional S2 key from request header so the client can pass through a
@@ -172,6 +257,7 @@ function s2KeyFrom(req) {
 }
 
 // GET /api/s2/search?q=world+models&limit=100
+// Falls back to OpenAlex when Semantic Scholar rate-limits us.
 app.get('/api/s2/search', async (req, res) => {
   const q = String(req.query.q ?? '').trim();
   if (!q) return res.status(400).json({ error: 'q is required' });
@@ -179,9 +265,29 @@ app.get('/api/s2/search', async (req, res) => {
   const params = new URLSearchParams({ query: q, limit: String(limit), fields: S2_PAPER_FIELDS });
   try {
     const data = await s2Get(`/graph/v1/paper/search?${params}`, s2KeyFrom(req));
-    res.json(data);
+    res.json({ ...data, source: 'semantic-scholar' });
   } catch (e) {
-    res.status(502).json({ error: e.message });
+    // On rate limit / failure, fall back to OpenAlex with the same response shape
+    console.warn(`[search] S2 failed ("${e.message}") — falling back to OpenAlex`);
+    try {
+      const oaParams = new URLSearchParams({
+        search: q,
+        per_page: String(Math.min(limit, 50)),
+        sort: 'relevance_score:desc',
+      });
+      const oaData = await openAlexGet(`/works?${oaParams}`);
+      const works  = (oaData.results ?? []).map(openAlexToS2Paper);
+      res.json({
+        total: oaData.meta?.count ?? works.length,
+        offset: 0,
+        data: works,
+        source: 'openalex',
+      });
+    } catch (e2) {
+      res.status(502).json({
+        error: `Both Semantic Scholar and OpenAlex failed (S2: ${e.message}; OpenAlex: ${e2.message})`,
+      });
+    }
   }
 });
 
@@ -203,15 +309,28 @@ app.get('/api/s2/paper/:id/references', async (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 30, 100);
   const params = new URLSearchParams({
     limit: String(limit),
-    fields: ['contexts', 'intents', 'isInfluential', 'citedPaper.' + S2_PAPER_FIELDS.split(',').join(',citedPaper.')].join(','),
+    fields: 'contexts,intents,isInfluential,' + S2_NESTED_PAPER_FIELDS.split(',').map(f => `citedPaper.${f}`).join(','),
   });
-  // The S2 API expects fields prefixed per nested object; the simpler form below works too:
-  params.set('fields', 'contexts,intents,isInfluential,' + S2_PAPER_FIELDS.split(',').map(f => `citedPaper.${f}`).join(','));
   try {
     const data = await s2Get(`/graph/v1/paper/${encodeURIComponent(id)}/references?${params}`, s2KeyFrom(req));
     res.json(data);
   } catch (e) {
-    res.status(502).json({ error: e.message });
+    // Fallback: OpenAlex `referenced_works` on the paper
+    console.warn(`[refs] S2 failed for ${id} ("${e.message}") — falling back to OpenAlex`);
+    try {
+      const oaId = await openAlexIdFromArxiv(req.params.id);
+      if (!oaId) throw new Error('No OpenAlex id found for this paper');
+      const work = await openAlexGet(`/works/${encodeURIComponent(oaId)}`);
+      const refIds = (work.referenced_works ?? []).slice(0, limit);
+      if (refIds.length === 0) return res.json({ data: [], source: 'openalex' });
+      // Batch-fetch the referenced works
+      const filter = `openalex:${refIds.map(u => String(u).replace('https://openalex.org/', '')).join('|')}`;
+      const batch  = await openAlexGet(`/works?filter=${encodeURIComponent(filter)}&per_page=${refIds.length}`);
+      const data   = (batch.results ?? []).map(w => ({ citedPaper: openAlexToS2Paper(w) }));
+      res.json({ data, source: 'openalex' });
+    } catch (e2) {
+      res.status(502).json({ error: `S2 and OpenAlex both failed (${e.message}; ${e2.message})` });
+    }
   }
 });
 
@@ -221,15 +340,63 @@ app.get('/api/s2/paper/:id/citations', async (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 30, 100);
   const params = new URLSearchParams({
     limit: String(limit),
-    fields: 'contexts,intents,isInfluential,' + S2_PAPER_FIELDS.split(',').map(f => `citingPaper.${f}`).join(','),
+    fields: 'contexts,intents,isInfluential,' + S2_NESTED_PAPER_FIELDS.split(',').map(f => `citingPaper.${f}`).join(','),
   });
   try {
     const data = await s2Get(`/graph/v1/paper/${encodeURIComponent(id)}/citations?${params}`, s2KeyFrom(req));
     res.json(data);
   } catch (e) {
-    res.status(502).json({ error: e.message });
+    // Fallback: OpenAlex `cites:Wxxx` filter
+    console.warn(`[cites] S2 failed for ${id} ("${e.message}") — falling back to OpenAlex`);
+    try {
+      const oaId = await openAlexIdFromArxiv(req.params.id);
+      if (!oaId) throw new Error('No OpenAlex id found for this paper');
+      const oaShortId = String(oaId).replace('https://openalex.org/', '');
+      const batch = await openAlexGet(
+        `/works?filter=cites:${encodeURIComponent(oaShortId)}&per_page=${limit}&sort=cited_by_count:desc`,
+      );
+      const data = (batch.results ?? []).map(w => ({ citingPaper: openAlexToS2Paper(w) }));
+      res.json({ data, source: 'openalex' });
+    } catch (e2) {
+      res.status(502).json({ error: `S2 and OpenAlex both failed (${e.message}; ${e2.message})` });
+    }
   }
 });
+
+// Resolve an arXiv ID (or already-OpenAlex id) to an OpenAlex work id.
+// Recent arXiv papers have DOIs of the form 10.48550/arXiv.{arxivId}.
+// Older papers (pre-2022) often don't — for those we fall back to a
+// landing_page_url search.
+async function openAlexIdFromArxiv(raw) {
+  const s = String(raw).trim();
+  if (/^W\d+$/i.test(s)) return `https://openalex.org/${s}`;
+  if (s.startsWith('https://openalex.org/W')) return s;
+  const arxivMatch = s.match(/^(?:arXiv:)?(\d{4}\.\d{4,5})(?:v\d+)?$/i) || s.match(/^([a-z-]+\/\d{7})$/i);
+  if (!arxivMatch) return null;
+  const arxivId = arxivMatch[1];
+
+  // 1. Try direct DOI lookup (works for papers since ~2022)
+  try {
+    const work = await openAlexGet(`/works/doi:10.48550/arXiv.${encodeURIComponent(arxivId)}`);
+    if (work?.id) return work.id;
+  } catch { /* fall through */ }
+
+  // 2. Try searching for the landing-page URL substring
+  try {
+    const search = await openAlexGet(
+      `/works?filter=locations.landing_page_url.search:${encodeURIComponent(`arxiv.org/abs/${arxivId}`)}&per_page=1`
+    );
+    if (search?.results?.[0]?.id) return search.results[0].id;
+  } catch { /* fall through */ }
+
+  // 3. Final fallback: a free-text search for the arXiv id string
+  try {
+    const search = await openAlexGet(`/works?search=${encodeURIComponent(arxivId)}&per_page=1`);
+    return search?.results?.[0]?.id ?? null;
+  } catch {
+    return null;
+  }
+}
 
 // GET /api/s2/paper/:id/recommendations
 app.get('/api/s2/paper/:id/recommendations', async (req, res) => {

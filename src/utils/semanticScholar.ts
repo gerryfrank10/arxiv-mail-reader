@@ -20,6 +20,7 @@ export interface S2SearchResult {
   total?: number;
   offset?: number;
   data: S2Paper[];
+  source?: 'semantic-scholar' | 'openalex';
 }
 
 export function s2Search(query: string, opts: { limit?: number; signal?: AbortSignal; settings?: Settings }) {
@@ -31,11 +32,11 @@ export interface S2ReferenceRow  { isInfluential?: boolean; intents?: string[]; 
 export interface S2CitationRow   { isInfluential?: boolean; intents?: string[]; citingPaper: S2Paper }
 
 export function s2References(id: string, opts: { limit?: number; signal?: AbortSignal; settings?: Settings }) {
-  return getJson<{ data: S2ReferenceRow[] }>(`/api/s2/paper/${encodeURIComponent(id)}/references?limit=${opts.limit ?? 40}`, opts.settings, opts.signal);
+  return getJson<{ data: S2ReferenceRow[]; source?: 'semantic-scholar' | 'openalex' }>(`/api/s2/paper/${encodeURIComponent(id)}/references?limit=${opts.limit ?? 40}`, opts.settings, opts.signal);
 }
 
 export function s2Citations(id: string, opts: { limit?: number; signal?: AbortSignal; settings?: Settings }) {
-  return getJson<{ data: S2CitationRow[] }>(`/api/s2/paper/${encodeURIComponent(id)}/citations?limit=${opts.limit ?? 40}`, opts.settings, opts.signal);
+  return getJson<{ data: S2CitationRow[]; source?: 'semantic-scholar' | 'openalex' }>(`/api/s2/paper/${encodeURIComponent(id)}/citations?limit=${opts.limit ?? 40}`, opts.settings, opts.signal);
 }
 
 export function s2Recommendations(id: string, opts: { limit?: number; signal?: AbortSignal; settings?: Settings }) {
