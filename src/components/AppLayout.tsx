@@ -4,11 +4,13 @@ import Dashboard from './Dashboard';
 import PaperDetail from './PaperDetail';
 import LibraryView from './LibraryView';
 import DiscoverView from './DiscoverView';
+import TrackingView from './TrackingView';
 import AISuggestPanel from './AISuggestPanel';
 import { usePapers } from '../contexts/PapersContext';
 import { LibraryProvider } from '../contexts/LibraryContext';
+import { TrackingProvider } from '../contexts/TrackingContext';
 
-export type ActiveView = 'inbox' | 'library' | 'discover';
+export type ActiveView = 'inbox' | 'library' | 'discover' | 'tracking';
 
 function AppLayoutInner() {
   const { selectedPaper } = usePapers();
@@ -17,6 +19,7 @@ function AppLayoutInner() {
 
   const mainContent = () => {
     if (selectedPaper) return <PaperDetail paper={selectedPaper} />;
+    if (activeView === 'tracking') return <TrackingView />;
     if (activeView === 'discover') return <DiscoverView />;
     if (activeView === 'library')  return <LibraryView />;
     return <Dashboard />;
@@ -36,7 +39,9 @@ function AppLayoutInner() {
 export default function AppLayout() {
   return (
     <LibraryProvider>
-      <AppLayoutInner />
+      <TrackingProvider>
+        <AppLayoutInner />
+      </TrackingProvider>
     </LibraryProvider>
   );
 }

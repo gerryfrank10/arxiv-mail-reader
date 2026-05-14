@@ -1,8 +1,9 @@
-import { Search, RefreshCw, Settings, LogOut, ChevronDown, SortAsc, SortDesc, Inbox, BookMarked, X, User, Sparkles, Compass } from 'lucide-react';
+import { Search, RefreshCw, Settings, LogOut, ChevronDown, SortAsc, SortDesc, Inbox, BookMarked, X, User, Sparkles, Compass, Target } from 'lucide-react';
 import { useState, useRef, useEffect, useMemo } from 'react';
 import { usePapers } from '../contexts/PapersContext';
 import { useAuth } from '../contexts/AuthContext';
 import { useLibrary } from '../contexts/LibraryContext';
+import { useTracking } from '../contexts/TrackingContext';
 import { getCategoryLabel } from '../utils/categories';
 import { ASSESSMENT_BADGE } from '../utils/assessment';
 import { AssessmentLabel } from '../utils/assessment';
@@ -41,6 +42,11 @@ export default function Sidebar({ activeView, setActiveView, onAISuggest }: Prop
   } = usePapers();
   const { user, logout } = useAuth();
   const { savedPapers, isSaved } = useLibrary();
+  const { trackers, matchesByTracker, scoring } = useTracking();
+  const trackingMatchCount = useMemo(
+    () => trackers.reduce((sum, t) => sum + matchesByTracker(t.id).length, 0),
+    [trackers, matchesByTracker],
+  );
   const [showSettings, setShowSettings] = useState(false);
   const [showCatMenu,  setShowCatMenu]  = useState(false);
   const [showSortMenu, setShowSortMenu] = useState(false);
@@ -81,6 +87,7 @@ export default function Sidebar({ activeView, setActiveView, onAISuggest }: Prop
   const totalCount    = activeView === 'library' ? savedPapers.length
                       : activeView === 'inbox'   ? papers.length
                       : 0;
+  const isListView    = activeView === 'inbox' || activeView === 'library';
 
   function clearAllFilters() {
     setSelectedCategory('');
@@ -149,35 +156,51 @@ export default function Sidebar({ activeView, setActiveView, onAISuggest }: Prop
           }`}>{error}</div>
         )}
 
-        {/* Inbox / Library / Discover tabs */}
+        {/* Inbox / Discover / Tracking / Library tabs */}
         <div className="flex border-b border-slate-800">
           <button onClick={() => { setActiveView('inbox'); }}
-            className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 text-xs font-medium transition-all ${
+            title="Inbox"
+            className={`flex-1 flex items-center justify-center gap-1 py-2.5 text-[11px] font-medium transition-all ${
               activeView === 'inbox' ? 'text-white border-b-2 border-blue-500 bg-slate-800/30' : 'text-slate-500 hover:text-slate-300'
             }`}>
-            <Inbox size={13} />
+            <Inbox size={12} />
             Inbox
             {unreadCount > 0 && (
-              <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${activeView === 'inbox' ? 'bg-blue-600 text-white' : 'bg-slate-700 text-slate-400'}`}>
+              <span className={`text-[9px] px-1 py-0.5 rounded-full ${activeView === 'inbox' ? 'bg-blue-600 text-white' : 'bg-slate-700 text-slate-400'}`}>
                 {unreadCount}
               </span>
             )}
           </button>
           <button onClick={() => { setActiveView('discover'); setSelectedPaper(null); }}
-            className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 text-xs font-medium transition-all ${
+            title="Discover"
+            className={`flex-1 flex items-center justify-center gap-1 py-2.5 text-[11px] font-medium transition-all ${
               activeView === 'discover' ? 'text-white border-b-2 border-indigo-500 bg-slate-800/30' : 'text-slate-500 hover:text-slate-300'
             }`}>
-            <Compass size={13} />
+            <Compass size={12} />
             Discover
           </button>
+          <button onClick={() => { setActiveView('tracking'); setSelectedPaper(null); }}
+            title="Tracking"
+            className={`flex-1 flex items-center justify-center gap-1 py-2.5 text-[11px] font-medium transition-all relative ${
+              activeView === 'tracking' ? 'text-white border-b-2 border-emerald-500 bg-slate-800/30' : 'text-slate-500 hover:text-slate-300'
+            }`}>
+            <Target size={12} className={scoring ? 'animate-pulse' : ''} />
+            Tracking
+            {trackingMatchCount > 0 && (
+              <span className={`text-[9px] px-1 py-0.5 rounded-full ${activeView === 'tracking' ? 'bg-emerald-600 text-white' : 'bg-slate-700 text-slate-400'}`}>
+                {trackingMatchCount}
+              </span>
+            )}
+          </button>
           <button onClick={() => { setActiveView('library'); setSelectedPaper(null); }}
-            className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 text-xs font-medium transition-all ${
+            title="Library"
+            className={`flex-1 flex items-center justify-center gap-1 py-2.5 text-[11px] font-medium transition-all ${
               activeView === 'library' ? 'text-white border-b-2 border-amber-500 bg-slate-800/30' : 'text-slate-500 hover:text-slate-300'
             }`}>
-            <BookMarked size={13} />
+            <BookMarked size={12} />
             Library
             {savedPapers.length > 0 && (
-              <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${activeView === 'library' ? 'bg-amber-600 text-white' : 'bg-slate-700 text-slate-400'}`}>
+              <span className={`text-[9px] px-1 py-0.5 rounded-full ${activeView === 'library' ? 'bg-amber-600 text-white' : 'bg-slate-700 text-slate-400'}`}>
                 {savedPapers.length}
               </span>
             )}
@@ -362,7 +385,7 @@ export default function Sidebar({ activeView, setActiveView, onAISuggest }: Prop
         )}
 
         {/* Count row */}
-        {activeView !== 'discover' && (
+        {isListView && (
           <div className="px-4 py-2 border-b border-slate-800 flex items-center justify-between">
             <p className="text-[11px] text-slate-500">
               {displayPapers.length} of {totalCount} paper{totalCount !== 1 ? 's' : ''}
@@ -407,6 +430,13 @@ export default function Sidebar({ activeView, setActiveView, onAISuggest }: Prop
               <Compass size={28} className="mx-auto text-indigo-400/60 mb-3" />
               <p className="text-slate-400 text-xs">Searching the literature.</p>
               <p className="text-slate-600 text-[11px] mt-1">Use the panel on the right to find papers on any topic.</p>
+            </div>
+          )}
+          {activeView === 'tracking' && (
+            <div className="px-4 py-10 text-center">
+              <Target size={28} className={`mx-auto text-emerald-400/60 mb-3 ${scoring ? 'animate-pulse' : ''}`} />
+              <p className="text-slate-400 text-xs">{trackers.length} tracker{trackers.length !== 1 ? 's' : ''} configured.</p>
+              <p className="text-slate-600 text-[11px] mt-1">{scoring ? `Scoring ${scoring.done}/${scoring.total}…` : 'Use the panel on the right to manage trackers.'}</p>
             </div>
           )}
 

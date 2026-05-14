@@ -1,8 +1,10 @@
-import { Bookmark, BookmarkCheck } from 'lucide-react';
+import { Bookmark, BookmarkCheck, Target } from 'lucide-react';
 import { Paper } from '../types';
 import { CATEGORY_COLORS, getCategoryLabel } from '../utils/categories';
 import { computeAssessment, ASSESSMENT_BADGE } from '../utils/assessment';
 import { useLibrary } from '../contexts/LibraryContext';
+import { useTracking } from '../contexts/TrackingContext';
+import { TRACKER_COLOR_CLASSES } from '../utils/trackerScoring';
 import { format } from 'date-fns';
 
 interface Props {
@@ -15,9 +17,15 @@ interface Props {
 
 export default function PaperCard({ paper, isSelected, isSaved, isRead = true, onClick }: Props) {
   const { savePaper, unsavePaper } = useLibrary();
+  const { scoresForPaper, trackers } = useTracking();
   const firstAuthor = paper.authorList[0] ?? paper.authors;
   const coauthors   = paper.authorList.length > 1;
   const assessment  = computeAssessment(paper);
+  // Surface up to 2 tracker matches above threshold (best signal first)
+  const trackerHits = scoresForPaper(paper.id)
+    .map(s => ({ s, t: trackers.find(tr => tr.id === s.trackerId) }))
+    .filter(x => x.t && x.t.enabled && x.s.score >= x.t.minScore)
+    .slice(0, 2);
 
   function handleBookmark(e: React.MouseEvent) {
     e.stopPropagation();
@@ -78,6 +86,26 @@ export default function PaperCard({ paper, isSelected, isSaved, isRead = true, o
           <span className="text-slate-600"> · {paper.authorList.length} authors</span>
         )}
       </p>
+
+      {/* Tracker matches — small inline chips */}
+      {trackerHits.length > 0 && (
+        <div className="flex flex-wrap gap-1 mb-1.5">
+          {trackerHits.map(({ s, t }) => {
+            const cls = TRACKER_COLOR_CLASSES[t!.color] ?? TRACKER_COLOR_CLASSES.blue;
+            return (
+              <span
+                key={s.id}
+                title={`${t!.name} · ${s.score}/100 · ${s.rationale}`}
+                className={`inline-flex items-center gap-0.5 text-[9px] font-semibold px-1.5 py-0.5 rounded ${cls.chip}`}
+              >
+                <Target size={8} />
+                {t!.name.length > 18 ? t!.name.slice(0, 16) + '…' : t!.name}
+                <span className="font-bold">{s.score}</span>
+              </span>
+            );
+          })}
+        </div>
+      )}
 
       {/* Bottom row: date + assessment badge */}
       <div className="flex items-center justify-between gap-2">

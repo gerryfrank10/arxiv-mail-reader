@@ -54,6 +54,31 @@ export interface S2AuthorProfile {
   url?: string;
 }
 
+// ---------- Tracking ----------
+
+export interface Tracker {
+  id: string;
+  name: string;
+  description: string;       // long paragraph for Claude scoring
+  keywords: string[];
+  seedArxivIds: string[];    // anchor papers for similarity scoring
+  enabled: boolean;
+  color: string;             // tailwind color name e.g. 'blue', 'rose'
+  minScore: number;          // 0..100 threshold for surfacing matches
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface PaperScore {
+  id: string;                // `${paperId}:${trackerId}`
+  paperId: string;
+  trackerId: string;
+  score: number;             // 0..100
+  rationale: string;
+  source: 'claude' | 'keyword';
+  ts: number;
+}
+
 export type Provider = 'google' | 'imap';
 
 export interface ImapConfig {
