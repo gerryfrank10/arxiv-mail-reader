@@ -11,12 +11,15 @@ export default function SettingsModal({ onClose }: Props) {
   const [senderEmail, setSenderEmail] = useState(settings.senderEmail);
   const [maxEmails,   setMaxEmails]   = useState(settings.maxEmails);
   const [apiKey,      setApiKey]      = useState(settings.claudeApiKey ?? '');
+  const [s2Key,       setS2Key]       = useState(settings.s2ApiKey ?? '');
   const [showKey,     setShowKey]     = useState(false);
+  const [showS2,      setShowS2]      = useState(false);
 
   useEffect(() => {
     setSenderEmail(settings.senderEmail);
     setMaxEmails(settings.maxEmails);
     setApiKey(settings.claudeApiKey ?? '');
+    setS2Key(settings.s2ApiKey ?? '');
   }, [settings]);
 
   function handleSave() {
@@ -24,6 +27,7 @@ export default function SettingsModal({ onClose }: Props) {
       senderEmail,
       maxEmails,
       claudeApiKey: apiKey.trim() || undefined,
+      s2ApiKey:     s2Key.trim()  || undefined,
     });
     onClose();
     setTimeout(() => sync(true), 100);
@@ -100,6 +104,34 @@ export default function SettingsModal({ onClose }: Props) {
             <p className="mt-1.5 text-xs text-slate-400 leading-relaxed">
               Stored locally only. Used to call Anthropic's API directly from your browser for the ✨ AI Suggest feature.
               Get a key at <a href="https://console.anthropic.com" target="_blank" rel="noopener noreferrer" className="text-violet-400 hover:underline">console.anthropic.com</a>.
+            </p>
+          </div>
+
+          {/* Semantic Scholar API key */}
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-1.5 flex items-center gap-1.5">
+              <Key size={13} className="text-emerald-500" />
+              Semantic Scholar API Key <span className="text-xs text-slate-400 font-normal">(optional, raises rate limits)</span>
+            </label>
+            <div className="relative">
+              <input
+                type={showS2 ? 'text' : 'password'}
+                value={s2Key}
+                onChange={e => setS2Key(e.target.value)}
+                placeholder="(leave blank to use the free tier)"
+                className="w-full pl-3 pr-10 py-2.5 border border-slate-200 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500/40 focus:border-emerald-400 transition-all"
+              />
+              <button
+                type="button"
+                onClick={() => setShowS2(v => !v)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors"
+              >
+                {showS2 ? <EyeOff size={15} /> : <Eye size={15} />}
+              </button>
+            </div>
+            <p className="mt-1.5 text-xs text-slate-400 leading-relaxed">
+              Used for paper search, references, citations & similar-work discovery.
+              Free tier works but gets throttled — get a personal key at <a href="https://www.semanticscholar.org/product/api#api-key-form" target="_blank" rel="noopener noreferrer" className="text-emerald-400 hover:underline">semanticscholar.org/product/api</a>.
             </p>
           </div>
         </div>

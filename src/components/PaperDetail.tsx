@@ -10,6 +10,7 @@ import { useLibrary } from '../contexts/LibraryContext';
 import { usePapers } from '../contexts/PapersContext';
 import { format } from 'date-fns';
 import CiteMenu from './CiteMenu';
+import PaperDiscoveryPanel from './PaperDiscoveryPanel';
 
 interface Props {
   paper: Paper;
@@ -457,10 +458,13 @@ Return exactly this JSON structure (no other text):
           </div>
         )}
 
-        {/* Related papers */}
+        {/* Citation-graph exploration via Semantic Scholar */}
+        <PaperDiscoveryPanel paper={paper} />
+
+        {/* Related papers (from your inbox) */}
         {related.length > 0 && (
           <div>
-            <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-400 mb-4">Related Papers</h2>
+            <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-400 mb-4">Related from your inbox</h2>
             <div className="space-y-3">
               {related.map(({ paper: rp, reasons }) => {
                 const rAssessment = computeAssessment(rp);

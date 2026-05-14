@@ -120,6 +120,158 @@ app.get('/api/arxiv-abstract', async (req, res) => {
   res.json({ abstract, source });
 });
 
+// ---------- Semantic Scholar proxy (search / refs / citations / recs) ----------
+// All S2 calls share the s2Queue + 1.1s min-gap defined above. Each endpoint
+// caches results in a small LRU-ish map keyed by (path + query) for 1h.
+const s2Cache = new Map(); // cacheKey -> { data, ts }
+const S2_CACHE_TTL_MS = 60 * 60 * 1000;
+
+const S2_PAPER_FIELDS = [
+  'paperId', 'externalIds', 'title', 'abstract', 'authors.name', 'authors.authorId',
+  'year', 'venue', 'citationCount', 'influentialCitationCount',
+  'publicationTypes', 'openAccessPdf', 'url', 'tldr',
+].join(',');
+
+async function s2Get(pathWithQuery, apiKey) {
+  const cached = s2Cache.get(pathWithQuery);
+  if (cached && Date.now() - cached.ts < S2_CACHE_TTL_MS) return cached.data;
+  return s2Queue = s2Queue.then(async () => {
+    const wait = Math.max(0, S2_MIN_GAP_MS - (Date.now() - lastS2Call));
+    if (wait > 0) await new Promise(r => setTimeout(r, wait));
+    lastS2Call = Date.now();
+    const url = `https://api.semanticscholar.org${pathWithQuery}`;
+    const headers = {
+      Accept: 'application/json',
+      'User-Agent': 'arxiv-mail-reader/1.0 (https://github.com/gerryfrank10/arxiv-mail-reader)',
+    };
+    if (apiKey) headers['x-api-key'] = apiKey;
+    // Retry on 429 with backoff: 3s, 8s, 20s
+    const BACKOFFS = [3000, 8000, 20000];
+    let r;
+    for (let i = 0; i <= BACKOFFS.length; i++) {
+      r = await fetch(url, { headers });
+      if (r.status !== 429) break;
+      if (i === BACKOFFS.length) break;
+      console.warn(`[s2] 429 on ${pathWithQuery}, backing off ${BACKOFFS[i]}ms (attempt ${i + 1}/${BACKOFFS.length})`);
+      await new Promise(res => setTimeout(res, BACKOFFS[i]));
+    }
+    if (!r.ok) {
+      const text = await r.text().catch(() => '');
+      throw new Error(`S2 ${r.status}: ${text.slice(0, 140)}`);
+    }
+    const data = await r.json();
+    s2Cache.set(pathWithQuery, { data, ts: Date.now() });
+    return data;
+  }).catch(err => { throw err; });
+}
+
+// Pull optional S2 key from request header so the client can pass through a
+// user-supplied key from Settings without exposing it on the server.
+function s2KeyFrom(req) {
+  return req.get('x-s2-api-key') || process.env.SEMANTIC_SCHOLAR_API_KEY || undefined;
+}
+
+// GET /api/s2/search?q=world+models&limit=100
+app.get('/api/s2/search', async (req, res) => {
+  const q = String(req.query.q ?? '').trim();
+  if (!q) return res.status(400).json({ error: 'q is required' });
+  const limit = Math.min(Number(req.query.limit) || 100, 100);
+  const params = new URLSearchParams({ query: q, limit: String(limit), fields: S2_PAPER_FIELDS });
+  try {
+    const data = await s2Get(`/graph/v1/paper/search?${params}`, s2KeyFrom(req));
+    res.json(data);
+  } catch (e) {
+    res.status(502).json({ error: e.message });
+  }
+});
+
+// GET /api/s2/paper/:id   (id can be DOI, S2 id, ARXIV:..., or just an arxivId — we'll prefix)
+app.get('/api/s2/paper/:id', async (req, res) => {
+  const id = normalizePaperId(req.params.id);
+  const params = new URLSearchParams({ fields: S2_PAPER_FIELDS });
+  try {
+    const data = await s2Get(`/graph/v1/paper/${encodeURIComponent(id)}?${params}`, s2KeyFrom(req));
+    res.json(data);
+  } catch (e) {
+    res.status(502).json({ error: e.message });
+  }
+});
+
+// GET /api/s2/paper/:id/references
+app.get('/api/s2/paper/:id/references', async (req, res) => {
+  const id = normalizePaperId(req.params.id);
+  const limit = Math.min(Number(req.query.limit) || 30, 100);
+  const params = new URLSearchParams({
+    limit: String(limit),
+    fields: ['contexts', 'intents', 'isInfluential', 'citedPaper.' + S2_PAPER_FIELDS.split(',').join(',citedPaper.')].join(','),
+  });
+  // The S2 API expects fields prefixed per nested object; the simpler form below works too:
+  params.set('fields', 'contexts,intents,isInfluential,' + S2_PAPER_FIELDS.split(',').map(f => `citedPaper.${f}`).join(','));
+  try {
+    const data = await s2Get(`/graph/v1/paper/${encodeURIComponent(id)}/references?${params}`, s2KeyFrom(req));
+    res.json(data);
+  } catch (e) {
+    res.status(502).json({ error: e.message });
+  }
+});
+
+// GET /api/s2/paper/:id/citations
+app.get('/api/s2/paper/:id/citations', async (req, res) => {
+  const id = normalizePaperId(req.params.id);
+  const limit = Math.min(Number(req.query.limit) || 30, 100);
+  const params = new URLSearchParams({
+    limit: String(limit),
+    fields: 'contexts,intents,isInfluential,' + S2_PAPER_FIELDS.split(',').map(f => `citingPaper.${f}`).join(','),
+  });
+  try {
+    const data = await s2Get(`/graph/v1/paper/${encodeURIComponent(id)}/citations?${params}`, s2KeyFrom(req));
+    res.json(data);
+  } catch (e) {
+    res.status(502).json({ error: e.message });
+  }
+});
+
+// GET /api/s2/paper/:id/recommendations
+app.get('/api/s2/paper/:id/recommendations', async (req, res) => {
+  const id = normalizePaperId(req.params.id);
+  const limit = Math.min(Number(req.query.limit) || 20, 50);
+  const params = new URLSearchParams({ limit: String(limit), fields: S2_PAPER_FIELDS });
+  try {
+    const data = await s2Get(`/recommendations/v1/papers/forpaper/${encodeURIComponent(id)}?${params}`, s2KeyFrom(req));
+    res.json(data);
+  } catch (e) {
+    res.status(502).json({ error: e.message });
+  }
+});
+
+// GET /api/s2/author/:id  — author profile + recent papers
+app.get('/api/s2/author/:id', async (req, res) => {
+  const id = encodeURIComponent(req.params.id);
+  try {
+    const key = s2KeyFrom(req);
+    const author = await s2Get(`/graph/v1/author/${id}?fields=name,affiliations,hIndex,citationCount,paperCount,url`, key);
+    const papers = await s2Get(
+      `/graph/v1/author/${id}/papers?limit=20&fields=${encodeURIComponent(S2_PAPER_FIELDS)}`,
+      key,
+    );
+    res.json({ author, papers: papers.data ?? [] });
+  } catch (e) {
+    res.status(502).json({ error: e.message });
+  }
+});
+
+// Accept inputs like "2402.05576", "arXiv:2402.05576", "10.1234/foo", or a raw S2 paperId
+function normalizePaperId(raw) {
+  const s = String(raw).trim();
+  // If it already has a scheme prefix, keep it
+  if (/^(arXiv|DOI|MAG|ACL|PMID|PMCID|CorpusId|URL):/i.test(s)) return s;
+  // Pure arXiv id (new style 2402.05576 or old style cs/0701001)
+  if (/^\d{4}\.\d{4,5}(v\d+)?$/.test(s) || /^[a-z-]+\/\d{7}$/i.test(s)) return `arXiv:${s}`;
+  // DOI heuristic
+  if (s.startsWith('10.') && s.includes('/')) return `DOI:${s}`;
+  return s;
+}
+
 app.post('/api/fetch-imap-emails', async (req, res) => {
   const { host, port = 993, username, password, senderEmail, maxEmails = 30 } = req.body;
 

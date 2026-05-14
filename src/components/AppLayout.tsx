@@ -3,11 +3,12 @@ import Sidebar from './Sidebar';
 import Dashboard from './Dashboard';
 import PaperDetail from './PaperDetail';
 import LibraryView from './LibraryView';
+import DiscoverView from './DiscoverView';
 import AISuggestPanel from './AISuggestPanel';
 import { usePapers } from '../contexts/PapersContext';
 import { LibraryProvider } from '../contexts/LibraryContext';
 
-export type ActiveView = 'inbox' | 'library';
+export type ActiveView = 'inbox' | 'library' | 'discover';
 
 function AppLayoutInner() {
   const { selectedPaper } = usePapers();
@@ -16,7 +17,8 @@ function AppLayoutInner() {
 
   const mainContent = () => {
     if (selectedPaper) return <PaperDetail paper={selectedPaper} />;
-    if (activeView === 'library') return <LibraryView />;
+    if (activeView === 'discover') return <DiscoverView />;
+    if (activeView === 'library')  return <LibraryView />;
     return <Dashboard />;
   };
 

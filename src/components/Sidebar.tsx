@@ -1,4 +1,4 @@
-import { Search, RefreshCw, Settings, LogOut, ChevronDown, SortAsc, SortDesc, Inbox, BookMarked, X, User, Sparkles } from 'lucide-react';
+import { Search, RefreshCw, Settings, LogOut, ChevronDown, SortAsc, SortDesc, Inbox, BookMarked, X, User, Sparkles, Compass } from 'lucide-react';
 import { useState, useRef, useEffect, useMemo } from 'react';
 import { usePapers } from '../contexts/PapersContext';
 import { useAuth } from '../contexts/AuthContext';
@@ -75,8 +75,12 @@ export default function Sidebar({ activeView, setActiveView, onAISuggest }: Prop
   const hasSuggestions =
     suggestions.authors.length + suggestions.papers.length + suggestions.categories.length > 0;
 
-  const displayPapers = activeView === 'library' ? savedPapers : filteredPapers;
-  const totalCount    = activeView === 'library' ? savedPapers.length : papers.length;
+  const displayPapers = activeView === 'library' ? savedPapers
+                      : activeView === 'inbox'   ? filteredPapers
+                      : [];
+  const totalCount    = activeView === 'library' ? savedPapers.length
+                      : activeView === 'inbox'   ? papers.length
+                      : 0;
 
   function clearAllFilters() {
     setSelectedCategory('');
@@ -145,9 +149,9 @@ export default function Sidebar({ activeView, setActiveView, onAISuggest }: Prop
           }`}>{error}</div>
         )}
 
-        {/* Inbox / Library tabs */}
+        {/* Inbox / Library / Discover tabs */}
         <div className="flex border-b border-slate-800">
-          <button onClick={() => setActiveView('inbox')}
+          <button onClick={() => { setActiveView('inbox'); }}
             className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 text-xs font-medium transition-all ${
               activeView === 'inbox' ? 'text-white border-b-2 border-blue-500 bg-slate-800/30' : 'text-slate-500 hover:text-slate-300'
             }`}>
@@ -158,6 +162,13 @@ export default function Sidebar({ activeView, setActiveView, onAISuggest }: Prop
                 {unreadCount}
               </span>
             )}
+          </button>
+          <button onClick={() => { setActiveView('discover'); setSelectedPaper(null); }}
+            className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 text-xs font-medium transition-all ${
+              activeView === 'discover' ? 'text-white border-b-2 border-indigo-500 bg-slate-800/30' : 'text-slate-500 hover:text-slate-300'
+            }`}>
+            <Compass size={13} />
+            Discover
           </button>
           <button onClick={() => { setActiveView('library'); setSelectedPaper(null); }}
             className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 text-xs font-medium transition-all ${
@@ -351,14 +362,16 @@ export default function Sidebar({ activeView, setActiveView, onAISuggest }: Prop
         )}
 
         {/* Count row */}
-        <div className="px-4 py-2 border-b border-slate-800 flex items-center justify-between">
-          <p className="text-[11px] text-slate-500">
-            {displayPapers.length} of {totalCount} paper{totalCount !== 1 ? 's' : ''}
-          </p>
-          {activeView === 'inbox' && savedPapers.length > 0 && (
-            <p className="text-[11px] text-slate-600">{savedPapers.length} saved</p>
-          )}
-        </div>
+        {activeView !== 'discover' && (
+          <div className="px-4 py-2 border-b border-slate-800 flex items-center justify-between">
+            <p className="text-[11px] text-slate-500">
+              {displayPapers.length} of {totalCount} paper{totalCount !== 1 ? 's' : ''}
+            </p>
+            {activeView === 'inbox' && savedPapers.length > 0 && (
+              <p className="text-[11px] text-slate-600">{savedPapers.length} saved</p>
+            )}
+          </div>
+        )}
 
         {/* Paper list */}
         <div className="flex-1 overflow-y-auto custom-scroll">
@@ -388,6 +401,13 @@ export default function Sidebar({ activeView, setActiveView, onAISuggest }: Prop
           )}
           {activeView === 'inbox' && !loading && displayPapers.length === 0 && papers.length > 0 && (
             <div className="px-4 py-8 text-center text-slate-500 text-xs">No papers match your filters.</div>
+          )}
+          {activeView === 'discover' && (
+            <div className="px-4 py-10 text-center">
+              <Compass size={28} className="mx-auto text-indigo-400/60 mb-3" />
+              <p className="text-slate-400 text-xs">Searching the literature.</p>
+              <p className="text-slate-600 text-[11px] mt-1">Use the panel on the right to find papers on any topic.</p>
+            </div>
           )}
 
           {displayPapers.map(paper => (
