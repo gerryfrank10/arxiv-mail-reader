@@ -4,6 +4,7 @@ import { Tracker } from '../types';
 import { TRACKER_COLORS, TRACKER_COLOR_CLASSES } from '../utils/trackerScoring';
 import { useTracking } from '../contexts/TrackingContext';
 import { usePapers } from '../contexts/PapersContext';
+import { hasAI, resolveAIConfig, providerLabel } from '../utils/aiProvider';
 
 interface Props {
   tracker?: Tracker;       // undefined → create mode
@@ -56,8 +57,9 @@ export default function TrackerForm({ tracker, onClose }: Props) {
     onClose();
   }
 
-  const usingClaude = !!settings.claudeApiKey;
-  const colorCls    = TRACKER_COLOR_CLASSES[color] ?? TRACKER_COLOR_CLASSES.blue;
+  const usingAI  = hasAI(settings);
+  const aiLabel  = providerLabel(resolveAIConfig(settings));
+  const colorCls = TRACKER_COLOR_CLASSES[color] ?? TRACKER_COLOR_CLASSES.blue;
 
   // Inbox titles for the seed picker
   const inboxArxivIds = papers.slice(0, 50).map(p => p.arxivId);
@@ -77,19 +79,19 @@ export default function TrackerForm({ tracker, onClose }: Props) {
 
         {/* Scoring mode banner */}
         <div className={`mb-5 px-4 py-2.5 rounded-lg border text-xs ${
-          usingClaude
+          usingAI
             ? 'bg-violet-50 border-violet-200 text-violet-700'
             : 'bg-amber-50 border-amber-200 text-amber-800'
         }`}>
-          {usingClaude ? (
+          {usingAI ? (
             <span className="flex items-center gap-2">
               <Sparkles size={13} className="text-violet-500" />
-              <strong>Claude AI scoring</strong> · uses your Claude API key from Settings.
+              <strong>AI scoring via {aiLabel}</strong> · configured in Settings.
             </span>
           ) : (
             <span className="flex items-center gap-2">
               <Hash size={13} />
-              <strong>Keyword + similarity scoring</strong> · add a Claude API key in Settings for AI-driven scoring.
+              <strong>Keyword + similarity scoring</strong> · pick an AI provider in Settings (Ollama is free + local).
             </span>
           )}
         </div>
@@ -122,9 +124,9 @@ export default function TrackerForm({ tracker, onClose }: Props) {
               className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-sm leading-relaxed focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-400 transition-all"
             />
             <p className="mt-1 text-xs text-slate-400">
-              {usingClaude
-                ? 'Claude reads this paragraph to score each new paper from 0-100.'
-                : 'Without a Claude key, scoring uses keywords + seed papers below. Add detail for when you upgrade.'}
+              {usingAI
+                ? `${aiLabel} reads this paragraph to score each new paper from 0-100.`
+                : 'Without an AI provider, scoring uses keywords + seed papers below. Add detail for when you upgrade.'}
             </p>
           </div>
 

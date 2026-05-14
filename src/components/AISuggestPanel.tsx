@@ -3,6 +3,7 @@ import { X, Sparkles, Search, ExternalLink, Key } from 'lucide-react';
 import { usePapers } from '../contexts/PapersContext';
 import { computeAssessment, ASSESSMENT_BADGE } from '../utils/assessment';
 import { CATEGORY_COLORS } from '../utils/categories';
+import { aiChat, hasAI, resolveAIConfig, providerLabel } from '../utils/aiProvider';
 import { format } from 'date-fns';
 import { Paper } from '../types';
 
@@ -20,10 +21,11 @@ export default function AISuggestPanel({ onClose }: Props) {
   const [result, setResult]   = useState<Result | null>(null);
   const [error, setError]     = useState<string | null>(null);
 
-  const hasKey = !!settings.claudeApiKey;
+  const hasKey  = hasAI(settings);
+  const aiLabel = providerLabel(resolveAIConfig(settings));
 
   async function suggest() {
-    if (!query.trim() || !settings.claudeApiKey) return;
+    if (!query.trim() || !hasKey) return;
     setLoading(true);
     setError(null);
     setResult(null);
@@ -53,29 +55,11 @@ Return a JSON object with exactly this structure:
 Select up to 5 most relevant papers (by index). "searches" should be 3–5 arXiv search terms the user could use to find more papers on this topic. Return ONLY the JSON, no other text.`;
 
     try {
-      const resp = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-          'x-api-key': settings.claudeApiKey,
-          'anthropic-version': '2023-06-01',
-          'anthropic-dangerous-direct-browser-access': 'true',
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: 'claude-haiku-4-5-20251001',
-          max_tokens: 800,
-          messages: [{ role: 'user', content: prompt }],
-        }),
-        signal: AbortSignal.timeout(20000),
-      });
-
-      if (!resp.ok) {
-        const err = await resp.json().catch(() => ({}));
-        throw new Error((err as { error?: { message?: string } }).error?.message ?? `API error ${resp.status}`);
-      }
-
-      const data = await resp.json() as { content: Array<{ text: string }> };
-      const text = data.content[0]?.text ?? '';
+      const text = await aiChat(
+        [{ role: 'user', content: prompt }],
+        settings,
+        { maxTokens: 800, temperature: 0.3, timeoutMs: 30_000 },
+      );
       const jsonMatch = text.match(/\{[\s\S]*\}/);
       if (!jsonMatch) throw new Error('Could not parse AI response');
 
@@ -115,16 +99,15 @@ Select up to 5 most relevant papers (by index). "searches" should be 3–5 arXiv
           {!hasKey ? (
             <div className="rounded-xl border border-amber-200 bg-amber-50 p-5 text-center">
               <Key size={28} className="mx-auto text-amber-400 mb-3" />
-              <p className="text-sm font-medium text-amber-800 mb-1">Claude API key required</p>
+              <p className="text-sm font-medium text-amber-800 mb-1">AI provider not configured</p>
               <p className="text-xs text-amber-600 leading-relaxed">
-                Add your Anthropic API key in <strong>Settings</strong> to use AI suggestions.
-                Your key is stored locally and never sent anywhere except Anthropic's API.
+                Open <strong>Settings</strong> and pick a provider: Claude, OpenAI, Groq (free tier), or Ollama (runs locally, no key needed).
               </p>
             </div>
           ) : (
             <>
               <p className="text-xs text-slate-500 mb-4 leading-relaxed">
-                Describe your research interest and Claude will find the most relevant papers from your inbox and suggest arXiv search queries.
+                Describe your research interest and <span className="font-semibold text-slate-700">{aiLabel}</span> will find the most relevant papers from your inbox and suggest arXiv search queries.
               </p>
 
               <textarea

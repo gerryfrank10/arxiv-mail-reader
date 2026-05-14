@@ -83,7 +83,7 @@ export function TrackingProvider({ children }: { children: React.ReactNode }) {
     try {
       const seeds = seedsFor(tracker);
       const newScores = await scorePapersAgainstTracker(subset, tracker, seeds, {
-        claudeApiKey: settings.claudeApiKey,
+        settings,
         onProgress: (done, total) => setScoring({ trackerId: tracker.id, done, total }),
       });
       await dbUpsertScores(newScores);
@@ -95,7 +95,7 @@ export function TrackingProvider({ children }: { children: React.ReactNode }) {
     } finally {
       setScoring(null);
     }
-  }, [seedsFor, settings.claudeApiKey]);
+  }, [seedsFor, settings]);
 
   const rescoreTracker = useCallback(async (id: string) => {
     const tracker = trackers.find(t => t.id === id);

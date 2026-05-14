@@ -439,6 +439,49 @@ function normalizePaperId(raw) {
   return s;
 }
 
+// ---------- Generic AI proxy (OpenAI-compatible providers + Ollama) ----------
+// Browser → /api/ai/chat → upstream. Lets us avoid CORS on localhost (Ollama)
+// and on any OpenAI-compatible endpoint the user configures.
+app.post('/api/ai/chat', async (req, res) => {
+  const { provider, baseUrl, apiKey, model, messages, maxTokens = 1024, temperature = 0.4 } = req.body || {};
+  if (!baseUrl || !model || !Array.isArray(messages)) {
+    return res.status(400).json({ error: 'baseUrl, model and messages are required' });
+  }
+  if (!['openai', 'groq', 'ollama', 'custom'].includes(provider)) {
+    return res.status(400).json({ error: `Unsupported provider: ${provider}` });
+  }
+  const url = `${String(baseUrl).replace(/\/+$/, '')}/chat/completions`;
+  const headers = { 'Content-Type': 'application/json' };
+  if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
+  try {
+    const upstream = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        model,
+        messages,
+        max_tokens: maxTokens,
+        temperature,
+        stream: false,
+      }),
+      // Generous timeout so local Ollama (often slow on first token) doesn't
+      // get killed prematurely. Browser-side AbortController still applies.
+      signal: AbortSignal.timeout(120_000),
+    });
+    if (!upstream.ok) {
+      const body = await upstream.text().catch(() => '');
+      return res.status(upstream.status).json({
+        error: `${provider} ${upstream.status}: ${body.slice(0, 300)}`,
+      });
+    }
+    const data = await upstream.json();
+    const text = data?.choices?.[0]?.message?.content ?? '';
+    res.json({ text, model: data?.model, usage: data?.usage });
+  } catch (e) {
+    res.status(502).json({ error: `Upstream failed (${provider}): ${e.message}` });
+  }
+});
+
 app.post('/api/fetch-imap-emails', async (req, res) => {
   const { host, port = 993, username, password, senderEmail, maxEmails = 30 } = req.body;
 

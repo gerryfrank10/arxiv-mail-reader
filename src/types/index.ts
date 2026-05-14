@@ -16,11 +16,25 @@ export interface Paper {
   digestDate: Date;
 }
 
+// AI providers supported. Anthropic uses its own protocol; everything else
+// speaks OpenAI-compatible chat-completions over the same shape.
+export type AIProvider = 'claude' | 'openai' | 'groq' | 'ollama' | 'custom' | 'none';
+
+export interface AIConfig {
+  provider: AIProvider;
+  apiKey?: string;       // ignored for ollama
+  baseUrl?: string;      // for ollama/custom; defaulted per-provider otherwise
+  model?: string;        // optional override
+}
+
 export interface Settings {
   senderEmail: string;
   maxEmails: number;
+  // Legacy single-key fields (kept for backward compat — used as fallback)
   claudeApiKey?: string;
   s2ApiKey?: string;
+  // Multi-provider config
+  ai?: AIConfig;
 }
 
 export interface S2Author {

@@ -7,6 +7,7 @@ import { TRACKER_COLOR_CLASSES } from '../utils/trackerScoring';
 import { CATEGORY_COLORS_LIGHT } from '../utils/categories';
 import { format, formatDistanceToNow } from 'date-fns';
 import TrackerForm from './TrackerForm';
+import { hasAI, providerLabel, resolveAIConfig } from '../utils/aiProvider';
 
 type SortMode = 'score' | 'date';
 
@@ -109,7 +110,7 @@ export default function TrackingView() {
               <p className="text-sm text-slate-500">
                 {trackers.length} tracker{trackers.length !== 1 ? 's' : ''} ·{' '}
                 <span className="font-medium text-slate-600">
-                  {settings.claudeApiKey ? '✨ Claude AI scoring' : 'keyword scoring (free)'}
+                  {hasAI(settings) ? `✨ AI scoring via ${providerLabel(resolveAIConfig(settings))}` : 'keyword scoring (free)'}
                 </span>
               </p>
             </div>

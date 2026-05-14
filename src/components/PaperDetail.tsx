@@ -11,6 +11,8 @@ import { usePapers } from '../contexts/PapersContext';
 import { format } from 'date-fns';
 import CiteMenu from './CiteMenu';
 import PaperDiscoveryPanel from './PaperDiscoveryPanel';
+import { aiChat, hasAI, resolveAIConfig, providerLabel } from '../utils/aiProvider';
+import { ArrowLeft } from 'lucide-react';
 
 interface Props {
   paper: Paper;
@@ -97,8 +99,37 @@ export default function PaperDetail({ paper }: Props) {
     setSummaryError(null);
   }, [paper.id]);
 
+  // ----- Back nav: Esc key + browser back button -----
+  // We push a history entry whenever a paper is opened so that the browser
+  // Back button closes the paper instead of leaving the app. The in-app
+  // back button calls history.back() too, so the two stay in sync.
+  useEffect(() => {
+    const state = { paperDetail: paper.id };
+    window.history.pushState(state, '');
+    function onPop() { setSelectedPaper(null); }
+    function onKey(e: KeyboardEvent) {
+      const target = e.target as HTMLElement | null;
+      if (target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return;
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        window.history.back();
+      }
+    }
+    window.addEventListener('popstate', onPop);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('popstate', onPop);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [paper.id, setSelectedPaper]);
+
+  const goBack = useCallback(() => { window.history.back(); }, []);
+
+  const aiEnabled = hasAI(settings);
+  const aiLabel   = providerLabel(resolveAIConfig(settings));
+
   const handleSummarize = useCallback(async () => {
-    if (!settings.claudeApiKey) return;
+    if (!aiEnabled) return;
     if (summary) { setSummaryOpen(v => !v); return; }
     setSummaryOpen(true);
     setSummaryLoading(true);
@@ -121,29 +152,11 @@ Return exactly this JSON structure (no other text):
 }`;
 
     try {
-      const resp = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-          'x-api-key': settings.claudeApiKey,
-          'anthropic-version': '2023-06-01',
-          'anthropic-dangerous-direct-browser-access': 'true',
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: 'claude-haiku-4-5-20251001',
-          max_tokens: 800,
-          messages: [{ role: 'user', content: prompt }],
-        }),
-        signal: AbortSignal.timeout(25000),
-      });
-
-      if (!resp.ok) {
-        const err = await resp.json().catch(() => ({})) as { error?: { message?: string } };
-        throw new Error(err.error?.message ?? `API error ${resp.status}`);
-      }
-
-      const data = await resp.json() as { content: Array<{ text: string }> };
-      const text = data.content[0]?.text ?? '';
+      const text = await aiChat(
+        [{ role: 'user', content: prompt }],
+        settings,
+        { maxTokens: 800, temperature: 0.3, timeoutMs: 60_000 },
+      );
       const jsonMatch = text.match(/\{[\s\S]*\}/);
       if (!jsonMatch) throw new Error('Could not parse response');
       setSummary(JSON.parse(jsonMatch[0]));
@@ -152,7 +165,7 @@ Return exactly this JSON structure (no other text):
     } finally {
       setSummaryLoading(false);
     }
-  }, [settings.claudeApiKey, summary, paper.title, paper.authors, paper.abstract, fetchedAbstract]);
+  }, [aiEnabled, summary, paper.title, paper.authors, paper.abstract, fetchedAbstract, settings]);
 
   const openNotebookLM = useCallback(() => {
     navigator.clipboard.writeText(paper.pdfUrl).catch(() => {});
@@ -167,7 +180,22 @@ Return exactly this JSON structure (no other text):
 
   return (
     <div className="h-full overflow-y-auto main-scroll">
-      <div className="max-w-3xl mx-auto px-8 py-10 fade-in">
+      {/* Sticky in-app back bar */}
+      <div className="sticky top-0 z-20 bg-white/85 backdrop-blur-md border-b border-slate-200">
+        <div className="max-w-3xl mx-auto px-8 py-2.5 flex items-center justify-between">
+          <button
+            onClick={goBack}
+            title="Back (Esc)"
+            className="flex items-center gap-1.5 px-2.5 py-1.5 -ml-2.5 rounded-lg text-sm text-slate-600 hover:bg-slate-100 hover:text-slate-900 transition-colors"
+          >
+            <ArrowLeft size={15} />
+            Back
+          </button>
+          <span className="text-xs text-slate-400 font-mono truncate hidden sm:inline">arXiv:{paper.arxivId}</span>
+        </div>
+      </div>
+
+      <div className="max-w-3xl mx-auto px-8 py-8 fade-in">
         {/* Categories */}
         <div className="flex flex-wrap gap-2 mb-5">
           {paper.categories.map(cat => {
@@ -369,8 +397,8 @@ Return exactly this JSON structure (no other text):
           </button>
           <button
             onClick={handleSummarize}
-            disabled={summaryLoading || !settings.claudeApiKey}
-            title={!settings.claudeApiKey ? 'Add a Claude API key in Settings to use AI summaries' : 'Summarize with Claude AI'}
+            disabled={summaryLoading || !aiEnabled}
+            title={!aiEnabled ? 'Configure an AI provider in Settings to use summaries' : `Summarize with ${aiLabel}`}
             className={`flex items-center gap-2 px-5 py-2.5 border text-sm font-medium rounded-lg transition-all disabled:opacity-40 disabled:cursor-not-allowed ${
               summary && summaryOpen
                 ? 'border-purple-300 bg-purple-50 text-purple-700 hover:bg-purple-100'

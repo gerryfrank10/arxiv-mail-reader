@@ -1,4 +1,5 @@
-import { Paper, Tracker, PaperScore } from '../types';
+import { Paper, Tracker, PaperScore, Settings } from '../types';
+import { aiChat, hasAI } from './aiProvider';
 
 // =========================================================================
 // Tokenization + TF utilities for keyword/seed scoring
@@ -129,24 +130,22 @@ function escapeRegex(s: string): string {
 }
 
 // =========================================================================
-// Claude scorer (batched)
+// AI-driven scorer (batched, provider-agnostic)
 // =========================================================================
 
-export interface ClaudeScoringResult {
+export interface AIScoringResult {
   paperId: string;
   score: number;
   rationale: string;
 }
 
-const CLAUDE_MODEL  = 'claude-haiku-4-5-20251001';
 const BATCH_SIZE    = 10;
 const MAX_ABSTRACT  = 500;   // chars
-const REQ_TIMEOUT_MS = 30_000;
 
-export async function scoreWithClaude(
+export async function scoreWithAI(
   papers: Paper[],
   tracker: Tracker,
-  apiKey: string,
+  settings: Settings,
   onBatch?: (done: number, total: number) => void,
 ): Promise<PaperScore[]> {
   if (papers.length === 0) return [];
@@ -160,7 +159,7 @@ export async function scoreWithClaude(
   let done = 0;
   for (const batch of batches) {
     try {
-      const results = await scoreOneBatch(batch, tracker, apiKey);
+      const results = await scoreOneBatch(batch, tracker, settings);
       for (const r of results) {
         out.push({
           id:        `${r.paperId}:${tracker.id}`,
@@ -168,14 +167,14 @@ export async function scoreWithClaude(
           trackerId: tracker.id,
           score:     Math.max(0, Math.min(100, Math.round(r.score))),
           rationale: r.rationale,
-          source:    'claude',
+          source:    'claude', // historical label — represents "AI-scored"
           ts:        Date.now(),
         });
       }
     } catch (e) {
-      // If Claude fails on a batch, fall back to keyword for those papers so
+      // If AI fails on a batch, fall back to keyword for those papers so
       // the user isn't left empty-handed
-      console.warn('[tracker] Claude batch failed, falling back to keyword:', e);
+      console.warn('[tracker] AI batch failed, falling back to keyword:', e);
       for (const p of batch) out.push(scoreKeyword(p, tracker, []));
     }
     done += batch.length;
@@ -188,14 +187,14 @@ export async function scoreWithClaude(
 async function scoreOneBatch(
   batch: Paper[],
   tracker: Tracker,
-  apiKey: string,
-): Promise<ClaudeScoringResult[]> {
+  settings: Settings,
+): Promise<AIScoringResult[]> {
   const list = batch.map((p, i) => {
     const abs = (p.abstract || '').slice(0, MAX_ABSTRACT);
     return `${i + 1}. [id=${p.id}] ${p.title}\n   Authors: ${p.authors}\n   Abstract: ${abs || '(no abstract available)'}`;
   }).join('\n\n');
 
-  const prompt = `You are a research-curation assistant. The user is tracking the following specific research interest:
+  const userPrompt = `You are a research-curation assistant. The user is tracking the following specific research interest:
 
 Name: ${tracker.name}
 Description: ${tracker.description || '(none provided)'}
@@ -219,33 +218,16 @@ Return ONLY a JSON array, one object per paper, with no extra text:
   ...
 ]`;
 
-  const resp = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-      'anthropic-dangerous-direct-browser-access': 'true',
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: CLAUDE_MODEL,
-      max_tokens: 2000,
-      messages: [{ role: 'user', content: prompt }],
-    }),
-    signal: AbortSignal.timeout(REQ_TIMEOUT_MS),
-  });
-
-  if (!resp.ok) {
-    const err = await resp.json().catch(() => ({})) as { error?: { message?: string } };
-    throw new Error(err.error?.message ?? `Claude API ${resp.status}`);
-  }
-  const data  = await resp.json() as { content: Array<{ text: string }> };
-  const text  = data.content[0]?.text ?? '';
+  const text = await aiChat(
+    [{ role: 'user', content: userPrompt }],
+    settings,
+    { maxTokens: 2000, temperature: 0.2 },
+  );
   // Be lenient: grab the first JSON array
   const match = text.match(/\[[\s\S]*\]/);
-  if (!match) throw new Error('Claude returned no parseable JSON');
-  const parsed = JSON.parse(match[0]) as ClaudeScoringResult[];
-  if (!Array.isArray(parsed)) throw new Error('Claude returned non-array JSON');
+  if (!match) throw new Error('AI returned no parseable JSON');
+  const parsed = JSON.parse(match[0]) as AIScoringResult[];
+  if (!Array.isArray(parsed)) throw new Error('AI returned non-array JSON');
   return parsed;
 }
 
@@ -254,7 +236,7 @@ Return ONLY a JSON array, one object per paper, with no extra text:
 // =========================================================================
 
 interface ScoreOptions {
-  claudeApiKey?: string;     // if present, Claude scoring is used
+  settings: Settings;
   onProgress?: (done: number, total: number) => void;
 }
 
@@ -265,8 +247,8 @@ export async function scorePapersAgainstTracker(
   opts: ScoreOptions,
 ): Promise<PaperScore[]> {
   if (papers.length === 0) return [];
-  if (opts.claudeApiKey) {
-    return scoreWithClaude(papers, tracker, opts.claudeApiKey, opts.onProgress);
+  if (hasAI(opts.settings)) {
+    return scoreWithAI(papers, tracker, opts.settings, opts.onProgress);
   }
   // Local keyword scoring is synchronous, just iterate
   const out: PaperScore[] = [];
