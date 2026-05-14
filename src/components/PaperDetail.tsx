@@ -38,50 +38,36 @@ export default function PaperDetail({ paper }: Props) {
     if (paper.abstract) return;
     setAbstractLoading(true);
     let cancelled = false;
+    const ctrl = new AbortController();
+    const timeoutId = setTimeout(() => ctrl.abort(), 30_000);
     (async () => {
       try {
-        const resp = await fetch(`/api/arxiv-abstract?id=${encodeURIComponent(paper.arxivId)}`);
+        const resp = await fetch(`/api/arxiv-abstract?id=${encodeURIComponent(paper.arxivId)}`, { signal: ctrl.signal });
         if (cancelled) return;
-        if (!resp.ok) {
-          const err = await resp.json().catch(() => ({})) as { error?: string };
-          const msg = err.error?.includes('429') || err.error?.toLowerCase().includes('rate')
-            ? 'arXiv is rate-limiting us — try again in a few seconds.'
-            : err.error ?? `Could not fetch abstract (HTTP ${resp.status})`;
-          setAbstractError(msg);
+        const data = await resp.json().catch(() => ({})) as { abstract?: string; error?: string; retryAfter?: number };
+        if (!resp.ok || !data.abstract) {
+          const baseMsg = data.error ?? `Could not fetch abstract (HTTP ${resp.status})`;
+          const friendly = /rate|429|limit/i.test(baseMsg)
+            ? `arXiv and Semantic Scholar are both rate-limiting us. ${data.retryAfter ? `Try again in ~${data.retryAfter}s.` : 'Try again shortly.'}`
+            : baseMsg;
+          setAbstractError(friendly);
           return;
         }
-        const xml = await resp.text();
-        const trimmed = xml.trimStart();
-        if (!trimmed.startsWith('<?xml') && !trimmed.startsWith('<feed')) {
-          setAbstractError('Unexpected response from arXiv.');
-          return;
-        }
-        const doc = new DOMParser().parseFromString(xml, 'application/xml');
-        if (doc.getElementsByTagName('parsererror').length > 0) {
-          setAbstractError('Could not parse arXiv response.');
-          return;
-        }
-        const entry = doc.getElementsByTagNameNS('*', 'entry').item(0);
-        if (!entry) {
-          setAbstractError('arXiv has no entry for this ID.');
-          return;
-        }
-        const summary = entry.getElementsByTagNameNS('*', 'summary').item(0);
-        const text    = summary?.textContent?.trim().replace(/\s+/g, ' ') ?? '';
-        if (cancelled) return;
-        if (text) {
-          setFetchedAbstract(text);
-          updatePaperAbstract(paper.id, text);
-        } else {
-          setAbstractError('No abstract found in arXiv response.');
-        }
+        setFetchedAbstract(data.abstract);
+        updatePaperAbstract(paper.id, data.abstract);
       } catch (e) {
-        if (!cancelled) setAbstractError(e instanceof Error ? e.message : 'Network error');
+        if (cancelled) return;
+        if (e instanceof Error && e.name === 'AbortError') {
+          setAbstractError('Abstract fetch timed out after 30s.');
+        } else {
+          setAbstractError(e instanceof Error ? e.message : 'Network error');
+        }
       } finally {
+        clearTimeout(timeoutId);
         if (!cancelled) setAbstractLoading(false);
       }
     })();
-    return () => { cancelled = true; };
+    return () => { cancelled = true; ctrl.abort(); clearTimeout(timeoutId); };
   }, [paper.arxivId, paper.abstract, paper.id, updatePaperAbstract, abstractRetryNonce]);
 
   const { savePaper, unsavePaper, isSaved } = useLibrary();

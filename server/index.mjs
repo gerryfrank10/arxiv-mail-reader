@@ -28,65 +28,96 @@ app.get('/api/presets', (_req, res) => res.json(PRESETS));
 app.get('/api/health',  (_req, res) => res.json({ ok: true }));
 
 // Proxy arXiv API to avoid CORS issues in the browser
-// Simple in-memory cache + throttle to play nicely with arXiv's rate limits.
-// arXiv asks for a 3-second min delay between programmatic requests.
-const arxivCache = new Map(); // id -> { xml, ts }
-const ARXIV_CACHE_TTL = 24 * 60 * 60 * 1000; // 24h
-const ARXIV_MIN_GAP_MS = 3200;
-const ARXIV_MAX_RETRIES = 3;
+// Abstract fetch with arXiv -> Semantic Scholar fallback.
+//
+// We hit arXiv first (throttled per their policy). On rate-limit or any
+// non-XML upstream, we try Semantic Scholar. Successful results are cached
+// per-id for 24h; failures are negatively cached for 60s so the client
+// can't accidentally hammer either upstream.
+const abstractCache = new Map();   // id -> { abstract, source, ts }
+const abstractNegCache = new Map(); // id -> { error, ts }
+const ABSTRACT_TTL_MS    = 24 * 60 * 60 * 1000;
+const ABSTRACT_NEG_TTL_MS = 60 * 1000;
+const ARXIV_MIN_GAP_MS   = 3200;
+const S2_MIN_GAP_MS      = 1100;
 let lastArxivCall = 0;
+let lastS2Call    = 0;
 let arxivQueue = Promise.resolve();
+let s2Queue    = Promise.resolve();
 
-async function doFetchArxiv(id) {
-  const wait = Math.max(0, ARXIV_MIN_GAP_MS - (Date.now() - lastArxivCall));
-  if (wait > 0) await new Promise(r => setTimeout(r, wait));
-  lastArxivCall = Date.now();
-  const upstream = await fetch(`https://export.arxiv.org/api/query?id_list=${encodeURIComponent(id)}`);
-  return { status: upstream.status, body: await upstream.text() };
+function extractArxivAbstract(xml) {
+  // Look for <summary>...</summary> inside an <entry>. The Atom feed has a
+  // top-level <title> but no top-level <summary>, so a single grep is safe.
+  const m = xml.match(/<entry[\s\S]*?<summary>([\s\S]*?)<\/summary>/);
+  if (!m) return null;
+  return m[1]
+    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'")
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
-function fetchArxivThrottled(id) {
-  const job = arxivQueue.then(async () => {
-    let result = await doFetchArxiv(id);
-    // Retry on rate-limit with exponential backoff
-    for (let attempt = 1; attempt <= ARXIV_MAX_RETRIES && result.status === 429; attempt++) {
-      const backoff = 4000 * Math.pow(2, attempt - 1); // 4s, 8s, 16s
-      console.warn(`[arxiv] rate-limited on id=${id}, retry ${attempt}/${ARXIV_MAX_RETRIES} in ${backoff}ms`);
-      await new Promise(r => setTimeout(r, backoff));
-      result = await doFetchArxiv(id);
-    }
-    return result;
-  });
-  // Keep the queue chain alive even when a request fails
-  arxivQueue = job.catch(() => {});
-  return job;
+async function fetchFromArxiv(id) {
+  // Single throttled call (no retry — we'd rather fall back to S2 quickly)
+  return arxivQueue = arxivQueue.then(async () => {
+    const wait = Math.max(0, ARXIV_MIN_GAP_MS - (Date.now() - lastArxivCall));
+    if (wait > 0) await new Promise(r => setTimeout(r, wait));
+    lastArxivCall = Date.now();
+    const r = await fetch(`https://export.arxiv.org/api/query?id_list=${encodeURIComponent(id)}`);
+    const body = await r.text();
+    if (r.status !== 200) throw new Error(`arXiv ${r.status}`);
+    const abstract = extractArxivAbstract(body);
+    if (!abstract) throw new Error('arXiv: no summary in feed');
+    return abstract;
+  }).catch(err => { throw err; });
+}
+
+async function fetchFromSemanticScholar(id) {
+  return s2Queue = s2Queue.then(async () => {
+    const wait = Math.max(0, S2_MIN_GAP_MS - (Date.now() - lastS2Call));
+    if (wait > 0) await new Promise(r => setTimeout(r, wait));
+    lastS2Call = Date.now();
+    const r = await fetch(`https://api.semanticscholar.org/graph/v1/paper/arXiv:${encodeURIComponent(id)}?fields=abstract`);
+    if (r.status !== 200) throw new Error(`Semantic Scholar ${r.status}`);
+    const data = await r.json();
+    if (!data.abstract) throw new Error('Semantic Scholar: no abstract field');
+    return String(data.abstract).replace(/\s+/g, ' ').trim();
+  }).catch(err => { throw err; });
 }
 
 app.get('/api/arxiv-abstract', async (req, res) => {
   const { id } = req.query;
   if (!id) return res.status(400).json({ error: 'id is required' });
 
-  // Serve from cache when fresh
-  const cached = arxivCache.get(id);
-  if (cached && Date.now() - cached.ts < ARXIV_CACHE_TTL) {
-    res.setHeader('Content-Type', 'application/xml');
-    return res.send(cached.xml);
+  const cached = abstractCache.get(id);
+  if (cached && Date.now() - cached.ts < ABSTRACT_TTL_MS) {
+    return res.json({ abstract: cached.abstract, source: cached.source, cached: true });
+  }
+  const neg = abstractNegCache.get(id);
+  if (neg && Date.now() - neg.ts < ABSTRACT_NEG_TTL_MS) {
+    return res.status(503).json({ error: neg.error, retryAfter: Math.ceil((ABSTRACT_NEG_TTL_MS - (Date.now() - neg.ts)) / 1000) });
   }
 
+  let abstract;
+  let source;
+  let arxivErr;
   try {
-    const { status, body } = await fetchArxivThrottled(id);
-    const trimmed = body.trimStart();
-    // arXiv API returns Atom XML. If we got HTML/plain text instead (rate-limit
-    // page, 4xx error, etc.) surface a 502 so the client doesn't try to parse it.
-    if (status !== 200 || (!trimmed.startsWith('<?xml') && !trimmed.startsWith('<feed'))) {
-      return res.status(502).json({ error: `arXiv ${status}: ${body.slice(0, 120).trim()}` });
+    abstract = await fetchFromArxiv(id);
+    source   = 'arxiv';
+  } catch (e) {
+    arxivErr = e.message;
+    console.warn(`[abstract] arXiv failed for ${id}: ${arxivErr} — falling back to Semantic Scholar`);
+    try {
+      abstract = await fetchFromSemanticScholar(id);
+      source   = 'semantic-scholar';
+    } catch (e2) {
+      const msg = `Both sources failed (arXiv: ${arxivErr}; S2: ${e2.message})`;
+      abstractNegCache.set(id, { error: msg, ts: Date.now() });
+      return res.status(502).json({ error: msg });
     }
-    arxivCache.set(id, { xml: body, ts: Date.now() });
-    res.setHeader('Content-Type', 'application/xml');
-    res.send(body);
-  } catch (err) {
-    res.status(502).json({ error: `Failed to fetch from arXiv: ${err.message}` });
   }
+
+  abstractCache.set(id, { abstract, source, ts: Date.now() });
+  res.json({ abstract, source });
 });
 
 app.post('/api/fetch-imap-emails', async (req, res) => {
