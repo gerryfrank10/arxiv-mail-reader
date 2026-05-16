@@ -1,12 +1,13 @@
-import { useState, useMemo } from 'react';
-import { Library, Plus, Trash2, Search, BookOpen, Edit2, X, AlertCircle, Loader2 } from 'lucide-react';
+import { useState, useMemo, useRef } from 'react';
+import { Library, Plus, Trash2, Search, BookOpen, Edit2, X, AlertCircle, Loader2, Upload, FileText, ExternalLink, Download } from 'lucide-react';
 import { useBooks } from '../contexts/BooksContext';
 import { Book } from '../types';
-import { lookupBookByIsbn } from '../utils/researchApi';
+import { bookFileUrl, deleteBookFile, lookupBookByIsbn, uploadBookFile } from '../utils/researchApi';
 import { formatDistanceToNow } from 'date-fns';
 import CrossRefsPanel from './CrossRefsPanel';
 import { usePagination } from '../hooks/usePagination';
 import Pager from './Pager';
+import { useConfirm } from '../contexts/ConfirmContext';
 
 export default function BooksView() {
   const { books, loading, dbEnabled, refresh } = useBooks();
@@ -161,8 +162,9 @@ function BookCard({ book, onClick }: { book: Book; onClick: () => void }) {
 // =========================================================================
 
 function BookForm({ book, onClose }: { book?: Book; onClose: () => void }) {
-  const { createBook, updateBook, removeBook } = useBooks();
+  const { createBook, updateBook, removeBook, refresh } = useBooks();
   const editing = !!book;
+  const confirm = useConfirm();
 
   const [title,     setTitle]     = useState(book?.title     ?? '');
   const [authors,   setAuthors]   = useState((book?.authors ?? []).join(', '));
@@ -175,7 +177,41 @@ function BookForm({ book, onClose }: { book?: Book; onClose: () => void }) {
   const [tags,      setTags]      = useState((book?.tags ?? []).join(', '));
   const [lookingUp, setLookingUp] = useState(false);
   const [lookupErr, setLookupErr] = useState<string | null>(null);
-  const [confirmDelete, setConfirmDelete] = useState(false);
+  // Local mirror of the upload state so the user sees changes immediately
+  const [currentBook, setCurrentBook] = useState<Book | undefined>(book);
+  const [uploading,   setUploading]   = useState(false);
+  const [uploadErr,   setUploadErr]   = useState<string | null>(null);
+  const [dragging,    setDragging]    = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  async function handleUpload(file: File) {
+    if (!currentBook) return;
+    setUploading(true);
+    setUploadErr(null);
+    try {
+      const updated = await uploadBookFile(currentBook.id, file);
+      setCurrentBook(updated);
+      refresh();
+    } catch (e) {
+      setUploadErr(e instanceof Error ? e.message : 'Upload failed');
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  async function handleRemoveFile() {
+    if (!currentBook) return;
+    const ok = await confirm({
+      title: 'Remove attached file?',
+      message: `"${currentBook.originalFilename ?? 'the uploaded file'}" will be deleted from the server. The book metadata stays.`,
+      destructive: true,
+      confirmLabel: 'Remove file',
+    });
+    if (!ok) return;
+    await deleteBookFile(currentBook.id);
+    setCurrentBook({ ...currentBook, filePath: null, fileSize: null, mimeType: null, originalFilename: null, uploadedAt: null });
+    refresh();
+  }
 
   async function handleLookup() {
     if (!isbn.trim()) return;
@@ -292,6 +328,99 @@ function BookForm({ book, onClose }: { book?: Book; onClose: () => void }) {
               className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-400" />
           </Field>
 
+          {/* Attached file (uploads only available after the book has an id) */}
+          {editing && currentBook && (
+            <div className="border-t border-slate-100 pt-4">
+              <label className="block text-sm font-medium text-slate-700 mb-2 flex items-center gap-1.5">
+                <Upload size={13} className="text-slate-400" />
+                Attached file <span className="text-xs text-slate-400 font-normal">(PDF, EPUB, MOBI, TXT — up to 50 MB)</span>
+              </label>
+              {currentBook.filePath ? (
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-md bg-white border border-slate-200 flex items-center justify-center text-slate-500 shrink-0">
+                    <FileText size={18} />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-slate-800 truncate">{currentBook.originalFilename ?? 'file'}</p>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      {humanFileSize(currentBook.fileSize)} · {currentBook.mimeType ?? '?'} · uploaded {currentBook.uploadedAt ? formatDistanceToNow(new Date(currentBook.uploadedAt), { addSuffix: true }) : '—'}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <a
+                      href={bookFileUrl(currentBook.id)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      title="Open in new tab"
+                      className="p-1.5 rounded text-slate-500 hover:text-blue-600 hover:bg-white transition-colors"
+                    >
+                      <ExternalLink size={14} />
+                    </a>
+                    <a
+                      href={bookFileUrl(currentBook.id, { download: true })}
+                      title="Download"
+                      className="p-1.5 rounded text-slate-500 hover:text-blue-600 hover:bg-white transition-colors"
+                    >
+                      <Download size={14} />
+                    </a>
+                    <button
+                      onClick={handleRemoveFile}
+                      title="Remove file"
+                      className="p-1.5 rounded text-slate-500 hover:text-red-600 hover:bg-white transition-colors"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div
+                  onClick={() => fileInputRef.current?.click()}
+                  onDragOver={e => { e.preventDefault(); setDragging(true); }}
+                  onDragLeave={() => setDragging(false)}
+                  onDrop={e => {
+                    e.preventDefault();
+                    setDragging(false);
+                    const f = e.dataTransfer.files?.[0];
+                    if (f) handleUpload(f);
+                  }}
+                  className={`rounded-lg border-2 border-dashed p-6 text-center cursor-pointer transition-all ${
+                    dragging
+                      ? 'border-blue-400 bg-blue-50'
+                      : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50'
+                  }`}
+                >
+                  {uploading ? (
+                    <p className="text-sm text-slate-500 flex items-center justify-center gap-2">
+                      <Loader2 size={14} className="animate-spin" /> Uploading…
+                    </p>
+                  ) : (
+                    <>
+                      <Upload size={20} className="mx-auto text-slate-400 mb-2" />
+                      <p className="text-sm text-slate-600 font-medium">Drop a file here, or click to browse</p>
+                      <p className="text-xs text-slate-400 mt-1">PDF · EPUB · MOBI · TXT · MD · up to 50 MB</p>
+                    </>
+                  )}
+                </div>
+              )}
+              {uploadErr && (
+                <p className="text-xs text-red-600 mt-2 flex items-center gap-1.5">
+                  <AlertCircle size={12} /> {uploadErr}
+                </p>
+              )}
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".pdf,.epub,.mobi,.azw,.azw3,.djvu,.txt,.md,application/pdf,application/epub+zip"
+                className="hidden"
+                onChange={e => {
+                  const f = e.target.files?.[0];
+                  if (f) handleUpload(f);
+                  e.target.value = ''; // allow re-uploading the same filename
+                }}
+              />
+            </div>
+          )}
+
           {/* Cross-refs only show on existing books (need an id) */}
           {editing && book && (
             <div className="-mx-1 px-1 border-t border-slate-100 pt-3">
@@ -304,15 +433,17 @@ function BookForm({ book, onClose }: { book?: Book; onClose: () => void }) {
           {editing && (
             <button
               onClick={async () => {
-                if (confirmDelete) { await removeBook(book!.id); onClose(); }
-                else setConfirmDelete(true);
+                const ok = await confirm({
+                  title: 'Delete book?',
+                  message: `"${book!.title}" — including any attached file and your notes. This can't be undone.`,
+                  destructive: true,
+                  confirmLabel: 'Delete book',
+                });
+                if (ok) { await removeBook(book!.id); onClose(); }
               }}
-              className={`flex items-center gap-1.5 px-3 py-2 text-sm rounded-lg transition-colors ${
-                confirmDelete ? 'bg-red-600 text-white hover:bg-red-700' : 'text-red-600 hover:bg-red-50'
-              }`}
+              className="flex items-center gap-1.5 px-3 py-2 text-sm rounded-lg text-red-600 hover:bg-red-50 transition-colors"
             >
-              <Trash2 size={13} />
-              {confirmDelete ? 'Click again to confirm' : 'Delete'}
+              <Trash2 size={13} /> Delete
             </button>
           )}
           <div className="flex-1" />
@@ -328,6 +459,14 @@ function BookForm({ book, onClose }: { book?: Book; onClose: () => void }) {
       </div>
     </div>
   );
+}
+
+function humanFileSize(bytes: number | null | undefined): string {
+  if (!bytes) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let v = bytes; let i = 0;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+  return `${v.toFixed(v < 10 && i > 0 ? 1 : 0)} ${units[i]}`;
 }
 
 function Field({ label, hint, required, children }: { label: string; hint?: string; required?: boolean; children: React.ReactNode }) {

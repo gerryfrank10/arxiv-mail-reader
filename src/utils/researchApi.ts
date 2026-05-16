@@ -4,7 +4,7 @@
 // isn't enabled, the status endpoint returns { enabled: false } and the
 // client UI shows a setup hint instead of an empty/broken state.
 
-import { Book, Collection, CollectionItem, EntityKind, Link, LinkRel, Paper, PaperScore, ResearchDocument, Tracker } from '../types';
+import { Book, Collection, CollectionItem, CorrelationStats, EntityKind, Link, LinkRel, Paper, PaperCorrelation, PaperScore, ResearchDocument, Tracker } from '../types';
 
 function userEmailFromLocalStorage(): string | null {
   try {
@@ -68,6 +68,52 @@ export async function upsertBook(b: Book): Promise<void> {
 
 export async function deleteBook(id: string): Promise<void> {
   await call(`/api/db/books/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+// Uploads a file (PDF/EPUB/etc) to an existing book and returns the
+// refreshed Book record. The book must already exist on the server.
+export async function uploadBookFile(bookId: string, file: File): Promise<Book> {
+  const form = new FormData();
+  form.append('file', file);
+  // Don't set Content-Type — let the browser add the multipart boundary
+  const email = userEmailFromLocalStorage();
+  const headers: Record<string, string> = {};
+  if (email) headers['x-user-email'] = email;
+  const r = await fetch(`/api/db/books/${encodeURIComponent(bookId)}/upload`, {
+    method: 'POST',
+    headers,
+    body: form,
+  });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({})) as { error?: string };
+    throw new Error(err.error ?? `Upload failed (HTTP ${r.status})`);
+  }
+  const data = await r.json() as { book: Book };
+  return data.book;
+}
+
+export async function deleteBookFile(bookId: string): Promise<void> {
+  await call(`/api/db/books/${encodeURIComponent(bookId)}/file`, { method: 'DELETE' });
+}
+
+// Build a URL the browser can open directly. We append the user email
+// as a query param since the server route protects via header — but for
+// <a href> and <iframe src> we need it in the URL. The server accepts
+// both for the /file endpoint.
+export function bookFileUrl(bookId: string, opts: { download?: boolean } = {}): string {
+  // Browser-direct navigation (<a target=_blank>, <iframe src>) can't set
+  // headers, so we pass the user email as a query param. The server route
+  // accepts either header or query param.
+  const email = (() => {
+    try {
+      const raw = localStorage.getItem('arxiv_auth_session');
+      return raw ? (JSON.parse(raw) as { email?: string }).email ?? '' : '';
+    } catch { return ''; }
+  })();
+  const params = new URLSearchParams();
+  if (opts.download) params.set('download', '1');
+  if (email)         params.set('email', email);
+  return `/api/db/books/${encodeURIComponent(bookId)}/file?${params}`;
 }
 
 // ---------- Documents (Writer) ----------
@@ -231,6 +277,33 @@ export async function apiUpsertScores(scores: PaperScore[]): Promise<void> {
 
 export async function apiDeleteScoresForTracker(trackerId: string): Promise<void> {
   await call(`/api/db/scores/tracker/${encodeURIComponent(trackerId)}`, { method: 'DELETE' });
+}
+
+// ---------- AI correlations cache ----------
+
+export async function apiGetCorrelationsForPaper(arxivId: string, opts: { limit?: number; minScore?: number } = {}): Promise<PaperCorrelation[]> {
+  const params = new URLSearchParams();
+  if (opts.limit    != null) params.set('limit',    String(opts.limit));
+  if (opts.minScore != null) params.set('minScore', String(opts.minScore));
+  const url = `/api/db/correlations/${encodeURIComponent(arxivId)}${params.toString() ? `?${params}` : ''}`;
+  const { correlations } = await call<{ correlations: PaperCorrelation[] }>(url);
+  return correlations;
+}
+
+export async function apiUpsertCorrelations(correlations: PaperCorrelation[]): Promise<void> {
+  await call('/api/db/correlations', { method: 'POST', body: JSON.stringify({ correlations }) });
+}
+
+export async function apiGetCorrelationStats(): Promise<CorrelationStats> {
+  return call('/api/db/correlations-stats');
+}
+
+export async function apiFindPapersMissingCorrelations(candidates: string[], limit = 1): Promise<string[]> {
+  const { arxivIds } = await call<{ arxivIds: string[] }>('/api/db/correlations-missing', {
+    method: 'POST',
+    body: JSON.stringify({ candidates, limit }),
+  });
+  return arxivIds;
 }
 
 // ---------- IndexedDB → Postgres migration ----------

@@ -261,6 +261,34 @@ export const db = {
     await pool.query(`DELETE FROM books WHERE user_id=$1 AND id=$2`, [userId, id]);
   },
 
+  async getBook(userId, id) {
+    const { rows } = await pool.query(
+      `SELECT * FROM books WHERE user_id=$1 AND id=$2`,
+      [userId, id],
+    );
+    return rows[0] ? rowToBook(rows[0]) : null;
+  },
+
+  async attachFileToBook(userId, id, file) {
+    await pool.query(
+      `UPDATE books
+       SET file_path=$3, file_size=$4, mime_type=$5, original_filename=$6,
+           uploaded_at=now(), updated_at=now()
+       WHERE user_id=$1 AND id=$2`,
+      [userId, id, file.path, file.size, file.mimetype, file.originalname],
+    );
+  },
+
+  async clearBookFile(userId, id) {
+    await pool.query(
+      `UPDATE books
+       SET file_path=NULL, file_size=NULL, mime_type=NULL,
+           original_filename=NULL, uploaded_at=NULL, updated_at=now()
+       WHERE user_id=$1 AND id=$2`,
+      [userId, id],
+    );
+  },
+
   // ----- documents (Writer drafts) -----
 
   async getDocuments(userId) {
@@ -447,21 +475,109 @@ db.deleteLink = async function (userId, link) {
   );
 };
 
+// ----- AI correlations cache -----
+
+db.getCorrelationsForPaper = async function (userId, arxivId, limit = 20, minScore = 50) {
+  const { rows } = await pool.query(
+    `SELECT * FROM paper_correlations
+     WHERE user_id=$1 AND source_arxiv_id=$2 AND score >= $4
+     ORDER BY score DESC, computed_at DESC
+     LIMIT $3`,
+    [userId, arxivId, limit, minScore],
+  );
+  return rows.map(rowToCorrelation);
+};
+
+db.upsertCorrelations = async function (userId, correlations) {
+  if (!correlations.length) return;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    for (const c of correlations) {
+      if (c.sourceArxivId === c.targetArxivId) continue;
+      await client.query(
+        `INSERT INTO paper_correlations (user_id, source_arxiv_id, target_arxiv_id, score, rationale, ai_provider, computed_at)
+         VALUES ($1, $2, $3, $4, $5, $6, now())
+         ON CONFLICT (user_id, source_arxiv_id, target_arxiv_id) DO UPDATE SET
+           score=$4, rationale=$5, ai_provider=$6, computed_at=now()`,
+        [userId, c.sourceArxivId, c.targetArxivId, c.score, c.rationale ?? '', c.aiProvider ?? ''],
+      );
+    }
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
+};
+
+db.getCorrelationStats = async function (userId) {
+  const [{ rows: totals }, { rows: sources }, { rows: lastHour }] = await Promise.all([
+    pool.query(`SELECT COUNT(*)::int AS n FROM paper_correlations WHERE user_id=$1`, [userId]),
+    pool.query(`SELECT COUNT(DISTINCT source_arxiv_id)::int AS n FROM paper_correlations WHERE user_id=$1`, [userId]),
+    pool.query(
+      `SELECT COUNT(DISTINCT source_arxiv_id)::int AS n
+       FROM paper_correlations
+       WHERE user_id=$1 AND computed_at >= now() - interval '1 hour'`,
+      [userId],
+    ),
+  ]);
+  return {
+    total:              totals[0]?.n ?? 0,
+    distinctSources:    sources[0]?.n ?? 0,
+    papersInLastHour:   lastHour[0]?.n ?? 0,
+  };
+};
+
+// Which arxiv IDs (out of the candidates list) DON'T yet have a correlation
+// row as a source? Used by the worker to pick the next batch.
+db.findPapersMissingCorrelations = async function (userId, candidateArxivIds, limit = 1) {
+  if (!candidateArxivIds.length) return [];
+  const { rows } = await pool.query(
+    `SELECT cand AS arxiv_id
+     FROM unnest($2::text[]) AS cand
+     WHERE NOT EXISTS (
+       SELECT 1 FROM paper_correlations
+       WHERE user_id=$1 AND source_arxiv_id=cand
+     )
+     LIMIT $3`,
+    [userId, candidateArxivIds, limit],
+  );
+  return rows.map(r => r.arxiv_id);
+};
+
+function rowToCorrelation(r) {
+  return {
+    sourceArxivId: r.source_arxiv_id,
+    targetArxivId: r.target_arxiv_id,
+    score:         r.score,
+    rationale:     r.rationale ?? '',
+    aiProvider:    r.ai_provider ?? '',
+    computedAt:    new Date(r.computed_at).getTime(),
+  };
+}
+
 function rowToBook(r) {
   return {
-    id:         r.id,
-    title:      r.title,
-    authors:    r.authors ?? [],
-    isbn:       r.isbn,
-    year:       r.year,
-    publisher:  r.publisher,
-    coverUrl:   r.cover_url,
-    abstract:   r.abstract ?? '',
-    notes:      r.notes ?? '',
-    sourceUrl:  r.source_url,
-    tags:       r.tags ?? [],
-    createdAt:  new Date(r.created_at).getTime(),
-    updatedAt:  new Date(r.updated_at).getTime(),
+    id:               r.id,
+    title:            r.title,
+    authors:          r.authors ?? [],
+    isbn:             r.isbn,
+    year:             r.year,
+    publisher:        r.publisher,
+    coverUrl:         r.cover_url,
+    abstract:         r.abstract ?? '',
+    notes:            r.notes ?? '',
+    sourceUrl:        r.source_url,
+    tags:             r.tags ?? [],
+    filePath:         r.file_path ?? null,
+    fileSize:         r.file_size ? Number(r.file_size) : null,
+    mimeType:         r.mime_type ?? null,
+    originalFilename: r.original_filename ?? null,
+    uploadedAt:       r.uploaded_at ? new Date(r.uploaded_at).getTime() : null,
+    createdAt:        new Date(r.created_at).getTime(),
+    updatedAt:        new Date(r.updated_at).getTime(),
   };
 }
 

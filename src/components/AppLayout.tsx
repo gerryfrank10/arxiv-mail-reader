@@ -19,6 +19,7 @@ import { WriterProvider } from '../contexts/WriterContext';
 import { CollectionsProvider } from '../contexts/CollectionsContext';
 import { LinksProvider } from '../contexts/LinksContext';
 import { ConfirmProvider } from '../contexts/ConfirmContext';
+import { CorrelationsProvider } from '../contexts/CorrelationsContext';
 
 export type ActiveView = 'inbox' | 'library' | 'discover' | 'tracking' | 'books' | 'writer' | 'collections';
 
@@ -70,7 +71,9 @@ export default function AppLayout() {
             <WriterProvider>
               <CollectionsProvider>
                 <LinksProvider>
-                  <AppLayoutInner />
+                  <CorrelationsProvider>
+                    <AppLayoutInner />
+                  </CorrelationsProvider>
                 </LinksProvider>
               </CollectionsProvider>
             </WriterProvider>

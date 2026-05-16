@@ -7,6 +7,8 @@ import { dbExportAll } from '../utils/paperDb';
 import { getDbStatus, migrateFromIdb } from '../utils/researchApi';
 import { getStorageMode, setStorageMode } from '../utils/storage';
 import { useConfirm } from '../contexts/ConfirmContext';
+import { useCorrelations } from '../contexts/CorrelationsContext';
+import { Brain } from 'lucide-react';
 
 interface Props {
   onClose: () => void;
@@ -258,6 +260,9 @@ export default function SettingsModal({ onClose }: Props) {
           {/* ---------- IndexedDB → Postgres migration ---------- */}
           <MigrationSection />
 
+          {/* ---------- AI correlations cache ---------- */}
+          <CorrelationsSection />
+
           {/* ---------- Semantic Scholar ---------- */}
           <Section title="Semantic Scholar (optional)" description="Raises rate limits 10x for Discover & citation-graph features.">
             <div className="relative">
@@ -361,12 +366,38 @@ function MigrationSection() {
           }
         }
       } catch { /* ignore */ }
-      const r = await migrateFromIdb(payload);
+      // Chunk papers + scores in case the user has hundreds — keeps each
+      // request under ~5MB even before the server's higher limit.
+      const PAPER_CHUNK = 100;
+      const SCORE_CHUNK = 500;
+      const totals = { papers: 0, library: 0, readIds: 0, trackers: 0, scores: 0 };
+      // Push everything else in one go (small lists), then papers/scores in chunks
+      const r0 = await migrateFromIdb({
+        papers:   [],
+        library:  payload.library,
+        readIds:  payload.readIds,
+        trackers: payload.trackers,
+        scores:   [],
+      });
+      Object.assign(totals, {
+        library:  r0.counts?.library  ?? 0,
+        readIds:  r0.counts?.readIds  ?? 0,
+        trackers: r0.counts?.trackers ?? 0,
+      });
+      for (let i = 0; i < payload.papers.length; i += PAPER_CHUNK) {
+        const chunk = payload.papers.slice(i, i + PAPER_CHUNK);
+        const rc = await migrateFromIdb({ papers: chunk, library: [], readIds: [], trackers: [], scores: [] });
+        totals.papers += rc.counts?.papers ?? 0;
+      }
+      for (let i = 0; i < payload.scores.length; i += SCORE_CHUNK) {
+        const chunk = payload.scores.slice(i, i + SCORE_CHUNK);
+        const rc = await migrateFromIdb({ papers: [], library: [], readIds: [], trackers: [], scores: chunk });
+        totals.scores += rc.counts?.scores ?? 0;
+      }
       const ts = new Date().toISOString();
       localStorage.setItem('arxiv_idb_migrated_at', ts);
       setMigratedAt(ts);
-      const counts = r.counts ?? {};
-      setResult({ ok: true, message: `Pushed ${counts.papers} papers · ${counts.trackers} trackers · ${counts.scores} scores · ${counts.readIds} read marks · ${counts.library} library items.` });
+      setResult({ ok: true, message: `Pushed ${totals.papers} papers · ${totals.trackers} trackers · ${totals.scores} scores · ${totals.readIds} read marks · ${totals.library} library items.` });
     } catch (e) {
       setResult({ ok: false, message: e instanceof Error ? e.message : 'Migration failed' });
     } finally {
@@ -474,6 +505,78 @@ function MigrationSection() {
           {result.ok ? <CheckCircle2 size={12} className="mt-0.5" /> : <AlertCircle size={12} className="mt-0.5" />}
           <span>{result.message}</span>
         </div>
+      )}
+    </Section>
+  );
+}
+
+// =========================================================================
+// AI correlations background worker controls
+// =========================================================================
+
+function CorrelationsSection() {
+  const c = useCorrelations();
+  const nextAt = c.workerNextEligibleAt;
+
+  return (
+    <Section
+      title="AI correlations cache"
+      description="Pre-computes which papers in your library are related, so paper detail loads correlations instantly without burning tokens on every click. Rate-limited to 100 papers/hour."
+    >
+      <label className="flex items-start gap-3 cursor-pointer select-none">
+        <input
+          type="checkbox"
+          checked={c.enabled}
+          onChange={e => c.setEnabled(e.target.checked)}
+          disabled={!c.dbEnabled}
+          className="mt-0.5 w-4 h-4 accent-fuchsia-500"
+        />
+        <div className="flex-1">
+          <div className="flex items-center gap-2">
+            <Brain size={14} className={c.enabled ? 'text-fuchsia-500' : 'text-slate-400'} />
+            <span className={`text-sm font-medium ${c.enabled ? 'text-fuchsia-700' : 'text-slate-700'}`}>
+              Run background worker
+            </span>
+            {c.workerBusy && <span className="text-[10px] text-fuchsia-600 font-semibold animate-pulse">scoring…</span>}
+          </div>
+          <p className="text-xs text-slate-500 leading-relaxed mt-1">
+            {c.dbEnabled
+              ? 'When enabled, picks one un-scored paper from your inbox/library every minute and scores it against up to 18 others. Stops at 100 papers/hour.'
+              : 'Requires server DB. Start it with npm run db:up.'}
+          </p>
+        </div>
+      </label>
+
+      {c.stats && (
+        <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs space-y-1.5">
+          <div className="flex items-center justify-between">
+            <span className="text-slate-500">Total cached correlations:</span>
+            <span className="font-mono text-slate-800">{c.stats.total.toLocaleString()}</span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-slate-500">Source papers scored:</span>
+            <span className="font-mono text-slate-800">{c.stats.distinctSources.toLocaleString()}</span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-slate-500">Scored in last hour:</span>
+            <span className="font-mono text-slate-800">
+              {c.stats.papersInLastHour} / 100
+              {c.stats.papersInLastHour >= 100 && <span className="text-amber-600 ml-1">(limit reached)</span>}
+            </span>
+          </div>
+          {c.workerLastRun && (
+            <p className="text-[11px] text-slate-400 pt-1.5 border-t border-slate-200">
+              last run: {c.workerLastRun.toLocaleTimeString()}
+              {nextAt && c.enabled && <> · next eligible: {nextAt.toLocaleTimeString()}</>}
+            </p>
+          )}
+        </div>
+      )}
+
+      {c.workerLastError && (
+        <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 px-2.5 py-1.5 rounded">
+          last error: {c.workerLastError}
+        </p>
       )}
     </Section>
   );

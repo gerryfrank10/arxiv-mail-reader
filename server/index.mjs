@@ -3,7 +3,9 @@ import cors from 'cors';
 import { ImapFlow } from 'imapflow';
 import { simpleParser } from 'mailparser';
 import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
+import { dirname, join, extname } from 'path';
+import { mkdirSync, unlinkSync, existsSync, statSync } from 'fs';
+import multer from 'multer';
 import 'dotenv/config';
 import { db } from './db.mjs';
 
@@ -12,7 +14,11 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 const isProd = process.env.NODE_ENV === 'production';
 
-app.use(express.json({ limit: '5mb' }));
+// Bumped to handle large migration payloads (hundreds of papers with
+// full abstracts). The actual ceiling for a 1000-paper migration is
+// around 8-10MB; 100mb gives us comfortable headroom for any direction.
+app.use(express.json({ limit: '100mb' }));
+app.use(express.urlencoded({ extended: true, limit: '100mb' }));
 if (!isProd) {
   // In dev the Vite proxy handles CORS; in prod everything is same-origin
   app.use(cors({
@@ -638,10 +644,13 @@ async function withUser(req, res, run) {
   if (!db.enabled) {
     return res.status(503).json({ error: 'Server storage is not enabled (no DATABASE_URL set).' });
   }
-  const email = req.get('x-user-email');
-  if (!email) return res.status(401).json({ error: 'X-User-Email header required' });
+  // Accept the user email via header (normal API calls) OR query param
+  // (direct file navigation from <a href target=_blank> where headers
+  // can't be set).
+  const email = req.get('x-user-email') || req.query.email;
+  if (!email) return res.status(401).json({ error: 'X-User-Email header or ?email=… required' });
   try {
-    const userId = await db.userIdForEmail(email);
+    const userId = await db.userIdForEmail(String(email));
     await run(userId);
   } catch (e) {
     console.error('[db] route error:', e);
@@ -713,7 +722,88 @@ app.put('/api/db/books/:id', (req, res) => withUser(req, res, async (uid) => {
   await db.upsertBook(uid, { ...req.body, id: req.params.id }); res.json({ ok: true });
 }));
 app.delete('/api/db/books/:id', (req, res) => withUser(req, res, async (uid) => {
+  // Best-effort: also delete the attached file on disk if any
+  try {
+    const b = await db.getBook(uid, req.params.id);
+    if (b?.filePath && existsSync(b.filePath)) unlinkSync(b.filePath);
+  } catch { /* ignore */ }
   await db.deleteBook(uid, req.params.id); res.json({ ok: true });
+}));
+
+// ---------- Book file uploads ----------
+// PDFs, EPUBs, and similar formats live on disk under ./uploads/books/<user>/<book>.<ext>.
+// 50MB cap per file. The book row stores metadata.
+const UPLOAD_ROOT = process.env.UPLOAD_ROOT || join(__dirname, '..', 'uploads');
+mkdirSync(join(UPLOAD_ROOT, 'books'), { recursive: true });
+
+const bookUpload = multer({
+  storage: multer.diskStorage({
+    destination: (req, _file, cb) => {
+      const email = req.get('x-user-email');
+      if (!email) return cb(new Error('X-User-Email header required'), '');
+      const dir = join(UPLOAD_ROOT, 'books', email.replace(/[^a-z0-9_.@-]/gi, '_'));
+      mkdirSync(dir, { recursive: true });
+      cb(null, dir);
+    },
+    filename: (req, file, cb) => {
+      const ext = extname(file.originalname).toLowerCase() || '.bin';
+      cb(null, `${req.params.id}${ext}`);
+    },
+  }),
+  limits: { fileSize: 50 * 1024 * 1024 }, // 50MB
+  fileFilter: (_req, file, cb) => {
+    // Allow common book/document formats
+    const okMimes = new Set([
+      'application/pdf',
+      'application/epub+zip',
+      'application/x-mobipocket-ebook',
+      'application/vnd.amazon.ebook',
+      'application/octet-stream',
+      'text/plain',
+      'text/markdown',
+    ]);
+    const okExts = /\.(pdf|epub|mobi|azw3?|djvu|txt|md)$/i;
+    if (okMimes.has(file.mimetype) || okExts.test(file.originalname)) cb(null, true);
+    else cb(new Error(`Unsupported file type: ${file.mimetype} (${file.originalname})`));
+  },
+});
+
+app.post('/api/db/books/:id/upload', (req, res) => withUser(req, res, async (uid) => {
+  // Make sure the book exists first so we don't dangle a file on disk
+  const existing = await db.getBook(uid, req.params.id);
+  if (!existing) return res.status(404).json({ error: 'book not found — save it first' });
+  // If there's already a file, remove the old one before writing the new
+  if (existing.filePath && existsSync(existing.filePath)) {
+    try { unlinkSync(existing.filePath); } catch { /* ignore */ }
+  }
+  bookUpload.single('file')(req, res, async (err) => {
+    if (err) return res.status(400).json({ error: err.message });
+    if (!req.file) return res.status(400).json({ error: 'no file in request (expected field "file")' });
+    await db.attachFileToBook(uid, req.params.id, req.file);
+    const updated = await db.getBook(uid, req.params.id);
+    res.json({ ok: true, book: updated });
+  });
+}));
+
+app.get('/api/db/books/:id/file', (req, res) => withUser(req, res, async (uid) => {
+  const b = await db.getBook(uid, req.params.id);
+  if (!b?.filePath || !existsSync(b.filePath)) return res.status(404).json({ error: 'no file attached' });
+  res.setHeader('Content-Type', b.mimeType || 'application/octet-stream');
+  res.setHeader('Content-Length', String(statSync(b.filePath).size));
+  // Inline display so PDFs open in-browser; force download with ?download=1
+  const disposition = req.query.download ? 'attachment' : 'inline';
+  res.setHeader('Content-Disposition',
+    `${disposition}; filename="${(b.originalFilename ?? 'book').replace(/"/g, '')}"`);
+  res.sendFile(b.filePath);
+}));
+
+app.delete('/api/db/books/:id/file', (req, res) => withUser(req, res, async (uid) => {
+  const b = await db.getBook(uid, req.params.id);
+  if (b?.filePath && existsSync(b.filePath)) {
+    try { unlinkSync(b.filePath); } catch { /* ignore */ }
+  }
+  await db.clearBookFile(uid, req.params.id);
+  res.json({ ok: true });
 }));
 
 // documents (Writer drafts)
@@ -765,6 +855,25 @@ app.post('/api/db/links', (req, res) => withUser(req, res, async (uid) => {
 }));
 app.delete('/api/db/links', (req, res) => withUser(req, res, async (uid) => {
   await db.deleteLink(uid, req.body); res.json({ ok: true });
+}));
+
+// AI correlations cache
+app.get('/api/db/correlations/:arxivId', (req, res) => withUser(req, res, async (uid) => {
+  const limit    = Math.min(parseInt(String(req.query.limit ?? '20'), 10) || 20, 100);
+  const minScore = Math.min(100, Math.max(0, parseInt(String(req.query.minScore ?? '50'), 10) || 50));
+  res.json({ correlations: await db.getCorrelationsForPaper(uid, req.params.arxivId, limit, minScore) });
+}));
+app.post('/api/db/correlations', (req, res) => withUser(req, res, async (uid) => {
+  await db.upsertCorrelations(uid, req.body.correlations ?? []);
+  res.json({ ok: true });
+}));
+app.get('/api/db/correlations-stats', (req, res) => withUser(req, res, async (uid) => {
+  res.json(await db.getCorrelationStats(uid));
+}));
+app.post('/api/db/correlations-missing', (req, res) => withUser(req, res, async (uid) => {
+  const candidates = req.body.candidates ?? [];
+  const limit      = Math.min(parseInt(String(req.body.limit ?? '1'), 10) || 1, 20);
+  res.json({ arxivIds: await db.findPapersMissingCorrelations(uid, candidates, limit) });
 }));
 
 // bulk migration ingest: client posts everything from IndexedDB in one shot

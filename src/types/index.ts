@@ -107,6 +107,12 @@ export interface Book {
   notes: string;
   sourceUrl?: string | null;
   tags: string[];
+  // Attached file (PDF/EPUB/etc) — server-side upload
+  filePath?: string | null;
+  fileSize?: number | null;
+  mimeType?: string | null;
+  originalFilename?: string | null;
+  uploadedAt?: number | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -168,6 +174,23 @@ export interface Link {
   rel:        LinkRel;
   note:       string;
   createdAt:  number;
+}
+
+// ---------- AI correlations cache ----------
+
+export interface PaperCorrelation {
+  sourceArxivId: string;
+  targetArxivId: string;
+  score:         number;   // 0..100
+  rationale:     string;
+  aiProvider:    string;
+  computedAt:    number;
+}
+
+export interface CorrelationStats {
+  total:            number;
+  distinctSources:  number;
+  papersInLastHour: number;
 }
 
 export type Provider = 'google' | 'imap';
