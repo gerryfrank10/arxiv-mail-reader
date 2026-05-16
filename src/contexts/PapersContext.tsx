@@ -45,6 +45,12 @@ interface PapersContextValue {
   sync: (force?: boolean) => Promise<void>;
   setSelectedPaper: (p: Paper | null) => void;
   markRead: (id: string) => void;
+  markUnread: (id: string) => void;
+  markManyRead:   (ids: string[]) => void;
+  markManyUnread: (ids: string[]) => void;
+  markAllRead:    () => void;
+  markAllUnread:  () => void;
+  addImportedPapers: (papers: Paper[]) => Promise<{ added: number; duplicates: number }>;
   setSearchQuery: (q: string) => void;
   setSelectedCategory: (c: string) => void;
   setAuthorFilter: (a: string) => void;
@@ -155,6 +161,61 @@ export function PapersProvider({ children }: { children: React.ReactNode }) {
     });
   }, []);
 
+  const markUnread = useCallback((id: string) => {
+    setReadIds(prev => {
+      if (!prev.has(id)) return prev;
+      const next = new Set(prev);
+      next.delete(id);
+      saveReadIds(next);
+      return next;
+    });
+  }, []);
+
+  // Bulk operations
+  const markManyRead = useCallback((ids: string[]) => {
+    if (ids.length === 0) return;
+    setReadIds(prev => {
+      const next = new Set(prev);
+      for (const id of ids) next.add(id);
+      saveReadIds(next);
+      return next;
+    });
+  }, []);
+
+  const markManyUnread = useCallback((ids: string[]) => {
+    if (ids.length === 0) return;
+    setReadIds(prev => {
+      const next = new Set(prev);
+      for (const id of ids) next.delete(id);
+      saveReadIds(next);
+      return next;
+    });
+  }, []);
+
+  const markAllRead = useCallback(() => {
+    markManyRead(papers.map(p => p.id));
+  }, [papers, markManyRead]);
+
+  const markAllUnread = useCallback(() => {
+    setReadIds(() => {
+      saveReadIds(new Set());
+      return new Set();
+    });
+  }, []);
+
+  // Add imported papers to the inbox (de-dup against existing arxiv IDs)
+  const addImportedPapers = useCallback(async (newPapers: Paper[]) => {
+    if (newPapers.length === 0) return { added: 0, duplicates: 0 };
+    const existingByArxiv = new Set(papers.map(p => p.arxivId));
+    const toAdd     = newPapers.filter(p => !existingByArxiv.has(p.arxivId));
+    const dupCount  = newPapers.length - toAdd.length;
+    if (toAdd.length === 0) return { added: 0, duplicates: dupCount };
+    await dbUpsertPapers(toAdd);
+    const all = await dbGetAllPapers();
+    setPapers(all);
+    return { added: toAdd.length, duplicates: dupCount };
+  }, [papers]);
+
   // Wrap setSelectedPaper to auto-mark as read
   const setSelectedPaperFn = useCallback((p: Paper | null) => {
     if (p) markRead(p.id);
@@ -230,7 +291,9 @@ export function PapersProvider({ children }: { children: React.ReactNode }) {
     <PapersContext.Provider value={{
       papers, loading, progress, error, settings, selectedPaper, searchQuery, selectedCategory,
       authorFilter, assessmentFilter, sortBy, sortDir, lastSynced, readIds, unreadCount,
-      sync, setSelectedPaper: setSelectedPaperFn, markRead,
+      sync, setSelectedPaper: setSelectedPaperFn,
+      markRead, markUnread, markManyRead, markManyUnread, markAllRead, markAllUnread,
+      addImportedPapers,
       setSearchQuery, setSelectedCategory,
       setAuthorFilter, setAssessmentFilter, setSortBy, setSortDir,
       updateSettings, updatePaperAbstract,

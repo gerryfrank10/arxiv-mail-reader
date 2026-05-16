@@ -1,4 +1,4 @@
-import { Search, RefreshCw, Settings, LogOut, ChevronDown, SortAsc, SortDesc, Inbox, BookMarked, X, User, Sparkles, Compass, Target } from 'lucide-react';
+import { Search, RefreshCw, Settings, LogOut, ChevronDown, SortAsc, SortDesc, Inbox, BookMarked, X, User, Sparkles, Compass, Target, Mail, MailCheck, Upload, MoreHorizontal } from 'lucide-react';
 import { useState, useRef, useEffect, useMemo } from 'react';
 import { usePapers } from '../contexts/PapersContext';
 import { useAuth } from '../contexts/AuthContext';
@@ -9,6 +9,7 @@ import { ASSESSMENT_BADGE } from '../utils/assessment';
 import { AssessmentLabel } from '../utils/assessment';
 import PaperCard from './PaperCard';
 import SettingsModal from './SettingsModal';
+import ImportModal from './ImportModal';
 import { ActiveView } from './AppLayout';
 import { SortField } from '../types';
 import { formatDistanceToNow } from 'date-fns';
@@ -39,6 +40,7 @@ export default function Sidebar({ activeView, setActiveView, onAISuggest }: Prop
     allCategories, allAuthors, sync,
     sortBy, setSortBy, sortDir, setSortDir,
     lastSynced, activeFilterCount, unreadCount, readIds,
+    markAllRead, markAllUnread, markManyRead, markManyUnread,
   } = usePapers();
   const { user, logout } = useAuth();
   const { savedPapers, isSaved } = useLibrary();
@@ -48,16 +50,22 @@ export default function Sidebar({ activeView, setActiveView, onAISuggest }: Prop
     [trackers, matchesByTracker],
   );
   const [showSettings, setShowSettings] = useState(false);
+  const [showImport,   setShowImport]   = useState(false);
   const [showCatMenu,  setShowCatMenu]  = useState(false);
   const [showSortMenu, setShowSortMenu] = useState(false);
+  const [showMoreMenu, setShowMoreMenu] = useState(false);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [showAuthorInput, setShowAuthorInput] = useState(!!authorFilter);
+  const moreMenuRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     function onMouseDown(e: MouseEvent) {
       if (searchRef.current && !searchRef.current.contains(e.target as Node)) {
         setShowSuggestions(false);
+      }
+      if (moreMenuRef.current && !moreMenuRef.current.contains(e.target as Node)) {
+        setShowMoreMenu(false);
       }
     }
     document.addEventListener('mousedown', onMouseDown);
@@ -384,14 +392,74 @@ export default function Sidebar({ activeView, setActiveView, onAISuggest }: Prop
           </div>
         )}
 
-        {/* Count row */}
+        {/* Toolbar (inbox/library): count + bulk actions */}
         {isListView && (
-          <div className="px-4 py-2 border-b border-slate-800 flex items-center justify-between">
-            <p className="text-[11px] text-slate-500">
-              {displayPapers.length} of {totalCount} paper{totalCount !== 1 ? 's' : ''}
+          <div className="px-3 py-2 border-b border-slate-800 flex items-center gap-1.5">
+            <p className="text-[11px] text-slate-500 truncate flex-1">
+              {displayPapers.length} of {totalCount} · {unreadCount} unread
             </p>
-            {activeView === 'inbox' && savedPapers.length > 0 && (
-              <p className="text-[11px] text-slate-600">{savedPapers.length} saved</p>
+            {activeView === 'inbox' && (
+              <>
+                <button
+                  onClick={() => setShowImport(true)}
+                  title="Import papers (arXiv ID or BibTeX)"
+                  className="p-1.5 rounded-md text-slate-500 hover:text-blue-400 hover:bg-slate-800 transition-all"
+                >
+                  <Upload size={12} />
+                </button>
+                <button
+                  onClick={() => markManyRead(displayPapers.map(p => p.id))}
+                  title="Mark visible as read"
+                  disabled={displayPapers.length === 0}
+                  className="p-1.5 rounded-md text-slate-500 hover:text-emerald-400 hover:bg-slate-800 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  <MailCheck size={12} />
+                </button>
+                <div ref={moreMenuRef} className="relative">
+                  <button
+                    onClick={() => setShowMoreMenu(v => !v)}
+                    title="More actions"
+                    className="p-1.5 rounded-md text-slate-500 hover:text-slate-300 hover:bg-slate-800 transition-all"
+                  >
+                    <MoreHorizontal size={12} />
+                  </button>
+                  {showMoreMenu && (
+                    <div className="absolute right-0 top-full mt-1 z-30 w-52 bg-slate-800 border border-slate-700 rounded-lg shadow-2xl overflow-hidden">
+                      <button
+                        onClick={() => { markAllRead(); setShowMoreMenu(false); }}
+                        className="w-full flex items-center gap-2 px-3 py-2 text-xs text-slate-200 hover:bg-slate-700 transition-colors text-left"
+                      >
+                        <MailCheck size={11} className="text-emerald-400" />
+                        Mark all read
+                      </button>
+                      <button
+                        onClick={() => { markAllUnread(); setShowMoreMenu(false); }}
+                        className="w-full flex items-center gap-2 px-3 py-2 text-xs text-slate-200 hover:bg-slate-700 transition-colors text-left"
+                      >
+                        <Mail size={11} className="text-blue-400" />
+                        Mark all unread
+                      </button>
+                      <div className="border-t border-slate-700 my-0.5" />
+                      <button
+                        onClick={() => { markManyUnread(displayPapers.map(p => p.id)); setShowMoreMenu(false); }}
+                        disabled={displayPapers.length === 0}
+                        className="w-full flex items-center gap-2 px-3 py-2 text-xs text-slate-300 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors text-left"
+                      >
+                        <Mail size={11} />
+                        Mark visible as unread
+                      </button>
+                      <div className="border-t border-slate-700 my-0.5" />
+                      <button
+                        onClick={() => { setShowImport(true); setShowMoreMenu(false); }}
+                        className="w-full flex items-center gap-2 px-3 py-2 text-xs text-slate-300 hover:bg-slate-700 transition-colors text-left"
+                      >
+                        <Upload size={11} className="text-blue-400" />
+                        Import papers…
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </>
             )}
           </div>
         )}
@@ -454,6 +522,7 @@ export default function Sidebar({ activeView, setActiveView, onAISuggest }: Prop
       </aside>
 
       {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
+      {showImport   && <ImportModal   onClose={() => setShowImport(false)} />}
     </>
   );
 }

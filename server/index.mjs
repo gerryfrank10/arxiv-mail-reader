@@ -45,15 +45,64 @@ let lastS2Call    = 0;
 let arxivQueue = Promise.resolve();
 let s2Queue    = Promise.resolve();
 
-function extractArxivAbstract(xml) {
-  // Look for <summary>...</summary> inside an <entry>. The Atom feed has a
-  // top-level <title> but no top-level <summary>, so a single grep is safe.
-  const m = xml.match(/<entry[\s\S]*?<summary>([\s\S]*?)<\/summary>/);
-  if (!m) return null;
-  return m[1]
-    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'")
+function decodeXmlText(s) {
+  return s
+    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&apos;/g, "'")
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function extractArxivAbstract(xml) {
+  const m = xml.match(/<entry[\s\S]*?<summary>([\s\S]*?)<\/summary>/);
+  return m ? decodeXmlText(m[1]) : null;
+}
+
+/**
+ * Extract full paper metadata from arXiv Atom XML. Returns null when the
+ * feed has no entry (e.g. unknown id), otherwise an object suitable for
+ * direct JSON response.
+ */
+function extractArxivMetadata(xml, requestedId) {
+  // Take the first <entry>...</entry> block
+  const entryMatch = xml.match(/<entry>([\s\S]*?)<\/entry>/);
+  if (!entryMatch) return null;
+  const entry = entryMatch[1];
+
+  const titleM     = entry.match(/<title>([\s\S]*?)<\/title>/);
+  const summaryM   = entry.match(/<summary>([\s\S]*?)<\/summary>/);
+  const publishedM = entry.match(/<published>([\s\S]*?)<\/published>/);
+  const updatedM   = entry.match(/<updated>([\s\S]*?)<\/updated>/);
+  const commentM   = entry.match(/<arxiv:comment[^>]*>([\s\S]*?)<\/arxiv:comment>/);
+  const idM        = entry.match(/<id>https?:\/\/arxiv\.org\/abs\/([^<\s]+)<\/id>/);
+  // Authors: <author><name>X</name></author>+
+  const authors = [];
+  const reAuthor = /<author>\s*<name>([\s\S]*?)<\/name>/g;
+  let am;
+  while ((am = reAuthor.exec(entry)) !== null) authors.push(decodeXmlText(am[1]));
+  // Categories: <category term="X"/>
+  const categories = [];
+  const reCat = /<category[^>]*term="([^"]+)"/g;
+  let cm;
+  while ((cm = reCat.exec(entry)) !== null) categories.push(cm[1]);
+
+  const published = publishedM ? publishedM[1].trim() : '';
+  const dateStr = published
+    ? new Date(published).toUTCString().replace(/^\w+, /, '').replace(/ GMT$/, '')
+    : (updatedM ? updatedM[1].trim() : '');
+
+  const arxivId = (idM ? idM[1] : requestedId).replace(/v\d+$/, '');
+
+  return {
+    arxivId,
+    title:      titleM   ? decodeXmlText(titleM[1])   : '(untitled)',
+    abstract:   summaryM ? decodeXmlText(summaryM[1]) : '',
+    authorList: authors,
+    categories,
+    date:       dateStr,
+    published,
+    comments:   commentM ? decodeXmlText(commentM[1]) : '',
+  };
 }
 
 async function fetchFromArxiv(id) {
@@ -83,6 +132,42 @@ async function fetchFromSemanticScholar(id) {
     return String(data.abstract).replace(/\s+/g, ' ').trim();
   }).catch(err => { throw err; });
 }
+
+// Fetch full arXiv metadata (title, authors, abstract, categories, ...)
+// Used by the in-app Import flow.
+const metadataCache = new Map(); // id -> { meta, ts }
+const METADATA_TTL_MS = 24 * 60 * 60 * 1000;
+
+app.get('/api/arxiv-metadata', async (req, res) => {
+  const rawId = String(req.query.id ?? '').trim();
+  if (!rawId) return res.status(400).json({ error: 'id is required' });
+  const id = rawId.replace(/v\d+$/i, '');
+
+  const cached = metadataCache.get(id);
+  if (cached && Date.now() - cached.ts < METADATA_TTL_MS) {
+    return res.json(cached.meta);
+  }
+  try {
+    // Reuse the throttled arXiv queue but ask for the full body
+    const body = await (arxivQueue = arxivQueue.then(async () => {
+      const wait = Math.max(0, ARXIV_MIN_GAP_MS - (Date.now() - lastArxivCall));
+      if (wait > 0) await new Promise(r => setTimeout(r, wait));
+      lastArxivCall = Date.now();
+      const r = await fetch(`https://export.arxiv.org/api/query?id_list=${encodeURIComponent(id)}`);
+      const text = await r.text();
+      if (r.status !== 200) throw new Error(`arXiv ${r.status}`);
+      return text;
+    }));
+    const meta = extractArxivMetadata(body, id);
+    if (!meta) {
+      return res.status(404).json({ error: `No entry for arXiv:${id} — check the id` });
+    }
+    metadataCache.set(id, { meta, ts: Date.now() });
+    res.json(meta);
+  } catch (err) {
+    res.status(502).json({ error: `Failed to fetch from arXiv: ${err.message}` });
+  }
+});
 
 app.get('/api/arxiv-abstract', async (req, res) => {
   const { id } = req.query;
