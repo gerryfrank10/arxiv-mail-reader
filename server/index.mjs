@@ -4,16 +4,21 @@ import { ImapFlow } from 'imapflow';
 import { simpleParser } from 'mailparser';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import 'dotenv/config';
+import { db } from './db.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = process.env.PORT || 3001;
 const isProd = process.env.NODE_ENV === 'production';
 
-app.use(express.json());
+app.use(express.json({ limit: '5mb' }));
 if (!isProd) {
   // In dev the Vite proxy handles CORS; in prod everything is same-origin
-  app.use(cors({ origin: ['http://localhost:5173', 'http://127.0.0.1:5173'] }));
+  app.use(cors({
+    origin: ['http://localhost:5173', 'http://127.0.0.1:5173'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-user-email', 'x-s2-api-key'],
+  }));
 }
 
 // Known IMAP presets
@@ -627,6 +632,79 @@ app.post('/api/fetch-imap-emails', async (req, res) => {
   }
 });
 
+// ---------- Postgres-backed CRUD (opt-in via DATABASE_URL) ----------
+// All routes scoped by the X-User-Email header (set by client).
+async function withUser(req, res, run) {
+  if (!db.enabled) {
+    return res.status(503).json({ error: 'Server storage is not enabled (no DATABASE_URL set).' });
+  }
+  const email = req.get('x-user-email');
+  if (!email) return res.status(401).json({ error: 'X-User-Email header required' });
+  try {
+    const userId = await db.userIdForEmail(email);
+    await run(userId);
+  } catch (e) {
+    console.error('[db] route error:', e);
+    res.status(500).json({ error: e.message });
+  }
+}
+
+app.get('/api/db/status', (_req, res) => res.json({ enabled: db.enabled }));
+
+// papers
+app.get('/api/db/papers', (req, res) => withUser(req, res, async (uid) => {
+  res.json({ papers: await db.getPapers(uid) });
+}));
+app.post('/api/db/papers', (req, res) => withUser(req, res, async (uid) => {
+  await db.upsertPapers(uid, req.body.papers ?? []);
+  res.json({ ok: true });
+}));
+app.patch('/api/db/papers/:id/abstract', (req, res) => withUser(req, res, async (uid) => {
+  await db.updateAbstract(uid, req.params.id, req.body.abstract ?? '');
+  res.json({ ok: true });
+}));
+
+// library
+app.get('/api/db/library', (req, res) => withUser(req, res, async (uid) => {
+  res.json({ items: await db.getLibrary(uid) });
+}));
+app.put('/api/db/library/:id', (req, res) => withUser(req, res, async (uid) => {
+  await db.savePaper(uid, req.params.id); res.json({ ok: true });
+}));
+app.delete('/api/db/library/:id', (req, res) => withUser(req, res, async (uid) => {
+  await db.unsavePaper(uid, req.params.id); res.json({ ok: true });
+}));
+
+// read states
+app.get('/api/db/read', (req, res) => withUser(req, res, async (uid) => {
+  res.json({ ids: await db.getReadIds(uid) });
+}));
+app.put('/api/db/read', (req, res) => withUser(req, res, async (uid) => {
+  await db.setReadIds(uid, req.body.ids ?? []); res.json({ ok: true });
+}));
+
+// trackers
+app.get('/api/db/trackers', (req, res) => withUser(req, res, async (uid) => {
+  res.json({ trackers: await db.getTrackers(uid) });
+}));
+app.put('/api/db/trackers/:id', (req, res) => withUser(req, res, async (uid) => {
+  await db.upsertTracker(uid, { ...req.body, id: req.params.id }); res.json({ ok: true });
+}));
+app.delete('/api/db/trackers/:id', (req, res) => withUser(req, res, async (uid) => {
+  await db.deleteTracker(uid, req.params.id); res.json({ ok: true });
+}));
+
+// scores
+app.get('/api/db/scores', (req, res) => withUser(req, res, async (uid) => {
+  res.json({ scores: await db.getScores(uid) });
+}));
+app.post('/api/db/scores', (req, res) => withUser(req, res, async (uid) => {
+  await db.upsertScores(uid, req.body.scores ?? []); res.json({ ok: true });
+}));
+app.delete('/api/db/scores/tracker/:id', (req, res) => withUser(req, res, async (uid) => {
+  await db.deleteScoresForTracker(uid, req.params.id); res.json({ ok: true });
+}));
+
 // Serve built frontend in production
 if (isProd) {
   const distPath = join(__dirname, '../dist');
@@ -634,6 +712,7 @@ if (isProd) {
   app.get('*', (_req, res) => res.sendFile(join(distPath, 'index.html')));
 }
 
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`[arxiv-server] running on http://localhost:${PORT} (${isProd ? 'production' : 'development'})`);
+  await db.init();
 });
