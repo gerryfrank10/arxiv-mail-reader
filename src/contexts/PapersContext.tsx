@@ -3,20 +3,11 @@ import { Paper, Settings, SortField, SortDir } from '../types';
 import { fetchArxivPapers } from '../utils/gmailApi';
 import { fetchArxivPapersImap } from '../utils/imapApi';
 import { computeAssessment } from '../utils/assessment';
-import { dbGetAllPapers, dbUpsertPapers, dbGetMeta, dbSetMeta, dbUpdateAbstract } from '../utils/paperDb';
 import { useAuth } from './AuthContext';
 import { AssessmentLabel } from '../utils/assessment';
+import { papersStore, readStore, metaStore, onStorageModeChange, getStorageMode } from '../utils/storage';
 
 const SETTINGS_KEY = 'arxiv_reader_settings';
-const READ_KEY     = 'arxiv_read_ids';
-
-function loadReadIds(): Set<string> {
-  try { return new Set(JSON.parse(localStorage.getItem(READ_KEY) ?? '[]') as string[]); }
-  catch { return new Set(); }
-}
-function saveReadIds(ids: Set<string>) {
-  try { localStorage.setItem(READ_KEY, JSON.stringify([...ids])); } catch { /* ignore */ }
-}
 
 function loadSettings(): Settings {
   try {
@@ -42,6 +33,7 @@ interface PapersContextValue {
   lastSynced: Date | null;
   readIds: Set<string>;
   unreadCount: number;
+  storageMode: 'idb' | 'server';
   sync: (force?: boolean) => Promise<void>;
   setSelectedPaper: (p: Paper | null) => void;
   markRead: (id: string) => void;
@@ -84,20 +76,37 @@ export function PapersProvider({ children }: { children: React.ReactNode }) {
   const [sortDir, setSortDir]             = useState<SortDir>('desc');
   const [lastSynced, setLastSynced]       = useState<Date | null>(null);
   const [dbReady, setDbReady]             = useState(false);
-  const [readIds, setReadIds]             = useState<Set<string>>(loadReadIds);
+  const [readIds, setReadIds]             = useState<Set<string>>(new Set());
+  // Track storage mode so we can reload data when the user flips it
+  const [storageMode, setStorageMode]     = useState<'idb' | 'server'>(getStorageMode());
 
-  // Load persisted papers from IndexedDB on mount
-  useEffect(() => {
-    (async () => {
-      try {
-        const stored = await dbGetAllPapers();
-        if (stored.length) setPapers(stored);
-        const ts = await dbGetMeta('lastSynced');
-        if (ts) setLastSynced(new Date(ts as string));
-      } catch { /* IndexedDB unavailable */ }
-      setDbReady(true);
-    })();
+  // Load persisted state via the active storage adapter
+  const loadAll = useCallback(async () => {
+    try {
+      const [stored, ts, ids] = await Promise.all([
+        papersStore.getAll(),
+        metaStore.getLastSynced(),
+        readStore.get(),
+      ]);
+      setPapers(stored);
+      setLastSynced(ts);
+      setReadIds(ids);
+    } catch (e) {
+      console.warn('[papers] failed to load', e);
+    }
+    setDbReady(true);
   }, []);
+
+  useEffect(() => { loadAll(); }, [loadAll]);
+
+  // Re-load when storage mode changes (e.g. user flipped IDB → server)
+  useEffect(() => {
+    return onStorageModeChange((m) => {
+      setStorageMode(m);
+      setDbReady(false);
+      loadAll();
+    });
+  }, [loadAll]);
 
   const sync = useCallback(async (force = false) => {
     if (!user || (!dbReady && !force)) return;
@@ -128,15 +137,15 @@ export function PapersProvider({ children }: { children: React.ReactNode }) {
         throw new Error('No valid credentials.');
       }
 
-      // Merge new papers into IndexedDB (upsert — existing unchanged)
-      await dbUpsertPapers(newPapers);
+      // Merge new papers into the active store (idempotent upsert)
+      await papersStore.upsert(newPapers);
 
-      // Reload full set from DB so old papers are preserved
-      const all = await dbGetAllPapers();
+      // Reload full set so old papers are preserved
+      const all = await papersStore.getAll();
       setPapers(all);
 
       const now = new Date();
-      await dbSetMeta('lastSynced', now.toISOString());
+      await metaStore.setLastSynced(now);
       setLastSynced(now);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to fetch emails');
@@ -151,12 +160,17 @@ export function PapersProvider({ children }: { children: React.ReactNode }) {
     if (user && dbReady) sync();
   }, [user?.email, dbReady]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Persist read state through the active storage adapter
+  function persistReadIds(ids: Set<string>) {
+    readStore.set(ids).catch(e => console.warn('[papers] persistReadIds failed', e));
+  }
+
   const markRead = useCallback((id: string) => {
     setReadIds(prev => {
       if (prev.has(id)) return prev;
       const next = new Set(prev);
       next.add(id);
-      saveReadIds(next);
+      persistReadIds(next);
       return next;
     });
   }, []);
@@ -166,18 +180,17 @@ export function PapersProvider({ children }: { children: React.ReactNode }) {
       if (!prev.has(id)) return prev;
       const next = new Set(prev);
       next.delete(id);
-      saveReadIds(next);
+      persistReadIds(next);
       return next;
     });
   }, []);
 
-  // Bulk operations
   const markManyRead = useCallback((ids: string[]) => {
     if (ids.length === 0) return;
     setReadIds(prev => {
       const next = new Set(prev);
       for (const id of ids) next.add(id);
-      saveReadIds(next);
+      persistReadIds(next);
       return next;
     });
   }, []);
@@ -187,7 +200,7 @@ export function PapersProvider({ children }: { children: React.ReactNode }) {
     setReadIds(prev => {
       const next = new Set(prev);
       for (const id of ids) next.delete(id);
-      saveReadIds(next);
+      persistReadIds(next);
       return next;
     });
   }, []);
@@ -198,8 +211,9 @@ export function PapersProvider({ children }: { children: React.ReactNode }) {
 
   const markAllUnread = useCallback(() => {
     setReadIds(() => {
-      saveReadIds(new Set());
-      return new Set();
+      const empty = new Set<string>();
+      persistReadIds(empty);
+      return empty;
     });
   }, []);
 
@@ -210,8 +224,8 @@ export function PapersProvider({ children }: { children: React.ReactNode }) {
     const toAdd     = newPapers.filter(p => !existingByArxiv.has(p.arxivId));
     const dupCount  = newPapers.length - toAdd.length;
     if (toAdd.length === 0) return { added: 0, duplicates: dupCount };
-    await dbUpsertPapers(toAdd);
-    const all = await dbGetAllPapers();
+    await papersStore.upsert(toAdd);
+    const all = await papersStore.getAll();
     setPapers(all);
     return { added: toAdd.length, duplicates: dupCount };
   }, [papers]);
@@ -223,8 +237,8 @@ export function PapersProvider({ children }: { children: React.ReactNode }) {
   }, [markRead]);
 
   const updatePaperAbstract = useCallback((id: string, abstract: string) => {
-    // Persist to IndexedDB and update in-memory state so the abstract is available everywhere
-    dbUpdateAbstract(id, abstract).catch(() => {});
+    // Persist via the active store + update in-memory state immediately
+    papersStore.updateAbstract(id, abstract).catch(() => {});
     setPapers(prev => prev.map(p => p.id === id ? { ...p, abstract } : p));
     _setSelectedPaper(prev => prev?.id === id ? { ...prev, abstract } : prev);
   }, []);
@@ -291,6 +305,7 @@ export function PapersProvider({ children }: { children: React.ReactNode }) {
     <PapersContext.Provider value={{
       papers, loading, progress, error, settings, selectedPaper, searchQuery, selectedCategory,
       authorFilter, assessmentFilter, sortBy, sortDir, lastSynced, readIds, unreadCount,
+      storageMode,
       sync, setSelectedPaper: setSelectedPaperFn,
       markRead, markUnread, markManyRead, markManyUnread, markAllRead, markAllUnread,
       addImportedPapers,

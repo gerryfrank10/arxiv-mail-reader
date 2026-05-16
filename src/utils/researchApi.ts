@@ -4,7 +4,7 @@
 // isn't enabled, the status endpoint returns { enabled: false } and the
 // client UI shows a setup hint instead of an empty/broken state.
 
-import { Book, Collection, CollectionItem, EntityKind, Link, LinkRel, ResearchDocument } from '../types';
+import { Book, Collection, CollectionItem, EntityKind, Link, LinkRel, Paper, PaperScore, ResearchDocument, Tracker } from '../types';
 
 function userEmailFromLocalStorage(): string | null {
   try {
@@ -156,6 +156,81 @@ export async function addLink(link: Omit<Link, 'createdAt'>): Promise<void> {
 
 export async function deleteLink(link: { sourceKind: EntityKind; sourceId: string; targetKind: EntityKind; targetId: string; rel: LinkRel }): Promise<void> {
   await call('/api/db/links', { method: 'DELETE', body: JSON.stringify(link) });
+}
+
+// ---------- Papers (server-backed inbox) ----------
+
+export async function apiListPapers(): Promise<Paper[]> {
+  const { papers } = await call<{ papers: Array<Paper & { digestDate: string }> }>('/api/db/papers');
+  return papers.map(p => ({ ...p, digestDate: new Date(p.digestDate) }));
+}
+
+export async function apiUpsertPapers(papers: Paper[]): Promise<void> {
+  await call('/api/db/papers', { method: 'POST', body: JSON.stringify({ papers }) });
+}
+
+export async function apiUpdatePaperAbstract(id: string, abstract: string): Promise<void> {
+  await call(`/api/db/papers/${encodeURIComponent(id)}/abstract`, {
+    method: 'PATCH',
+    body: JSON.stringify({ abstract }),
+  });
+}
+
+// ---------- Library ----------
+
+export async function apiGetLibraryIds(): Promise<string[]> {
+  const { items } = await call<{ items: Array<{ paperId: string; savedAt: string }> }>('/api/db/library');
+  return items.map(i => i.paperId);
+}
+
+export async function apiSavePaper(paperId: string): Promise<void> {
+  await call(`/api/db/library/${encodeURIComponent(paperId)}`, { method: 'PUT' });
+}
+
+export async function apiUnsavePaper(paperId: string): Promise<void> {
+  await call(`/api/db/library/${encodeURIComponent(paperId)}`, { method: 'DELETE' });
+}
+
+// ---------- Read states ----------
+
+export async function apiGetReadIds(): Promise<string[]> {
+  const { ids } = await call<{ ids: string[] }>('/api/db/read');
+  return ids ?? [];
+}
+
+export async function apiSetReadIds(ids: string[]): Promise<void> {
+  await call('/api/db/read', { method: 'PUT', body: JSON.stringify({ ids }) });
+}
+
+// ---------- Trackers + scores ----------
+
+export async function apiGetTrackers(): Promise<Tracker[]> {
+  const { trackers } = await call<{ trackers: Tracker[] }>('/api/db/trackers');
+  return trackers;
+}
+
+export async function apiUpsertTracker(t: Tracker): Promise<void> {
+  await call(`/api/db/trackers/${encodeURIComponent(t.id)}`, {
+    method: 'PUT',
+    body: JSON.stringify(t),
+  });
+}
+
+export async function apiDeleteTracker(id: string): Promise<void> {
+  await call(`/api/db/trackers/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+export async function apiGetScores(): Promise<PaperScore[]> {
+  const { scores } = await call<{ scores: PaperScore[] }>('/api/db/scores');
+  return scores;
+}
+
+export async function apiUpsertScores(scores: PaperScore[]): Promise<void> {
+  await call('/api/db/scores', { method: 'POST', body: JSON.stringify({ scores }) });
+}
+
+export async function apiDeleteScoresForTracker(trackerId: string): Promise<void> {
+  await call(`/api/db/scores/tracker/${encodeURIComponent(trackerId)}`, { method: 'DELETE' });
 }
 
 // ---------- IndexedDB → Postgres migration ----------

@@ -7,6 +7,7 @@ import { usePapers } from '../contexts/PapersContext';
 import { renderAbstract } from '../utils/latex';
 import { Paper, Book, ResearchDocument } from '../types';
 import { aiChat, hasAI, providerLabel, resolveAIConfig } from '../utils/aiProvider';
+import CrossRefsPanel from './CrossRefsPanel';
 
 export default function WriterView() {
   const { active, dbEnabled, newDocument, saving, refresh } = useWriter();
@@ -258,6 +259,9 @@ Return up to 5 suggestions, ranked by relevance. Penalise generic matches; rewar
                   </ol>
                 </div>
               )}
+              <div className="mt-8 border-t border-slate-200 pt-6">
+                <CrossRefsPanel sourceKind="document" sourceId={doc.id} />
+              </div>
             </article>
           ) : (
             <textarea

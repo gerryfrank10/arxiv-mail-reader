@@ -4,6 +4,7 @@ import { useBooks } from '../contexts/BooksContext';
 import { Book } from '../types';
 import { lookupBookByIsbn } from '../utils/researchApi';
 import { formatDistanceToNow } from 'date-fns';
+import CrossRefsPanel from './CrossRefsPanel';
 
 export default function BooksView() {
   const { books, loading, dbEnabled, refresh } = useBooks();
@@ -282,6 +283,13 @@ function BookForm({ book, onClose }: { book?: Book; onClose: () => void }) {
             <input type="text" value={tags} onChange={e => setTags(e.target.value)} placeholder="textbook, deep learning, reference"
               className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-400" />
           </Field>
+
+          {/* Cross-refs only show on existing books (need an id) */}
+          {editing && book && (
+            <div className="-mx-1 px-1 border-t border-slate-100 pt-3">
+              <CrossRefsPanel sourceKind="book" sourceId={book.id} />
+            </div>
+          )}
         </div>
 
         <div className="mt-7 flex items-center gap-3">

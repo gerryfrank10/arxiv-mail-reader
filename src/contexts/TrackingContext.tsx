@@ -1,14 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { Paper, PaperScore, Tracker } from '../types';
-import {
-  dbDeleteScoresForTracker,
-  dbDeleteTracker,
-  dbGetAllScores,
-  dbGetTrackers,
-  dbUpsertScores,
-  dbUpsertTracker,
-} from '../utils/paperDb';
 import { scorePapersAgainstTracker } from '../utils/trackerScoring';
+import { trackersStore, scoresStore, onStorageModeChange } from '../utils/storage';
 import { usePapers } from './PapersContext';
 
 interface ScoringState {
@@ -48,19 +41,19 @@ export function TrackingProvider({ children }: { children: React.ReactNode }) {
   const [ready,    setReady]    = useState(false);
   const [scoring,  setScoring]  = useState<ScoringState | null>(null);
 
-  // Load from IndexedDB on mount
-  useEffect(() => {
-    (async () => {
-      try {
-        const [t, s] = await Promise.all([dbGetTrackers(), dbGetAllScores()]);
-        setTrackers(t);
-        setScores(s);
-      } catch (e) {
-        console.error('[tracking] failed to load from IDB', e);
-      }
-      setReady(true);
-    })();
+  // Load from the active storage adapter
+  const loadAll = useCallback(async () => {
+    try {
+      const [t, s] = await Promise.all([trackersStore.getAll(), scoresStore.getAll()]);
+      setTrackers(t);
+      setScores(s);
+    } catch (e) {
+      console.error('[tracking] failed to load', e);
+    }
+    setReady(true);
   }, []);
+  useEffect(() => { loadAll(); }, [loadAll]);
+  useEffect(() => onStorageModeChange(() => { setReady(false); loadAll(); }), [loadAll]);
 
   // ----- Helper -----
   const papersById = useMemo(() => {
@@ -86,7 +79,7 @@ export function TrackingProvider({ children }: { children: React.ReactNode }) {
         settings,
         onProgress: (done, total) => setScoring({ trackerId: tracker.id, done, total }),
       });
-      await dbUpsertScores(newScores);
+      await scoresStore.upsert(newScores);
       setScores(prev => {
         const byId = new Map(prev.map(s => [s.id, s]));
         for (const s of newScores) byId.set(s.id, s);
@@ -101,7 +94,7 @@ export function TrackingProvider({ children }: { children: React.ReactNode }) {
     const tracker = trackers.find(t => t.id === id);
     if (!tracker) return;
     // Drop existing scores for this tracker and re-score from scratch
-    await dbDeleteScoresForTracker(id);
+    await scoresStore.deleteForTracker(id);
     setScores(prev => prev.filter(s => s.trackerId !== id));
     await scoreSubset(papers, tracker);
   }, [trackers, papers, scoreSubset]);
@@ -135,7 +128,7 @@ export function TrackingProvider({ children }: { children: React.ReactNode }) {
   const createTracker = useCallback(async (t: Omit<Tracker, 'id' | 'createdAt' | 'updatedAt'>) => {
     const now = Date.now();
     const full: Tracker = { ...t, id: uuid(), createdAt: now, updatedAt: now };
-    await dbUpsertTracker(full);
+    await trackersStore.upsert(full);
     setTrackers(prev => [...prev, full]);
     // Score against all existing papers
     scoreSubset(papers, full).catch(e => console.warn('[tracking] initial score failed', e));
@@ -146,7 +139,7 @@ export function TrackingProvider({ children }: { children: React.ReactNode }) {
     const existing = trackers.find(t => t.id === id);
     if (!existing) return;
     const updated: Tracker = { ...existing, ...patch, id, updatedAt: Date.now() };
-    await dbUpsertTracker(updated);
+    await trackersStore.upsert(updated);
     setTrackers(prev => prev.map(t => t.id === id ? updated : t));
     // If the description/keywords/seeds changed materially, rescore
     const matChanged =
@@ -157,7 +150,7 @@ export function TrackingProvider({ children }: { children: React.ReactNode }) {
   }, [trackers, rescoreTracker]);
 
   const deleteTracker = useCallback(async (id: string) => {
-    await dbDeleteTracker(id);
+    await trackersStore.remove(id);
     setTrackers(prev => prev.filter(t => t.id !== id));
     setScores(prev => prev.filter(s => s.trackerId !== id));
   }, []);

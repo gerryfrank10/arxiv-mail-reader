@@ -5,6 +5,7 @@ import { AI_DEFAULTS, AI_PROVIDERS, resolveAIConfig } from '../utils/aiProvider'
 import { AIProvider, AIConfig } from '../types';
 import { dbExportAll } from '../utils/paperDb';
 import { getDbStatus, migrateFromIdb } from '../utils/researchApi';
+import { getStorageMode, setStorageMode } from '../utils/storage';
 
 interface Props {
   onClose: () => void;
@@ -314,6 +315,7 @@ function MigrationSection() {
   const [migrating, setMigrating] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [migratedAt, setMigratedAt] = useState<string | null>(() => localStorage.getItem('arxiv_idb_migrated_at'));
+  const [mode, setMode]           = useState(getStorageMode());
 
   useEffect(() => {
     (async () => {
@@ -333,18 +335,22 @@ function MigrationSection() {
       const exp = await dbExportAll();
       const payload = {
         papers:   exp.papers,
-        library:  [] as string[],          // library lives in localStorage and is per-paper-id; surface separately if needed
+        library:  [] as string[],
         readIds:  exp.readIds,
         trackers: exp.trackers,
         scores:   exp.scores,
       };
-      // Also pull library (saved-paper ids) from its localStorage key if present.
-      // The store key matches LIBRARY_KEY in LibraryContext.
+      // Pull library (saved-paper ids) — try both the new compact key and
+      // the legacy full-object key.
       try {
-        const raw = localStorage.getItem('arxiv_reader_library');
-        if (raw) {
-          const lib = JSON.parse(raw) as Array<{ id: string }>;
-          payload.library = lib.map(x => x.id);
+        const compact = localStorage.getItem('arxiv_reader_library_ids');
+        if (compact) {
+          payload.library = JSON.parse(compact) as string[];
+        } else {
+          const legacy = localStorage.getItem('arxiv_reader_library');
+          if (legacy) {
+            payload.library = (JSON.parse(legacy) as Array<{ id: string }>).map(x => x.id);
+          }
         }
       } catch { /* ignore */ }
       const r = await migrateFromIdb(payload);
@@ -360,12 +366,70 @@ function MigrationSection() {
     }
   }
 
+  async function switchToServer() {
+    if (!dbStatus?.enabled) return;
+    // If they haven't migrated yet (or have local data not yet pushed), do it now
+    const hasLocal = idbStats && (idbStats.papers > 0 || idbStats.trackers > 0 || idbStats.readIds > 0);
+    if (hasLocal && !migratedAt) {
+      if (!confirm('Push your local data to the server first? (Recommended — switching modes without migrating means the server starts empty.)')) {
+        // proceed without migration
+      } else {
+        await handleMigrate();
+      }
+    }
+    setStorageMode('server');
+    setMode('server');
+    setResult({ ok: true, message: 'Server storage is now active. New papers from sync will go straight to Postgres.' });
+  }
+
+  function switchToIdb() {
+    setStorageMode('idb');
+    setMode('idb');
+    setResult({ ok: true, message: 'Local storage active. Your server data stays put — switch back any time.' });
+  }
+
   return (
-    <Section title="Local data → server" description="Push everything from your browser (IndexedDB + localStorage) into Postgres. Idempotent — safe to re-run.">
-      <div className="rounded-lg border border-slate-200 bg-slate-50 p-3.5 text-xs space-y-2">
+    <Section
+      title="Storage backend"
+      description="Where Inbox, Library, Tracking & Scores live. Books, Writer, Collections, and Cross-references always use Postgres."
+    >
+      {/* Active mode picker */}
+      <div className="grid grid-cols-2 gap-2">
+        <button
+          onClick={switchToIdb}
+          className={`text-left rounded-lg border p-3 transition-all ${mode === 'idb'
+            ? 'border-blue-400 bg-blue-50 ring-2 ring-blue-100'
+            : 'border-slate-200 hover:bg-slate-50'}`}
+        >
+          <div className="flex items-center gap-2 mb-1">
+            <Database size={13} className={mode === 'idb' ? 'text-blue-600' : 'text-slate-500'} />
+            <span className={`text-sm font-semibold ${mode === 'idb' ? 'text-blue-800' : 'text-slate-700'}`}>Local (IndexedDB)</span>
+            {mode === 'idb' && <CheckCircle2 size={11} className="text-blue-600 ml-auto" />}
+          </div>
+          <p className="text-[11px] text-slate-500 leading-relaxed">Works offline, no server needed.</p>
+        </button>
+        <button
+          onClick={switchToServer}
+          disabled={!dbStatus?.enabled}
+          className={`text-left rounded-lg border p-3 transition-all disabled:opacity-40 disabled:cursor-not-allowed ${mode === 'server'
+            ? 'border-emerald-400 bg-emerald-50 ring-2 ring-emerald-100'
+            : 'border-slate-200 hover:bg-slate-50'}`}
+        >
+          <div className="flex items-center gap-2 mb-1">
+            <UploadCloud size={13} className={mode === 'server' ? 'text-emerald-600' : 'text-slate-500'} />
+            <span className={`text-sm font-semibold ${mode === 'server' ? 'text-emerald-800' : 'text-slate-700'}`}>Server (Postgres)</span>
+            {mode === 'server' && <CheckCircle2 size={11} className="text-emerald-600 ml-auto" />}
+          </div>
+          <p className="text-[11px] text-slate-500 leading-relaxed">
+            {dbStatus?.enabled ? 'Cross-references reachable from anywhere.' : 'DB not running.'}
+          </p>
+        </button>
+      </div>
+
+      {/* Local + server counts */}
+      <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs space-y-1.5">
         <div className="flex items-center gap-2">
-          <Database size={14} className="text-slate-500" />
-          <span className="text-slate-600">Local storage:</span>
+          <span className="text-slate-500 w-16">Local:</span>
           <span className="font-mono text-slate-800">
             {idbStats
               ? `${idbStats.papers} papers · ${idbStats.trackers} trackers · ${idbStats.scores} scores · ${idbStats.readIds} read`
@@ -373,26 +437,25 @@ function MigrationSection() {
           </span>
         </div>
         <div className="flex items-center gap-2">
-          <UploadCloud size={14} className="text-slate-500" />
-          <span className="text-slate-600">Server DB:</span>
+          <span className="text-slate-500 w-16">Server:</span>
           {dbStatus?.enabled
-            ? <span className="text-emerald-600 font-medium">enabled</span>
-            : <span className="text-amber-600 font-medium">disabled — start the DB first</span>}
+            ? <span className="text-emerald-600 font-medium">connected</span>
+            : <span className="text-amber-600 font-medium">disconnected — start the DB with <code className="px-1 py-0.5 bg-white rounded">npm run db:up</code></span>}
         </div>
         {migratedAt && (
-          <p className="text-[11px] text-emerald-700 flex items-center gap-1.5">
+          <div className="flex items-center gap-2 text-[11px] text-emerald-700">
             <CheckCircle2 size={11} /> last migrated {new Date(migratedAt).toLocaleString()}
-          </p>
+          </div>
         )}
       </div>
 
       <button
         onClick={handleMigrate}
         disabled={migrating || !dbStatus?.enabled || !idbStats || (idbStats.papers === 0 && idbStats.trackers === 0 && idbStats.readIds === 0)}
-        className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-slate-800 text-white text-sm font-medium rounded-lg hover:bg-slate-900 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+        className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-slate-800 text-white text-sm font-medium rounded-lg hover:bg-slate-900 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
       >
         {migrating ? <Loader2 size={14} className="animate-spin" /> : <UploadCloud size={14} />}
-        {migrating ? 'Pushing to server…' : migratedAt ? 'Push again' : 'Push local data to server'}
+        {migrating ? 'Pushing to server…' : migratedAt ? 'Push local data to server again' : 'Push local data to server now'}
       </button>
 
       {result && (
