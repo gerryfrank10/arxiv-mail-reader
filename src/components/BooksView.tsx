@@ -5,6 +5,8 @@ import { Book } from '../types';
 import { lookupBookByIsbn } from '../utils/researchApi';
 import { formatDistanceToNow } from 'date-fns';
 import CrossRefsPanel from './CrossRefsPanel';
+import { usePagination } from '../hooks/usePagination';
+import Pager from './Pager';
 
 export default function BooksView() {
   const { books, loading, dbEnabled, refresh } = useBooks();
@@ -22,6 +24,7 @@ export default function BooksView() {
       (b.tags ?? []).some(t => t.toLowerCase().includes(q))
     );
   }, [books, query]);
+  const pager = usePagination(filtered, 24);
 
   if (!dbEnabled) {
     return (
@@ -94,11 +97,16 @@ export default function BooksView() {
 
         {/* Book grid */}
         {filtered.length > 0 && (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {filtered.map(book => (
-              <BookCard key={book.id} book={book} onClick={() => setSel(book)} />
-            ))}
-          </div>
+          <>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {pager.slice.map(book => (
+                <BookCard key={book.id} book={book} onClick={() => setSel(book)} />
+              ))}
+            </div>
+            <div className="mt-5 rounded-lg border border-slate-200 bg-white overflow-hidden">
+              <Pager pagination={pager} variant="light" size="md" label="books" pageSizes={[12, 24, 48]} />
+            </div>
+          </>
         )}
 
         {filtered.length === 0 && books.length > 0 && (

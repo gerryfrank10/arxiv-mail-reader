@@ -6,6 +6,7 @@ import { AIProvider, AIConfig } from '../types';
 import { dbExportAll } from '../utils/paperDb';
 import { getDbStatus, migrateFromIdb } from '../utils/researchApi';
 import { getStorageMode, setStorageMode } from '../utils/storage';
+import { useConfirm } from '../contexts/ConfirmContext';
 
 interface Props {
   onClose: () => void;
@@ -316,6 +317,7 @@ function MigrationSection() {
   const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [migratedAt, setMigratedAt] = useState<string | null>(() => localStorage.getItem('arxiv_idb_migrated_at'));
   const [mode, setMode]           = useState(getStorageMode());
+  const confirm = useConfirm();
 
   useEffect(() => {
     (async () => {
@@ -328,7 +330,13 @@ function MigrationSection() {
   }, []);
 
   async function handleMigrate() {
-    if (!confirm('Push every paper, tracker, score, and read state from your browser into the server database? Safe to re-run — duplicates are skipped.')) return;
+    const ok = await confirm({
+      title: 'Push local data to server?',
+      message: 'Every paper, tracker, score, read state, and library save in your browser will be sent to Postgres. The operation is idempotent — re-running won\'t create duplicates.',
+      confirmLabel: 'Push to server',
+      tone: 'info',
+    });
+    if (!ok) return;
     setMigrating(true);
     setResult(null);
     try {
@@ -368,14 +376,17 @@ function MigrationSection() {
 
   async function switchToServer() {
     if (!dbStatus?.enabled) return;
-    // If they haven't migrated yet (or have local data not yet pushed), do it now
+    // If they haven't migrated yet and there's local data, give them the option to push first
     const hasLocal = idbStats && (idbStats.papers > 0 || idbStats.trackers > 0 || idbStats.readIds > 0);
     if (hasLocal && !migratedAt) {
-      if (!confirm('Push your local data to the server first? (Recommended — switching modes without migrating means the server starts empty.)')) {
-        // proceed without migration
-      } else {
-        await handleMigrate();
-      }
+      const shouldMigrate = await confirm({
+        title: 'Push local data first?',
+        message: 'You have local data that isn\'t in the server yet. Recommended: push it now so the server starts with your existing inbox + library + trackers. Otherwise the server will start empty (your local data is safe — you can switch back any time).',
+        confirmLabel: 'Push then switch',
+        cancelLabel:  'Switch without pushing',
+        tone: 'warning',
+      });
+      if (shouldMigrate) await handleMigrate();
     }
     setStorageMode('server');
     setMode('server');

@@ -6,7 +6,10 @@ import { useTracking } from '../contexts/TrackingContext';
 import { useBooks } from '../contexts/BooksContext';
 import { useWriter } from '../contexts/WriterContext';
 import { useCollections } from '../contexts/CollectionsContext';
+import { useConfirm } from '../contexts/ConfirmContext';
 import { TRACKER_COLOR_CLASSES } from '../utils/trackerScoring';
+import { usePagination } from '../hooks/usePagination';
+import Pager from './Pager';
 import { getCategoryLabel } from '../utils/categories';
 import { ASSESSMENT_BADGE, AssessmentLabel } from '../utils/assessment';
 import PaperCard from './PaperCard';
@@ -51,17 +54,16 @@ export default function Sidebar({ activeView }: Props) {
 function InboxPane() {
   const {
     filteredPapers, papers, loading, progress, error,
-    selectedPaper, setSelectedPaper,
+    setSelectedPaper,
     searchQuery, setSearchQuery,
     selectedCategory, setSelectedCategory,
     authorFilter, setAuthorFilter,
     assessmentFilter, setAssessmentFilter,
     allCategories, allAuthors,
     sortBy, setSortBy, sortDir, setSortDir,
-    lastSynced, activeFilterCount, unreadCount, readIds,
+    lastSynced, activeFilterCount, unreadCount,
     markAllRead, markAllUnread, markManyRead, markManyUnread,
   } = usePapers();
-  const { isSaved } = useLibrary();
   const [showCatMenu,  setShowCatMenu]  = useState(false);
   const [showSortMenu, setShowSortMenu] = useState(false);
   const [showMoreMenu, setShowMoreMenu] = useState(false);
@@ -278,12 +280,26 @@ function InboxPane() {
       </div>
 
       {/* Paper list */}
+      <InboxList loading={loading} />
+
+      {showImport && <ImportModal onClose={() => setShowImport(false)} />}
+    </>
+  );
+}
+
+function InboxList({ loading }: { loading: boolean }) {
+  const { filteredPapers, papers, selectedPaper, setSelectedPaper, readIds } = usePapers();
+  const { isSaved } = useLibrary();
+  const pager = usePagination(filteredPapers, 50);
+
+  return (
+    <>
       <div className="flex-1 overflow-y-auto custom-scroll">
         {loading && filteredPapers.length === 0 && <div className="px-4 py-8 text-center text-slate-500 text-xs">Loading papers…</div>}
         {!loading && filteredPapers.length === 0 && papers.length > 0 && (
           <div className="px-4 py-8 text-center text-slate-500 text-xs">No papers match your filters.</div>
         )}
-        {filteredPapers.map(paper => (
+        {pager.slice.map(paper => (
           <PaperCard
             key={paper.id}
             paper={paper}
@@ -294,8 +310,7 @@ function InboxPane() {
           />
         ))}
       </div>
-
-      {showImport && <ImportModal onClose={() => setShowImport(false)} />}
+      <Pager pagination={pager} variant="dark" size="sm" label="papers" pageSizes={[25, 50, 100, 250]} />
     </>
   );
 }
@@ -307,6 +322,7 @@ function InboxPane() {
 function LibraryPane() {
   const { savedPapers, isSaved } = useLibrary();
   const { selectedPaper, setSelectedPaper, readIds } = usePapers();
+  const pager = usePagination(savedPapers, 50);
   return (
     <>
       <PaneHeader title="Library" subtitle={`${savedPapers.length} saved paper${savedPapers.length !== 1 ? 's' : ''}`} />
@@ -317,7 +333,7 @@ function LibraryPane() {
             <p className="text-slate-500 text-xs mt-3">No saved papers yet.</p>
             <p className="text-slate-600 text-[11px] mt-1">Bookmark papers from your inbox.</p>
           </div>
-        ) : savedPapers.map(p => (
+        ) : pager.slice.map(p => (
           <PaperCard
             key={p.id}
             paper={p}
@@ -328,6 +344,7 @@ function LibraryPane() {
           />
         ))}
       </div>
+      <Pager pagination={pager} variant="dark" size="sm" label="saved" pageSizes={[25, 50, 100]} />
     </>
   );
 }
@@ -376,6 +393,7 @@ function TrackingPane() {
 
 function BooksPane() {
   const { books, loading, dbEnabled } = useBooks();
+  const pager = usePagination(books, 30);
   return (
     <>
       <PaneHeader title="Books" subtitle={dbEnabled ? `${books.length} book${books.length !== 1 ? 's' : ''}` : 'requires server DB'} />
@@ -392,7 +410,7 @@ function BooksPane() {
           </div>
         ) : (
           <div className="space-y-1">
-            {books.map(b => (
+            {pager.slice.map(b => (
               <div key={b.id} className="px-3 py-2 rounded-lg text-xs hover:bg-slate-800/60 transition-colors">
                 <p className="text-slate-200 font-medium truncate">{b.title}</p>
                 <p className="text-slate-500 truncate mt-0.5">{b.authors.join(', ') || '—'}{b.year ? ` · ${b.year}` : ''}</p>
@@ -401,6 +419,7 @@ function BooksPane() {
           </div>
         )}
       </div>
+      {books.length > 0 && <Pager pagination={pager} variant="dark" size="sm" label="books" pageSizes={[30, 60]} />}
     </>
   );
 }
@@ -411,6 +430,19 @@ function BooksPane() {
 
 function WriterPane() {
   const { documents, active, dbEnabled, setActiveId, newDocument, removeDocument } = useWriter();
+  const confirm = useConfirm();
+  const pager = usePagination(documents, 30);
+
+  async function handleDelete(d: { id: string; title: string; wordCount?: number }) {
+    const ok = await confirm({
+      title: 'Delete document?',
+      message: `"${d.title || 'Untitled'}" — ${(d.wordCount ?? 0).toLocaleString()} word${(d.wordCount ?? 0) !== 1 ? 's' : ''}. This can't be undone.`,
+      confirmLabel: 'Delete document',
+      destructive: true,
+    });
+    if (ok) removeDocument(d.id);
+  }
+
   return (
     <>
       <PaneHeader
@@ -431,7 +463,7 @@ function WriterPane() {
             <p className="text-slate-400 text-xs">No drafts yet.</p>
             <button onClick={() => newDocument()} className="mt-3 text-xs text-violet-400 hover:text-violet-300">Start your first document →</button>
           </div>
-        ) : documents.map(d => {
+        ) : pager.slice.map(d => {
           const isActive = active?.id === d.id;
           return (
             <button
@@ -449,18 +481,22 @@ function WriterPane() {
                     {(d.wordCount ?? 0)} word{(d.wordCount ?? 0) !== 1 ? 's' : ''} · {format(new Date(d.updatedAt), 'MMM d')}
                   </p>
                 </div>
-                <button
-                  onClick={e => { e.stopPropagation(); if (confirm(`Delete "${d.title || 'Untitled'}"?`)) removeDocument(d.id); }}
-                  className="opacity-0 group-hover:opacity-100 text-slate-500 hover:text-red-400 transition-all"
+                <span
+                  role="button"
+                  tabIndex={0}
+                  onClick={e => { e.stopPropagation(); handleDelete(d); }}
+                  onKeyDown={e => { if (e.key === 'Enter') { e.stopPropagation(); handleDelete(d); } }}
+                  className="opacity-0 group-hover:opacity-100 text-slate-500 hover:text-red-400 transition-all cursor-pointer p-0.5"
                   title="Delete"
                 >
                   <Trash2 size={11} />
-                </button>
+                </span>
               </div>
             </button>
           );
         })}
       </div>
+      {documents.length > 0 && <Pager pagination={pager} variant="dark" size="sm" label="drafts" pageSizes={[30, 60]} />}
     </>
   );
 }

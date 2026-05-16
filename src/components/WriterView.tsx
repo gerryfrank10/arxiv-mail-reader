@@ -8,6 +8,7 @@ import { renderAbstract } from '../utils/latex';
 import { Paper, Book, ResearchDocument } from '../types';
 import { aiChat, hasAI, providerLabel, resolveAIConfig } from '../utils/aiProvider';
 import CrossRefsPanel from './CrossRefsPanel';
+import { useConfirm } from '../contexts/ConfirmContext';
 
 export default function WriterView() {
   const { active, dbEnabled, newDocument, saving, refresh } = useWriter();
@@ -65,6 +66,7 @@ function DocumentEditor({ doc }: { doc: ResearchDocument }) {
   const { savedPapers } = useLibrary();
   const { books } = useBooks();
   const { settings } = usePapers();
+  const confirm = useConfirm();
   const [preview, setPreview] = useState(false);
   const [showRefs, setShowRefs] = useState(true);
   const [aiSuggesting, setAiSuggesting]   = useState(false);
@@ -225,7 +227,15 @@ Return up to 5 suggestions, ranked by relevance. Penalise generic matches; rewar
             <Download size={14} />
           </button>
           <button
-            onClick={() => { if (confirm(`Delete "${doc.title || 'Untitled'}"?`)) removeDocument(doc.id); }}
+            onClick={async () => {
+              const ok = await confirm({
+                title: 'Delete document?',
+                message: `"${doc.title || 'Untitled'}" — ${(doc.wordCount ?? 0).toLocaleString()} word${(doc.wordCount ?? 0) !== 1 ? 's' : ''}. This can't be undone.`,
+                confirmLabel: 'Delete document',
+                destructive: true,
+              });
+              if (ok) removeDocument(doc.id);
+            }}
             title="Delete"
             className="text-xs text-slate-500 hover:text-red-600 transition-colors px-2"
           >

@@ -18,6 +18,7 @@ import { BooksProvider } from '../contexts/BooksContext';
 import { WriterProvider } from '../contexts/WriterContext';
 import { CollectionsProvider } from '../contexts/CollectionsContext';
 import { LinksProvider } from '../contexts/LinksContext';
+import { ConfirmProvider } from '../contexts/ConfirmContext';
 
 export type ActiveView = 'inbox' | 'library' | 'discover' | 'tracking' | 'books' | 'writer' | 'collections';
 
@@ -62,18 +63,20 @@ function AppLayoutInner() {
 
 export default function AppLayout() {
   return (
-    <LibraryProvider>
-      <TrackingProvider>
-        <BooksProvider>
-          <WriterProvider>
-            <CollectionsProvider>
-              <LinksProvider>
-                <AppLayoutInner />
-              </LinksProvider>
-            </CollectionsProvider>
-          </WriterProvider>
-        </BooksProvider>
-      </TrackingProvider>
-    </LibraryProvider>
+    <ConfirmProvider>
+      <LibraryProvider>
+        <TrackingProvider>
+          <BooksProvider>
+            <WriterProvider>
+              <CollectionsProvider>
+                <LinksProvider>
+                  <AppLayoutInner />
+                </LinksProvider>
+              </CollectionsProvider>
+            </WriterProvider>
+          </BooksProvider>
+        </TrackingProvider>
+      </LibraryProvider>
+    </ConfirmProvider>
   );
 }

@@ -8,6 +8,8 @@ import { CATEGORY_COLORS_LIGHT } from '../utils/categories';
 import { format, formatDistanceToNow } from 'date-fns';
 import TrackerForm from './TrackerForm';
 import { hasAI, providerLabel, resolveAIConfig } from '../utils/aiProvider';
+import { usePagination } from '../hooks/usePagination';
+import Pager from './Pager';
 
 type SortMode = 'score' | 'date';
 
@@ -200,6 +202,7 @@ function ActiveTrackerView({
   isScoring: boolean;
 }) {
   const cls = TRACKER_COLOR_CLASSES[tracker.color] ?? TRACKER_COLOR_CLASSES.blue;
+  const pager = usePagination(matches, 25);
 
   return (
     <div>
@@ -291,7 +294,7 @@ function ActiveTrackerView({
         </div>
       ) : (
         <div className="space-y-2.5">
-          {matches.map(({ paper, score }) => (
+          {pager.slice.map(({ paper, score }) => (
             <button
               key={paper.id}
               onClick={() => onOpenPaper(paper)}
@@ -338,6 +341,9 @@ function ActiveTrackerView({
               </div>
             </button>
           ))}
+          <div className="mt-2 rounded-lg border border-slate-200 bg-white overflow-hidden">
+            <Pager pagination={pager} variant="light" size="md" label="matches" pageSizes={[10, 25, 50, 100]} />
+          </div>
         </div>
       )}
     </div>

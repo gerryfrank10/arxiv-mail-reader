@@ -6,6 +6,8 @@ import { useBooks } from '../contexts/BooksContext';
 import { useWriter } from '../contexts/WriterContext';
 import { usePapers } from '../contexts/PapersContext';
 import { Collection, CollectionItem, CollectionItemStatus, EntityKind } from '../types';
+import { usePagination } from '../hooks/usePagination';
+import Pager from './Pager';
 import { TRACKER_COLOR_CLASSES, TRACKER_COLORS } from '../utils/trackerScoring';
 
 export default function CollectionsView() {
@@ -124,6 +126,13 @@ function ActiveCollection({ collection, onEdit }: { collection: Collection; onEd
     return Math.round((done / collection.items.length) * 100);
   }, [collection.items]);
 
+  // Sort once, then paginate
+  const sortedItems = useMemo(
+    () => [...collection.items].sort((a, b) => a.position - b.position),
+    [collection.items],
+  );
+  const pager = usePagination(sortedItems, 20);
+
   return (
     <div>
       {/* Header */}
@@ -180,18 +189,23 @@ function ActiveCollection({ collection, onEdit }: { collection: Collection; onEd
           </button>
         </div>
       ) : (
-        <div className="space-y-2.5">
-          {collection.items.sort((a, b) => a.position - b.position).map((item, idx) => (
-            <CollectionItemRow
-              key={`${item.targetKind}-${item.targetId}`}
-              item={item}
-              index={idx}
-              isLearningPath={collection.kind === 'learning_path'}
-              onStatusChange={status => setItemStatus(collection.id, item.targetKind, item.targetId, status)}
-              onRemove={() => removeItem(collection.id, item.targetKind, item.targetId)}
-            />
-          ))}
-        </div>
+        <>
+          <div className="space-y-2.5">
+            {pager.slice.map((item, idxInSlice) => (
+              <CollectionItemRow
+                key={`${item.targetKind}-${item.targetId}`}
+                item={item}
+                index={pager.page * pager.pageSize + idxInSlice}
+                isLearningPath={collection.kind === 'learning_path'}
+                onStatusChange={status => setItemStatus(collection.id, item.targetKind, item.targetId, status)}
+                onRemove={() => removeItem(collection.id, item.targetKind, item.targetId)}
+              />
+            ))}
+          </div>
+          <div className="mt-4 rounded-lg border border-slate-200 bg-white overflow-hidden">
+            <Pager pagination={pager} variant="light" size="md" label="items" pageSizes={[10, 20, 50]} />
+          </div>
+        </>
       )}
 
       {adderOpen && <AddItemModal collectionId={collection.id} existing={collection.items} onClose={() => setAdderOpen(false)} />}
