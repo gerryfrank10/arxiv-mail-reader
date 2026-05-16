@@ -61,32 +61,66 @@ export const db = {
   },
 
   async upsertPapers(userId, papers) {
-    if (papers.length === 0) return;
+    if (papers.length === 0) return { inserted: 0, skipped: 0 };
+    // Each row gets its own savepoint-style attempt so duplicates or bad
+    // rows don't poison the whole batch. We try the id-keyed upsert first;
+    // if that hits the (user_id, arxiv_id) UNIQUE constraint (i.e. two
+    // distinct internal ids pointing at the same arxiv id) we fall back to
+    // an arxiv_id-keyed UPDATE that touches everything except the id.
     const client = await pool.connect();
+    let inserted = 0;
+    let skipped  = 0;
     try {
-      await client.query('BEGIN');
       for (const p of papers) {
-        await client.query(
-          `INSERT INTO papers (
-             id, user_id, arxiv_id, title, authors, author_list, categories,
-             abstract, comments, url, pdf_url, size, date, email_id,
-             digest_subject, digest_date, source
-           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
-           ON CONFLICT (user_id, id) DO UPDATE SET
-             arxiv_id=$3, title=$4, authors=$5, author_list=$6, categories=$7,
-             abstract=$8, comments=$9, url=$10, pdf_url=$11, size=$12, date=$13,
-             email_id=$14, digest_subject=$15, digest_date=$16, source=$17`,
-          [
-            p.id, userId, p.arxivId, p.title, p.authors, p.authorList, p.categories,
-            p.abstract, p.comments, p.url, p.pdfUrl, p.size, p.date, p.emailId,
-            p.digestSubject, p.digestDate, p.source ?? 'email',
-          ],
-        );
+        const params = [
+          p.id, userId, p.arxivId, p.title, p.authors, p.authorList, p.categories,
+          p.abstract, p.comments, p.url, p.pdfUrl, p.size, p.date, p.emailId,
+          p.digestSubject, p.digestDate, p.source ?? 'email',
+        ];
+        try {
+          await client.query(
+            `INSERT INTO papers (
+               id, user_id, arxiv_id, title, authors, author_list, categories,
+               abstract, comments, url, pdf_url, size, date, email_id,
+               digest_subject, digest_date, source
+             ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+             ON CONFLICT (user_id, id) DO UPDATE SET
+               arxiv_id=$3, title=$4, authors=$5, author_list=$6, categories=$7,
+               abstract=$8, comments=$9, url=$10, pdf_url=$11, size=$12, date=$13,
+               email_id=$14, digest_subject=$15, digest_date=$16, source=$17`,
+            params,
+          );
+          inserted++;
+        } catch (e) {
+          // 23505 = unique_violation. The only one we care about here is
+          // (user_id, arxiv_id) — a different internal id pointing at an
+          // arxiv id we already have. Update by arxiv_id and move on.
+          if (e.code === '23505' && /arxiv_id/.test(e.constraint ?? '')) {
+            // Update by arxiv_id. Note we DON'T pass p.id here — PostgreSQL
+            // can't infer the type of an unused $1, and we want to leave
+            // the existing row's primary key alone anyway.
+            await client.query(
+              `UPDATE papers SET
+                 title=$3, authors=$4, author_list=$5, categories=$6,
+                 abstract=COALESCE(NULLIF($7, ''), abstract),
+                 comments=$8, url=$9, pdf_url=$10, size=$11, date=$12,
+                 email_id=$13, digest_subject=$14, digest_date=$15, source=$16
+               WHERE user_id=$1 AND arxiv_id=$2`,
+              [
+                userId, p.arxivId, p.title, p.authors, p.authorList, p.categories,
+                p.abstract, p.comments, p.url, p.pdfUrl, p.size, p.date, p.emailId,
+                p.digestSubject, p.digestDate, p.source ?? 'email',
+              ],
+            );
+            skipped++;
+            continue;
+          }
+          // Anything else: log + skip, don't kill the whole batch
+          console.warn(`[db] paper ${p.id} (arxiv:${p.arxivId}) skipped: ${e.message}`);
+          skipped++;
+        }
       }
-      await client.query('COMMIT');
-    } catch (e) {
-      await client.query('ROLLBACK');
-      throw e;
+      return { inserted, skipped };
     } finally {
       client.release();
     }
@@ -110,11 +144,25 @@ export const db = {
   },
 
   async savePaper(userId, paperId) {
-    await pool.query(
-      `INSERT INTO library (user_id, paper_id) VALUES ($1, $2)
-       ON CONFLICT DO NOTHING`,
-      [userId, paperId],
-    );
+    // The FK to papers means a library row can only exist if the paper
+    // row exists. During a bulk migration the library list may include
+    // ids whose paper rows were skipped (e.g. dedup'd duplicates), so we
+    // tolerate the foreign-key violation and report it back to the caller.
+    try {
+      const r = await pool.query(
+        `INSERT INTO library (user_id, paper_id) VALUES ($1, $2)
+         ON CONFLICT DO NOTHING
+         RETURNING paper_id`,
+        [userId, paperId],
+      );
+      return { saved: r.rowCount > 0, reason: r.rowCount > 0 ? 'inserted' : 'already_saved' };
+    } catch (e) {
+      if (e.code === '23503') {
+        console.warn(`[db] library save skipped: no paper row for id=${paperId}`);
+        return { saved: false, reason: 'no_paper' };
+      }
+      throw e;
+    }
   },
 
   async unsavePaper(userId, paperId) {

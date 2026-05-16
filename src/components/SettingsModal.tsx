@@ -346,8 +346,30 @@ function MigrationSection() {
     setResult(null);
     try {
       const exp = await dbExportAll();
+
+      // Dedupe papers by arxivId — the server's unique constraint on
+      // (user, arxiv_id) means two local rows with the same arxivId
+      // would conflict. Keep the one with the most-recently-updated
+      // abstract (longer abstract wins if dates tie, since one is likely
+      // a digest stub and the other a fetched-from-arXiv full text).
+      const byArxiv = new Map<string, typeof exp.papers[number]>();
+      for (const p of exp.papers) {
+        const existing = byArxiv.get(p.arxivId);
+        if (!existing) { byArxiv.set(p.arxivId, p); continue; }
+        const existingTs = existing.digestDate.getTime();
+        const newTs      = p.digestDate.getTime();
+        const better =
+          newTs > existingTs ? p
+          : newTs < existingTs ? existing
+          : (p.abstract?.length ?? 0) > (existing.abstract?.length ?? 0) ? p
+          : existing;
+        byArxiv.set(p.arxivId, better);
+      }
+      const dedupedPapers = [...byArxiv.values()];
+      const droppedDupes  = exp.papers.length - dedupedPapers.length;
+
       const payload = {
-        papers:   exp.papers,
+        papers:   dedupedPapers,
         library:  [] as string[],
         readIds:  exp.readIds,
         trackers: exp.trackers,
@@ -367,37 +389,56 @@ function MigrationSection() {
         }
       } catch { /* ignore */ }
       // Chunk papers + scores in case the user has hundreds — keeps each
-      // request under ~5MB even before the server's higher limit.
+      // request well under any body-size limit. Order matters: papers
+      // must land BEFORE library entries (which FK-reference paper ids).
       const PAPER_CHUNK = 100;
       const SCORE_CHUNK = 500;
-      const totals = { papers: 0, library: 0, readIds: 0, trackers: 0, scores: 0 };
-      // Push everything else in one go (small lists), then papers/scores in chunks
+      const totals = {
+        papers: 0, papersSkipped: 0,
+        library: 0, librarySkipped: 0,
+        readIds: 0, trackers: 0, scores: 0,
+      };
+      // 1) papers first, in chunks
+      for (let i = 0; i < payload.papers.length; i += PAPER_CHUNK) {
+        const chunk = payload.papers.slice(i, i + PAPER_CHUNK);
+        const rc = await migrateFromIdb({ papers: chunk, library: [], readIds: [], trackers: [], scores: [] });
+        totals.papers        += rc.counts?.papers ?? 0;
+        totals.papersSkipped += rc.counts?.papersSkipped ?? 0;
+      }
+      // 2) read marks + trackers (small, single request)
       const r0 = await migrateFromIdb({
         papers:   [],
-        library:  payload.library,
+        library:  [],
         readIds:  payload.readIds,
         trackers: payload.trackers,
         scores:   [],
       });
-      Object.assign(totals, {
-        library:  r0.counts?.library  ?? 0,
-        readIds:  r0.counts?.readIds  ?? 0,
-        trackers: r0.counts?.trackers ?? 0,
-      });
-      for (let i = 0; i < payload.papers.length; i += PAPER_CHUNK) {
-        const chunk = payload.papers.slice(i, i + PAPER_CHUNK);
-        const rc = await migrateFromIdb({ papers: chunk, library: [], readIds: [], trackers: [], scores: [] });
-        totals.papers += rc.counts?.papers ?? 0;
-      }
+      totals.readIds  = r0.counts?.readIds  ?? 0;
+      totals.trackers = r0.counts?.trackers ?? 0;
+      // 3) scores (chunked)
       for (let i = 0; i < payload.scores.length; i += SCORE_CHUNK) {
         const chunk = payload.scores.slice(i, i + SCORE_CHUNK);
         const rc = await migrateFromIdb({ papers: [], library: [], readIds: [], trackers: [], scores: chunk });
         totals.scores += rc.counts?.scores ?? 0;
       }
+      // 4) library LAST — depends on the paper rows existing already
+      if (payload.library.length > 0) {
+        const rl = await migrateFromIdb({ papers: [], library: payload.library, readIds: [], trackers: [], scores: [] });
+        totals.library        = rl.counts?.library ?? 0;
+        totals.librarySkipped = rl.counts?.librarySkipped ?? 0;
+      }
       const ts = new Date().toISOString();
       localStorage.setItem('arxiv_idb_migrated_at', ts);
       setMigratedAt(ts);
-      setResult({ ok: true, message: `Pushed ${totals.papers} papers · ${totals.trackers} trackers · ${totals.scores} scores · ${totals.readIds} read marks · ${totals.library} library items.` });
+      const skippedParts: string[] = [];
+      if (droppedDupes        > 0) skippedParts.push(`${droppedDupes} local arxiv-id duplicate${droppedDupes === 1 ? '' : 's'}`);
+      if (totals.papersSkipped > 0) skippedParts.push(`${totals.papersSkipped} paper${totals.papersSkipped === 1 ? '' : 's'} updated by arxiv-id`);
+      if (totals.librarySkipped > 0) skippedParts.push(`${totals.librarySkipped} library entr${totals.librarySkipped === 1 ? 'y' : 'ies'} with no matching paper`);
+      const skippedMsg = skippedParts.length > 0 ? ` Skipped: ${skippedParts.join(', ')}.` : '';
+      setResult({
+        ok: true,
+        message: `Pushed ${totals.papers} papers · ${totals.trackers} trackers · ${totals.scores} scores · ${totals.readIds} read marks · ${totals.library} library items.${skippedMsg}`,
+      });
     } catch (e) {
       setResult({ ok: false, message: e instanceof Error ? e.message : 'Migration failed' });
     } finally {

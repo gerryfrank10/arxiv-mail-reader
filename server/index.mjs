@@ -876,22 +876,34 @@ app.post('/api/db/correlations-missing', (req, res) => withUser(req, res, async 
   res.json({ arxivIds: await db.findPapersMissingCorrelations(uid, candidates, limit) });
 }));
 
-// bulk migration ingest: client posts everything from IndexedDB in one shot
+// Bulk migration ingest: client posts everything from IndexedDB in one shot.
+// Per-row tolerance — duplicates / FK violations are skipped, not fatal.
 app.post('/api/db/migrate-from-idb', (req, res) => withUser(req, res, async (uid) => {
   const { papers = [], library = [], readIds = [], trackers = [], scores = [] } = req.body;
-  // Each step is idempotent (uses ON CONFLICT) so re-running is safe
-  if (papers.length)   await db.upsertPapers(uid, papers);
-  if (readIds.length)  await db.setReadIds(uid, readIds);
-  for (const p of library) await db.savePaper(uid, p);
-  for (const t of trackers) await db.upsertTracker(uid, t);
-  if (scores.length)   await db.upsertScores(uid, scores);
-  res.json({
-    ok: true,
-    counts: {
-      papers: papers.length, library: library.length, readIds: readIds.length,
-      trackers: trackers.length, scores: scores.length,
-    },
-  });
+  const counts = {
+    papers: 0, papersSkipped: 0,
+    library: 0, librarySkipped: 0,
+    readIds: 0, trackers: 0, scores: 0,
+  };
+  if (papers.length) {
+    const r = await db.upsertPapers(uid, papers);
+    counts.papers        = r.inserted ?? papers.length;
+    counts.papersSkipped = r.skipped ?? 0;
+  }
+  if (readIds.length)  { await db.setReadIds(uid, readIds); counts.readIds = readIds.length; }
+  for (const t of trackers) { await db.upsertTracker(uid, t); counts.trackers++; }
+  if (scores.length)   { await db.upsertScores(uid, scores); counts.scores = scores.length; }
+  // Library last — depends on papers being present
+  for (const pid of library) {
+    try {
+      const r = await db.savePaper(uid, pid);
+      if (r?.saved || r?.reason === 'already_saved') counts.library++;
+      else                                            counts.librarySkipped++;
+    } catch {
+      counts.librarySkipped++;
+    }
+  }
+  res.json({ ok: true, counts });
 }));
 
 // ---------- Open Library proxy (free ISBN lookup, no key needed) ----------
