@@ -4,7 +4,7 @@
 // isn't enabled, the status endpoint returns { enabled: false } and the
 // client UI shows a setup hint instead of an empty/broken state.
 
-import { Book, ResearchDocument } from '../types';
+import { Book, Collection, CollectionItem, EntityKind, Link, LinkRel, ResearchDocument } from '../types';
 
 function userEmailFromLocalStorage(): string | null {
   try {
@@ -101,4 +101,73 @@ export function newDocumentId(): string {
 
 export function newBookId(): string {
   return `book-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+export function newCollectionId(): string {
+  return `coll-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+// ---------- Collections ----------
+
+export async function listCollections(): Promise<Collection[]> {
+  const { collections } = await call<{ collections: Collection[] }>('/api/db/collections');
+  return collections;
+}
+
+export async function upsertCollection(c: Collection): Promise<void> {
+  await call(`/api/db/collections/${encodeURIComponent(c.id)}`, {
+    method: 'PUT',
+    body: JSON.stringify(c),
+  });
+}
+
+export async function deleteCollection(id: string): Promise<void> {
+  await call(`/api/db/collections/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+export async function addCollectionItem(item: Omit<CollectionItem, 'addedAt' | 'position'> & { position?: number }): Promise<void> {
+  await call(`/api/db/collections/${encodeURIComponent(item.collectionId)}/items`, {
+    method: 'POST',
+    body: JSON.stringify(item),
+  });
+}
+
+export async function updateCollectionItem(item: Partial<CollectionItem> & { collectionId: string; targetKind: EntityKind; targetId: string }): Promise<void> {
+  await call(`/api/db/collections/${encodeURIComponent(item.collectionId)}/items`, {
+    method: 'PATCH',
+    body: JSON.stringify(item),
+  });
+}
+
+export async function removeCollectionItem(collectionId: string, targetKind: EntityKind, targetId: string): Promise<void> {
+  await call(`/api/db/collections/${encodeURIComponent(collectionId)}/items/${encodeURIComponent(targetKind)}/${encodeURIComponent(targetId)}`, { method: 'DELETE' });
+}
+
+// ---------- Links (cross-references) ----------
+
+export async function listLinks(): Promise<Link[]> {
+  const { links } = await call<{ links: Link[] }>('/api/db/links');
+  return links;
+}
+
+export async function addLink(link: Omit<Link, 'createdAt'>): Promise<void> {
+  await call('/api/db/links', { method: 'POST', body: JSON.stringify(link) });
+}
+
+export async function deleteLink(link: { sourceKind: EntityKind; sourceId: string; targetKind: EntityKind; targetId: string; rel: LinkRel }): Promise<void> {
+  await call('/api/db/links', { method: 'DELETE', body: JSON.stringify(link) });
+}
+
+// ---------- IndexedDB → Postgres migration ----------
+
+export interface MigrationPayload {
+  papers:   unknown[];
+  library:  string[];   // paper ids
+  readIds:  string[];
+  trackers: unknown[];
+  scores:   unknown[];
+}
+
+export async function migrateFromIdb(payload: MigrationPayload): Promise<{ ok: boolean; counts: Record<string, number> }> {
+  return call('/api/db/migrate-from-idb', { method: 'POST', body: JSON.stringify(payload) });
 }

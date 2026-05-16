@@ -8,6 +8,7 @@ import DiscoverView from './DiscoverView';
 import TrackingView from './TrackingView';
 import BooksView from './BooksView';
 import WriterView from './WriterView';
+import CollectionsView from './CollectionsView';
 import AISuggestPanel from './AISuggestPanel';
 import SettingsModal from './SettingsModal';
 import { usePapers } from '../contexts/PapersContext';
@@ -15,8 +16,10 @@ import { LibraryProvider } from '../contexts/LibraryContext';
 import { TrackingProvider } from '../contexts/TrackingContext';
 import { BooksProvider } from '../contexts/BooksContext';
 import { WriterProvider } from '../contexts/WriterContext';
+import { CollectionsProvider } from '../contexts/CollectionsContext';
+import { LinksProvider } from '../contexts/LinksContext';
 
-export type ActiveView = 'inbox' | 'library' | 'discover' | 'tracking' | 'books' | 'writer';
+export type ActiveView = 'inbox' | 'library' | 'discover' | 'tracking' | 'books' | 'writer' | 'collections';
 
 function AppLayoutInner() {
   const { selectedPaper } = usePapers();
@@ -27,12 +30,13 @@ function AppLayoutInner() {
   const mainContent = () => {
     if (selectedPaper) return <PaperDetail paper={selectedPaper} />;
     switch (activeView) {
-      case 'tracking': return <TrackingView />;
-      case 'discover': return <DiscoverView />;
-      case 'library':  return <LibraryView />;
-      case 'books':    return <BooksView />;
-      case 'writer':   return <WriterView />;
-      default:         return <Dashboard />;
+      case 'tracking':    return <TrackingView />;
+      case 'discover':    return <DiscoverView />;
+      case 'library':     return <LibraryView />;
+      case 'books':       return <BooksView />;
+      case 'writer':      return <WriterView />;
+      case 'collections': return <CollectionsView />;
+      default:            return <Dashboard />;
     }
   };
 
@@ -62,7 +66,11 @@ export default function AppLayout() {
       <TrackingProvider>
         <BooksProvider>
           <WriterProvider>
-            <AppLayoutInner />
+            <CollectionsProvider>
+              <LinksProvider>
+                <AppLayoutInner />
+              </LinksProvider>
+            </CollectionsProvider>
           </WriterProvider>
         </BooksProvider>
       </TrackingProvider>

@@ -5,6 +5,7 @@ import { useLibrary } from '../contexts/LibraryContext';
 import { useTracking } from '../contexts/TrackingContext';
 import { useBooks } from '../contexts/BooksContext';
 import { useWriter } from '../contexts/WriterContext';
+import { useCollections } from '../contexts/CollectionsContext';
 import { TRACKER_COLOR_CLASSES } from '../utils/trackerScoring';
 import { getCategoryLabel } from '../utils/categories';
 import { ASSESSMENT_BADGE, AssessmentLabel } from '../utils/assessment';
@@ -36,8 +37,9 @@ export default function Sidebar({ activeView }: Props) {
       {activeView === 'library'  && <LibraryPane />}
       {activeView === 'discover' && <SimplePane icon={<Compass size={24} className="text-indigo-400" />} title="Discover" hint="Search any topic in the main panel — Semantic Scholar will surface the foundational, recent, and survey papers." />}
       {activeView === 'tracking' && <TrackingPane />}
-      {activeView === 'books'    && <BooksPane />}
-      {activeView === 'writer'   && <WriterPane />}
+      {activeView === 'books'       && <BooksPane />}
+      {activeView === 'writer'      && <WriterPane />}
+      {activeView === 'collections' && <CollectionsPane />}
     </aside>
   );
 }
@@ -460,6 +462,49 @@ function WriterPane() {
         })}
       </div>
     </>
+  );
+}
+
+// =========================================================================
+// Collections pane
+// =========================================================================
+
+function CollectionsPane() {
+  const { collections, dbEnabled } = useCollections();
+  return (
+    <>
+      <PaneHeader title="Collections" subtitle={dbEnabled ? `${collections.length} bundle${collections.length !== 1 ? 's' : ''}` : 'requires server DB'} />
+      <div className="flex-1 overflow-y-auto custom-scroll px-2 py-2 space-y-0.5">
+        {!dbEnabled ? <DbDisabledHint /> : collections.length === 0 ? (
+          <div className="text-center py-8 px-3">
+            <FolderOpenIcon />
+            <p className="text-slate-400 text-xs mt-3">No collections yet.</p>
+            <p className="text-slate-600 text-[11px] mt-1">Create one in the main panel.</p>
+          </div>
+        ) : collections.map(c => {
+          const cls = TRACKER_COLOR_CLASSES[c.color] ?? TRACKER_COLOR_CLASSES.blue;
+          return (
+            <div key={c.id} className="px-3 py-2 rounded-lg text-xs hover:bg-slate-800/60 transition-colors">
+              <div className="flex items-center gap-2 min-w-0">
+                <span className={`w-2 h-2 rounded-full ${cls.dot} shrink-0`} />
+                <span className="text-slate-200 truncate font-medium flex-1">{c.name}</span>
+                <span className="text-[10px] font-semibold text-slate-500">{c.items.length}</span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </>
+  );
+}
+
+function FolderOpenIcon() {
+  return (
+    <div className="w-12 h-12 rounded-2xl bg-slate-800 mx-auto flex items-center justify-center">
+      <svg className="w-5 h-5 text-fuchsia-400/60" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 9.776c.112-.017.227-.026.344-.026h15.812c.117 0 .232.009.344.026m-16.5 0a2.25 2.25 0 00-1.883 2.542l.857 6a2.25 2.25 0 002.227 1.932H19.05a2.25 2.25 0 002.227-1.932l.857-6a2.25 2.25 0 00-1.883-2.542m-16.5 0V6A2.25 2.25 0 016 3.75h3.879a1.5 1.5 0 011.06.44l2.122 2.12a1.5 1.5 0 001.06.44H18A2.25 2.25 0 0120.25 9v.776" />
+      </svg>
+    </div>
   );
 }
 

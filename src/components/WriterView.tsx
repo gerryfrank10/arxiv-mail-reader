@@ -1,10 +1,12 @@
 import { useState, useMemo } from 'react';
-import { Pen, Plus, Quote, BookOpen, Eye, EyeOff, AlertCircle, Loader2, Download } from 'lucide-react';
+import { Pen, Plus, Quote, BookOpen, Eye, EyeOff, AlertCircle, Loader2, Download, Sparkles } from 'lucide-react';
 import { useWriter } from '../contexts/WriterContext';
 import { useLibrary } from '../contexts/LibraryContext';
 import { useBooks } from '../contexts/BooksContext';
+import { usePapers } from '../contexts/PapersContext';
 import { renderAbstract } from '../utils/latex';
 import { Paper, Book, ResearchDocument } from '../types';
+import { aiChat, hasAI, providerLabel, resolveAIConfig } from '../utils/aiProvider';
 
 export default function WriterView() {
   const { active, dbEnabled, newDocument, saving, refresh } = useWriter();
@@ -61,8 +63,14 @@ function DocumentEditor({ doc }: { doc: ResearchDocument }) {
   const { updateActive, saving, removeDocument } = useWriter();
   const { savedPapers } = useLibrary();
   const { books } = useBooks();
+  const { settings } = usePapers();
   const [preview, setPreview] = useState(false);
   const [showRefs, setShowRefs] = useState(true);
+  const [aiSuggesting, setAiSuggesting]   = useState(false);
+  const [aiSuggestions, setAiSuggestions] = useState<Array<{ arxivId: string; reason: string }> | null>(null);
+  const [aiError, setAiError]             = useState<string | null>(null);
+  const aiOn   = hasAI(settings);
+  const aiName = providerLabel(resolveAIConfig(settings));
 
   const wordCount = doc.wordCount ?? (doc.content.trim() === '' ? 0 : doc.content.trim().split(/\s+/).length);
 
@@ -90,6 +98,68 @@ function DocumentEditor({ doc }: { doc: ResearchDocument }) {
   function insertCitation(label: string) {
     // Append [@label] to the end of the content for now — keeps things simple
     updateActive({ content: (doc.content || '').trimEnd() + ` [@${label}]` });
+  }
+
+  async function suggestCitations() {
+    if (!aiOn) return;
+    setAiSuggesting(true);
+    setAiError(null);
+    setAiSuggestions(null);
+    // Provide the model with the document content + a compact list of library papers
+    // (capped to 30 to stay inside reasonable context budgets).
+    const candidates = savedPapers.slice(0, 30).map(p => ({
+      arxivId:  p.arxivId,
+      title:    p.title,
+      authors:  p.authorList.slice(0, 3).join(', '),
+      abstract: (p.abstract || '').slice(0, 240),
+    }));
+    if (candidates.length === 0) {
+      setAiError('Your library is empty — bookmark some papers first.');
+      setAiSuggesting(false);
+      return;
+    }
+    // Trim very long documents to the last ~3500 chars so we focus on what the
+    // user is currently writing.
+    const recent = doc.content.length > 3500 ? doc.content.slice(-3500) : doc.content;
+    const prompt = `You are a research writing assistant. The user is working on a paper. Based on the content below, identify which of their library papers are MOST relevant to cite. Return strict JSON ONLY.
+
+USER'S CURRENT DRAFT (most recent ${Math.min(recent.length, 3500)} chars):
+"""
+${recent || '(empty)'}
+"""
+
+USER'S LIBRARY (only suggest from these):
+${candidates.map((c, i) => `${i + 1}. [arxiv:${c.arxivId}] ${c.title}\n   Authors: ${c.authors}\n   Abstract: ${c.abstract}`).join('\n\n')}
+
+Already cited (don't repeat): ${doc.paperRefs.join(', ') || 'none'}
+
+Return up to 5 suggestions, ranked by relevance. Penalise generic matches; reward papers that would specifically improve a citation in the user's draft. JSON shape:
+[
+  {"arxivId": "...", "reason": "one short sentence (≤ 20 words) — why this fits where they're writing"},
+  ...
+]`;
+    try {
+      const text = await aiChat(
+        [{ role: 'user', content: prompt }],
+        settings,
+        { maxTokens: 600, temperature: 0.3, timeoutMs: 45_000 },
+      );
+      const m = text.match(/\[[\s\S]*\]/);
+      if (!m) throw new Error('Could not parse AI response');
+      const parsed = JSON.parse(m[0]) as Array<{ arxivId: string; reason: string }>;
+      // Filter to ones that exist in library + aren't already cited
+      const known = new Set(savedPapers.map(p => p.arxivId));
+      const already = new Set(doc.paperRefs);
+      const cleaned = parsed
+        .filter(s => known.has(s.arxivId) && !already.has(s.arxivId))
+        .slice(0, 5);
+      setAiSuggestions(cleaned.length ? cleaned : []);
+      if (cleaned.length === 0) setAiError('No new suggestions — the AI didn\'t find anything in your library that improves on what you\'ve already cited.');
+    } catch (e) {
+      setAiError(e instanceof Error ? e.message : 'AI suggestion failed');
+    } finally {
+      setAiSuggesting(false);
+    }
   }
 
   function exportMarkdown() {
@@ -204,13 +274,47 @@ function DocumentEditor({ doc }: { doc: ResearchDocument }) {
       {/* References rail */}
       {showRefs && (
         <aside className="w-80 shrink-0 bg-white border-l border-slate-200 flex flex-col overflow-hidden">
-          <div className="px-4 py-3 border-b border-slate-200">
-            <h3 className="text-xs font-semibold uppercase tracking-widest text-slate-500">References</h3>
-            <p className="text-xs text-slate-400 mt-0.5">
-              {doc.paperRefs.length + doc.bookRefs.length} cited
-            </p>
+          <div className="px-4 py-3 border-b border-slate-200 flex items-start justify-between gap-2">
+            <div>
+              <h3 className="text-xs font-semibold uppercase tracking-widest text-slate-500">References</h3>
+              <p className="text-xs text-slate-400 mt-0.5">{doc.paperRefs.length + doc.bookRefs.length} cited</p>
+            </div>
+            <button
+              onClick={suggestCitations}
+              disabled={!aiOn || aiSuggesting}
+              title={aiOn ? `Ask ${aiName} to suggest citations from your library that fit what you're writing` : 'Configure an AI provider in Settings first'}
+              className="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-semibold border transition-all disabled:opacity-40 disabled:cursor-not-allowed text-violet-700 border-violet-200 hover:bg-violet-50"
+            >
+              {aiSuggesting ? <Loader2 size={10} className="animate-spin" /> : <Sparkles size={10} />}
+              {aiSuggesting ? 'thinking…' : 'AI suggest'}
+            </button>
           </div>
           <div className="flex-1 overflow-y-auto px-2 py-2 space-y-4">
+            {/* AI suggestions */}
+            {(aiSuggestions || aiError) && (
+              <Section title="AI suggestions" hint={`via ${aiName}`}>
+                {aiError && <p className="px-2 py-1 text-[10px] text-amber-700">{aiError}</p>}
+                {aiSuggestions?.map(s => {
+                  const p = savedPapers.find(x => x.arxivId === s.arxivId);
+                  if (!p) return null;
+                  return (
+                    <div key={s.arxivId} className="px-2 py-1.5 rounded-md bg-violet-50 hover:bg-violet-100 transition-colors">
+                      <button onClick={() => togglePaperRef(p)} className="w-full text-left">
+                        <p className="text-xs font-medium text-slate-800 line-clamp-2">{p.title}</p>
+                        <p className="text-[10px] text-violet-700 mt-1 italic line-clamp-2">"{s.reason}"</p>
+                      </button>
+                    </div>
+                  );
+                })}
+                {aiSuggestions && (
+                  <button onClick={() => { setAiSuggestions(null); setAiError(null); }}
+                    className="text-[10px] text-slate-400 hover:text-slate-600 mt-1 px-2">
+                    dismiss
+                  </button>
+                )}
+              </Section>
+            )}
+
             {/* Cited section */}
             {(citedPapers.length > 0 || citedBooks.length > 0) && (
               <Section title="Cited">

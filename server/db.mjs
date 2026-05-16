@@ -307,6 +307,146 @@ function wordCount(s) {
   return String(s).trim() === '' ? 0 : String(s).trim().split(/\s+/).length;
 }
 
+// ----- collections -----
+
+db.getCollections = async function (userId) {
+  const colls = await pool.query(
+    `SELECT * FROM collections WHERE user_id=$1 ORDER BY updated_at DESC`,
+    [userId],
+  );
+  const items = await pool.query(
+    `SELECT * FROM collection_items WHERE user_id=$1 ORDER BY position ASC, added_at ASC`,
+    [userId],
+  );
+  const byColl = new Map();
+  for (const r of items.rows) {
+    const arr = byColl.get(r.collection_id) ?? [];
+    arr.push({
+      collectionId: r.collection_id,
+      targetKind:   r.target_kind,
+      targetId:     r.target_id,
+      position:     r.position,
+      status:       r.status,
+      notes:        r.notes ?? '',
+      addedAt:      new Date(r.added_at).getTime(),
+    });
+    byColl.set(r.collection_id, arr);
+  }
+  return colls.rows.map(r => ({
+    id:          r.id,
+    name:        r.name,
+    description: r.description ?? '',
+    color:       r.color,
+    tags:        r.tags ?? [],
+    kind:        r.kind,
+    items:       byColl.get(r.id) ?? [],
+    createdAt:   new Date(r.created_at).getTime(),
+    updatedAt:   new Date(r.updated_at).getTime(),
+  }));
+};
+
+db.upsertCollection = async function (userId, c) {
+  await pool.query(
+    `INSERT INTO collections (id, user_id, name, description, color, tags, kind,
+       created_at, updated_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7, to_timestamp($8/1000.0), to_timestamp($9/1000.0))
+     ON CONFLICT (user_id, id) DO UPDATE SET
+       name=$3, description=$4, color=$5, tags=$6, kind=$7,
+       updated_at=to_timestamp($9/1000.0)`,
+    [c.id, userId, c.name, c.description ?? '', c.color ?? 'blue', c.tags ?? [],
+     c.kind ?? 'collection', c.createdAt, c.updatedAt],
+  );
+};
+
+db.deleteCollection = async function (userId, id) {
+  await pool.query(`DELETE FROM collections WHERE user_id=$1 AND id=$2`, [userId, id]);
+};
+
+db.addCollectionItem = async function (userId, item) {
+  // Auto-position: take max+1 within the collection unless caller supplied one
+  let pos = item.position;
+  if (pos == null) {
+    const r = await pool.query(
+      `SELECT COALESCE(MAX(position)+1, 0) AS next FROM collection_items
+       WHERE user_id=$1 AND collection_id=$2`,
+      [userId, item.collectionId],
+    );
+    pos = r.rows[0].next;
+  }
+  await pool.query(
+    `INSERT INTO collection_items (user_id, collection_id, target_kind, target_id,
+       position, status, notes, added_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7, now())
+     ON CONFLICT (user_id, collection_id, target_kind, target_id) DO UPDATE SET
+       position=$5, status=$6, notes=$7`,
+    [userId, item.collectionId, item.targetKind, item.targetId, pos,
+     item.status ?? 'unread', item.notes ?? ''],
+  );
+  await pool.query(
+    `UPDATE collections SET updated_at=now() WHERE user_id=$1 AND id=$2`,
+    [userId, item.collectionId],
+  );
+};
+
+db.removeCollectionItem = async function (userId, collectionId, targetKind, targetId) {
+  await pool.query(
+    `DELETE FROM collection_items
+     WHERE user_id=$1 AND collection_id=$2 AND target_kind=$3 AND target_id=$4`,
+    [userId, collectionId, targetKind, targetId],
+  );
+  await pool.query(
+    `UPDATE collections SET updated_at=now() WHERE user_id=$1 AND id=$2`,
+    [userId, collectionId],
+  );
+};
+
+db.updateCollectionItem = async function (userId, item) {
+  await pool.query(
+    `UPDATE collection_items
+     SET status=COALESCE($5, status), notes=COALESCE($6, notes), position=COALESCE($7, position)
+     WHERE user_id=$1 AND collection_id=$2 AND target_kind=$3 AND target_id=$4`,
+    [userId, item.collectionId, item.targetKind, item.targetId,
+     item.status ?? null, item.notes ?? null, item.position ?? null],
+  );
+};
+
+// ----- links (cross-references) -----
+
+db.getLinks = async function (userId) {
+  const { rows } = await pool.query(
+    `SELECT * FROM links WHERE user_id=$1 ORDER BY created_at DESC`, [userId],
+  );
+  return rows.map(r => ({
+    sourceKind: r.source_kind,
+    sourceId:   r.source_id,
+    targetKind: r.target_kind,
+    targetId:   r.target_id,
+    rel:        r.rel,
+    note:       r.note ?? '',
+    createdAt:  new Date(r.created_at).getTime(),
+  }));
+};
+
+db.addLink = async function (userId, link) {
+  await pool.query(
+    `INSERT INTO links (user_id, source_kind, source_id, target_kind, target_id, rel, note)
+     VALUES ($1,$2,$3,$4,$5,$6,$7)
+     ON CONFLICT (user_id, source_kind, source_id, target_kind, target_id, rel)
+       DO UPDATE SET note=$7`,
+    [userId, link.sourceKind, link.sourceId, link.targetKind, link.targetId,
+     link.rel ?? 'related', link.note ?? ''],
+  );
+};
+
+db.deleteLink = async function (userId, link) {
+  await pool.query(
+    `DELETE FROM links
+     WHERE user_id=$1 AND source_kind=$2 AND source_id=$3
+       AND target_kind=$4 AND target_id=$5 AND rel=$6`,
+    [userId, link.sourceKind, link.sourceId, link.targetKind, link.targetId, link.rel ?? 'related'],
+  );
+};
+
 function rowToBook(r) {
   return {
     id:         r.id,

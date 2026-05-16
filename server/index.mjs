@@ -732,6 +732,59 @@ app.delete('/api/db/documents/:id', (req, res) => withUser(req, res, async (uid)
   await db.deleteDocument(uid, req.params.id); res.json({ ok: true });
 }));
 
+// collections
+app.get('/api/db/collections', (req, res) => withUser(req, res, async (uid) => {
+  res.json({ collections: await db.getCollections(uid) });
+}));
+app.put('/api/db/collections/:id', (req, res) => withUser(req, res, async (uid) => {
+  await db.upsertCollection(uid, { ...req.body, id: req.params.id });
+  res.json({ ok: true });
+}));
+app.delete('/api/db/collections/:id', (req, res) => withUser(req, res, async (uid) => {
+  await db.deleteCollection(uid, req.params.id); res.json({ ok: true });
+}));
+app.post('/api/db/collections/:id/items', (req, res) => withUser(req, res, async (uid) => {
+  await db.addCollectionItem(uid, { ...req.body, collectionId: req.params.id });
+  res.json({ ok: true });
+}));
+app.patch('/api/db/collections/:id/items', (req, res) => withUser(req, res, async (uid) => {
+  await db.updateCollectionItem(uid, { ...req.body, collectionId: req.params.id });
+  res.json({ ok: true });
+}));
+app.delete('/api/db/collections/:id/items/:kind/:targetId', (req, res) => withUser(req, res, async (uid) => {
+  await db.removeCollectionItem(uid, req.params.id, req.params.kind, req.params.targetId);
+  res.json({ ok: true });
+}));
+
+// links (cross-references)
+app.get('/api/db/links', (req, res) => withUser(req, res, async (uid) => {
+  res.json({ links: await db.getLinks(uid) });
+}));
+app.post('/api/db/links', (req, res) => withUser(req, res, async (uid) => {
+  await db.addLink(uid, req.body); res.json({ ok: true });
+}));
+app.delete('/api/db/links', (req, res) => withUser(req, res, async (uid) => {
+  await db.deleteLink(uid, req.body); res.json({ ok: true });
+}));
+
+// bulk migration ingest: client posts everything from IndexedDB in one shot
+app.post('/api/db/migrate-from-idb', (req, res) => withUser(req, res, async (uid) => {
+  const { papers = [], library = [], readIds = [], trackers = [], scores = [] } = req.body;
+  // Each step is idempotent (uses ON CONFLICT) so re-running is safe
+  if (papers.length)   await db.upsertPapers(uid, papers);
+  if (readIds.length)  await db.setReadIds(uid, readIds);
+  for (const p of library) await db.savePaper(uid, p);
+  for (const t of trackers) await db.upsertTracker(uid, t);
+  if (scores.length)   await db.upsertScores(uid, scores);
+  res.json({
+    ok: true,
+    counts: {
+      papers: papers.length, library: library.length, readIds: readIds.length,
+      trackers: trackers.length, scores: scores.length,
+    },
+  });
+}));
+
 // ---------- Open Library proxy (free ISBN lookup, no key needed) ----------
 app.get('/api/books/lookup', async (req, res) => {
   const isbn = String(req.query.isbn ?? '').replace(/[-\s]/g, '').trim();

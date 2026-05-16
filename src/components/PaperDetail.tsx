@@ -11,6 +11,7 @@ import { usePapers } from '../contexts/PapersContext';
 import { format } from 'date-fns';
 import CiteMenu from './CiteMenu';
 import PaperDiscoveryPanel from './PaperDiscoveryPanel';
+import CrossRefsPanel from './CrossRefsPanel';
 import { aiChat, hasAI, resolveAIConfig, providerLabel } from '../utils/aiProvider';
 import { ArrowLeft } from 'lucide-react';
 
@@ -485,6 +486,9 @@ Return exactly this JSON structure (no other text):
             )}
           </div>
         )}
+
+        {/* Your own cross-references (books, other papers, your docs) */}
+        <CrossRefsPanel sourceKind="paper" sourceId={paper.arxivId} title="My cross-references" />
 
         {/* Citation-graph exploration via Semantic Scholar */}
         <PaperDiscoveryPanel paper={paper} />

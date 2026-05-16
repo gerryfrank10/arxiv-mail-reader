@@ -1,4 +1,4 @@
-import { Inbox, Compass, Target, BookMarked, Library, Pen, Sparkles, Settings, RefreshCw } from 'lucide-react';
+import { Inbox, Compass, Target, BookMarked, Library, Pen, Sparkles, Settings, RefreshCw, FolderOpen } from 'lucide-react';
 import { ActiveView } from './AppLayout';
 import { usePapers } from '../contexts/PapersContext';
 import { useAuth } from '../contexts/AuthContext';
@@ -18,7 +18,7 @@ interface RailItem {
   icon:   React.ReactNode;
   label:  string;
   badge?: number | null;
-  accent: 'blue' | 'indigo' | 'emerald' | 'amber' | 'cyan' | 'violet';
+  accent: 'blue' | 'indigo' | 'emerald' | 'amber' | 'cyan' | 'violet' | 'fuchsia';
 }
 
 // Static color maps so Tailwind's JIT picks up the classes
@@ -29,6 +29,7 @@ const ACCENT_BAR: Record<RailItem['accent'], string> = {
   amber:   'bg-amber-400',
   cyan:    'bg-cyan-400',
   violet:  'bg-violet-400',
+  fuchsia: 'bg-fuchsia-400',
 };
 const ACCENT_BADGE: Record<RailItem['accent'], string> = {
   blue:    'bg-blue-500',
@@ -37,6 +38,7 @@ const ACCENT_BADGE: Record<RailItem['accent'], string> = {
   amber:   'bg-amber-500',
   cyan:    'bg-cyan-500',
   violet:  'bg-violet-500',
+  fuchsia: 'bg-fuchsia-500',
 };
 
 export default function AppRail({ activeView, setActiveView, onAISuggest, onSettings }: Props) {
@@ -51,12 +53,13 @@ export default function AppRail({ activeView, setActiveView, onAISuggest, onSett
   );
 
   const items: RailItem[] = [
-    { id: 'inbox',    icon: <Inbox      size={18} />, label: 'Inbox',    badge: unreadCount || null,        accent: 'blue' },
-    { id: 'discover', icon: <Compass    size={18} />, label: 'Discover', badge: null,                       accent: 'indigo' },
-    { id: 'tracking', icon: <Target     size={18} className={scoring ? 'animate-pulse' : ''} />, label: 'Tracking', badge: trackingMatchCount || null, accent: 'emerald' },
-    { id: 'library',  icon: <BookMarked size={18} />, label: 'Library',  badge: savedPapers.length || null, accent: 'amber' },
-    { id: 'books',    icon: <Library    size={18} />, label: 'Books',    badge: null,                       accent: 'cyan' },
-    { id: 'writer',   icon: <Pen        size={18} />, label: 'Writer',   badge: null,                       accent: 'violet' },
+    { id: 'inbox',       icon: <Inbox      size={18} />, label: 'Inbox',       badge: unreadCount || null,        accent: 'blue' },
+    { id: 'discover',    icon: <Compass    size={18} />, label: 'Discover',    badge: null,                       accent: 'indigo' },
+    { id: 'tracking',    icon: <Target     size={18} className={scoring ? 'animate-pulse' : ''} />, label: 'Tracking', badge: trackingMatchCount || null, accent: 'emerald' },
+    { id: 'library',     icon: <BookMarked size={18} />, label: 'Library',     badge: savedPapers.length || null, accent: 'amber' },
+    { id: 'books',       icon: <Library    size={18} />, label: 'Books',       badge: null,                       accent: 'cyan' },
+    { id: 'collections', icon: <FolderOpen size={18} />, label: 'Collections', badge: null,                       accent: 'fuchsia' },
+    { id: 'writer',      icon: <Pen        size={18} />, label: 'Writer',      badge: null,                       accent: 'violet' },
   ];
 
   function pick(id: ActiveView) {

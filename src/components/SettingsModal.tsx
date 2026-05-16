@@ -1,8 +1,10 @@
 import { useState, useEffect, useMemo } from 'react';
-import { X, Mail, Hash, RefreshCw, Key, Eye, EyeOff, Cpu, ChevronDown, ExternalLink, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
+import { X, Mail, Hash, RefreshCw, Key, Eye, EyeOff, Cpu, ChevronDown, ExternalLink, CheckCircle2, AlertCircle, Loader2, Database, UploadCloud } from 'lucide-react';
 import { usePapers } from '../contexts/PapersContext';
 import { AI_DEFAULTS, AI_PROVIDERS, resolveAIConfig } from '../utils/aiProvider';
 import { AIProvider, AIConfig } from '../types';
+import { dbExportAll } from '../utils/paperDb';
+import { getDbStatus, migrateFromIdb } from '../utils/researchApi';
 
 interface Props {
   onClose: () => void;
@@ -251,6 +253,9 @@ export default function SettingsModal({ onClose }: Props) {
             )}
           </Section>
 
+          {/* ---------- IndexedDB → Postgres migration ---------- */}
+          <MigrationSection />
+
           {/* ---------- Semantic Scholar ---------- */}
           <Section title="Semantic Scholar (optional)" description="Raises rate limits 10x for Discover & citation-graph features.">
             <div className="relative">
@@ -294,5 +299,108 @@ function Section({ title, description, children }: { title: string; description?
       {description && <p className="text-xs text-slate-500 mb-3 leading-relaxed">{description}</p>}
       <div className="space-y-3.5">{children}</div>
     </section>
+  );
+}
+
+// =========================================================================
+// IndexedDB → Postgres migration UI
+// =========================================================================
+
+interface IdbStats { papers: number; trackers: number; scores: number; readIds: number; }
+
+function MigrationSection() {
+  const [dbStatus, setDbStatus] = useState<{ enabled: boolean } | null>(null);
+  const [idbStats, setIdbStats] = useState<IdbStats | null>(null);
+  const [migrating, setMigrating] = useState(false);
+  const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const [migratedAt, setMigratedAt] = useState<string | null>(() => localStorage.getItem('arxiv_idb_migrated_at'));
+
+  useEffect(() => {
+    (async () => {
+      try { setDbStatus(await getDbStatus()); } catch { setDbStatus({ enabled: false }); }
+      try {
+        const exp = await dbExportAll();
+        setIdbStats({ papers: exp.papers.length, trackers: exp.trackers.length, scores: exp.scores.length, readIds: exp.readIds.length });
+      } catch { /* IDB unavailable */ }
+    })();
+  }, []);
+
+  async function handleMigrate() {
+    if (!confirm('Push every paper, tracker, score, and read state from your browser into the server database? Safe to re-run — duplicates are skipped.')) return;
+    setMigrating(true);
+    setResult(null);
+    try {
+      const exp = await dbExportAll();
+      const payload = {
+        papers:   exp.papers,
+        library:  [] as string[],          // library lives in localStorage and is per-paper-id; surface separately if needed
+        readIds:  exp.readIds,
+        trackers: exp.trackers,
+        scores:   exp.scores,
+      };
+      // Also pull library (saved-paper ids) from its localStorage key if present.
+      // The store key matches LIBRARY_KEY in LibraryContext.
+      try {
+        const raw = localStorage.getItem('arxiv_reader_library');
+        if (raw) {
+          const lib = JSON.parse(raw) as Array<{ id: string }>;
+          payload.library = lib.map(x => x.id);
+        }
+      } catch { /* ignore */ }
+      const r = await migrateFromIdb(payload);
+      const ts = new Date().toISOString();
+      localStorage.setItem('arxiv_idb_migrated_at', ts);
+      setMigratedAt(ts);
+      const counts = r.counts ?? {};
+      setResult({ ok: true, message: `Pushed ${counts.papers} papers · ${counts.trackers} trackers · ${counts.scores} scores · ${counts.readIds} read marks · ${counts.library} library items.` });
+    } catch (e) {
+      setResult({ ok: false, message: e instanceof Error ? e.message : 'Migration failed' });
+    } finally {
+      setMigrating(false);
+    }
+  }
+
+  return (
+    <Section title="Local data → server" description="Push everything from your browser (IndexedDB + localStorage) into Postgres. Idempotent — safe to re-run.">
+      <div className="rounded-lg border border-slate-200 bg-slate-50 p-3.5 text-xs space-y-2">
+        <div className="flex items-center gap-2">
+          <Database size={14} className="text-slate-500" />
+          <span className="text-slate-600">Local storage:</span>
+          <span className="font-mono text-slate-800">
+            {idbStats
+              ? `${idbStats.papers} papers · ${idbStats.trackers} trackers · ${idbStats.scores} scores · ${idbStats.readIds} read`
+              : '—'}
+          </span>
+        </div>
+        <div className="flex items-center gap-2">
+          <UploadCloud size={14} className="text-slate-500" />
+          <span className="text-slate-600">Server DB:</span>
+          {dbStatus?.enabled
+            ? <span className="text-emerald-600 font-medium">enabled</span>
+            : <span className="text-amber-600 font-medium">disabled — start the DB first</span>}
+        </div>
+        {migratedAt && (
+          <p className="text-[11px] text-emerald-700 flex items-center gap-1.5">
+            <CheckCircle2 size={11} /> last migrated {new Date(migratedAt).toLocaleString()}
+          </p>
+        )}
+      </div>
+
+      <button
+        onClick={handleMigrate}
+        disabled={migrating || !dbStatus?.enabled || !idbStats || (idbStats.papers === 0 && idbStats.trackers === 0 && idbStats.readIds === 0)}
+        className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-slate-800 text-white text-sm font-medium rounded-lg hover:bg-slate-900 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+      >
+        {migrating ? <Loader2 size={14} className="animate-spin" /> : <UploadCloud size={14} />}
+        {migrating ? 'Pushing to server…' : migratedAt ? 'Push again' : 'Push local data to server'}
+      </button>
+
+      {result && (
+        <div className={`text-xs flex items-start gap-1.5 px-2 py-1.5 rounded-md ${result.ok ? 'text-emerald-700 bg-emerald-50' : 'text-red-600 bg-red-50'}`}>
+          {result.ok ? <CheckCircle2 size={12} className="mt-0.5" /> : <AlertCircle size={12} className="mt-0.5" />}
+          <span>{result.message}</span>
+        </div>
+      )}
+    </Section>
   );
 }

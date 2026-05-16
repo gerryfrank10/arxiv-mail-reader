@@ -188,3 +188,24 @@ export async function dbDeleteScoresForTracker(trackerId: string): Promise<void>
     tx.onerror    = () => reject(tx.error);
   });
 }
+
+// ---------- Bulk export for IndexedDB → server migration ----------
+
+export async function dbExportAll(): Promise<{
+  papers:   Paper[];
+  trackers: Tracker[];
+  scores:   PaperScore[];
+  readIds:  string[];
+}> {
+  const [papers, trackers, scores] = await Promise.all([
+    dbGetAllPapers(),
+    dbGetTrackers(),
+    dbGetAllScores(),
+  ]);
+  let readIds: string[] = [];
+  try {
+    const raw = localStorage.getItem('arxiv_read_ids');
+    if (raw) readIds = JSON.parse(raw) as string[];
+  } catch { /* ignore */ }
+  return { papers, trackers, scores, readIds };
+}

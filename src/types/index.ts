@@ -128,6 +128,48 @@ export interface ResearchDocument {
   updatedAt: number;
 }
 
+// ---------- Collections / Learning paths ----------
+
+export type EntityKind = 'paper' | 'book' | 'document';
+export type CollectionKind = 'collection' | 'learning_path';
+export type CollectionItemStatus = 'unread' | 'in_progress' | 'done';
+
+export interface CollectionItem {
+  collectionId: string;
+  targetKind:   EntityKind;
+  targetId:     string;
+  position:     number;
+  status:       CollectionItemStatus;
+  notes:        string;
+  addedAt:      number;
+}
+
+export interface Collection {
+  id: string;
+  name: string;
+  description: string;
+  color: string;
+  tags: string[];
+  kind: CollectionKind;
+  items: CollectionItem[];
+  createdAt: number;
+  updatedAt: number;
+}
+
+// ---------- Links (cross-references) ----------
+
+export type LinkRel = 'related' | 'cites' | 'extends' | 'contradicts' | 'background';
+
+export interface Link {
+  sourceKind: EntityKind;
+  sourceId:   string;
+  targetKind: EntityKind;
+  targetId:   string;
+  rel:        LinkRel;
+  note:       string;
+  createdAt:  number;
+}
+
 export type Provider = 'google' | 'imap';
 
 export interface ImapConfig {
