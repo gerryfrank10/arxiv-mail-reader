@@ -705,6 +705,61 @@ app.delete('/api/db/scores/tracker/:id', (req, res) => withUser(req, res, async 
   await db.deleteScoresForTracker(uid, req.params.id); res.json({ ok: true });
 }));
 
+// books
+app.get('/api/db/books', (req, res) => withUser(req, res, async (uid) => {
+  res.json({ books: await db.getBooks(uid) });
+}));
+app.put('/api/db/books/:id', (req, res) => withUser(req, res, async (uid) => {
+  await db.upsertBook(uid, { ...req.body, id: req.params.id }); res.json({ ok: true });
+}));
+app.delete('/api/db/books/:id', (req, res) => withUser(req, res, async (uid) => {
+  await db.deleteBook(uid, req.params.id); res.json({ ok: true });
+}));
+
+// documents (Writer drafts)
+app.get('/api/db/documents', (req, res) => withUser(req, res, async (uid) => {
+  res.json({ documents: await db.getDocuments(uid) });
+}));
+app.get('/api/db/documents/:id', (req, res) => withUser(req, res, async (uid) => {
+  const d = await db.getDocument(uid, req.params.id);
+  if (!d) return res.status(404).json({ error: 'not found' });
+  res.json({ document: d });
+}));
+app.put('/api/db/documents/:id', (req, res) => withUser(req, res, async (uid) => {
+  await db.upsertDocument(uid, { ...req.body, id: req.params.id }); res.json({ ok: true });
+}));
+app.delete('/api/db/documents/:id', (req, res) => withUser(req, res, async (uid) => {
+  await db.deleteDocument(uid, req.params.id); res.json({ ok: true });
+}));
+
+// ---------- Open Library proxy (free ISBN lookup, no key needed) ----------
+app.get('/api/books/lookup', async (req, res) => {
+  const isbn = String(req.query.isbn ?? '').replace(/[-\s]/g, '').trim();
+  if (!isbn) return res.status(400).json({ error: 'isbn is required' });
+  try {
+    const r = await fetch(
+      `https://openlibrary.org/api/books?bibkeys=ISBN:${encodeURIComponent(isbn)}&format=json&jscmd=data`,
+      { signal: AbortSignal.timeout(15_000) },
+    );
+    if (!r.ok) return res.status(502).json({ error: `Open Library ${r.status}` });
+    const data = await r.json();
+    const entry = data[`ISBN:${isbn}`];
+    if (!entry) return res.status(404).json({ error: `No book found for ISBN ${isbn}` });
+    res.json({
+      isbn,
+      title:     entry.title ?? '',
+      authors:   (entry.authors ?? []).map(a => a.name),
+      year:      entry.publish_date ? parseInt(String(entry.publish_date).match(/\d{4}/)?.[0] ?? '0', 10) || null : null,
+      publisher: (entry.publishers ?? [])[0]?.name ?? '',
+      coverUrl:  entry.cover?.medium ?? entry.cover?.large ?? null,
+      sourceUrl: entry.url ?? `https://openlibrary.org/isbn/${isbn}`,
+      abstract:  entry.notes ?? '',
+    });
+  } catch (e) {
+    res.status(502).json({ error: `Lookup failed: ${e.message}` });
+  }
+});
+
 // Serve built frontend in production
 if (isProd) {
   const distPath = join(__dirname, '../dist');

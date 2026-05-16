@@ -93,6 +93,41 @@ export interface PaperScore {
   ts: number;
 }
 
+// ---------- Books ----------
+
+export interface Book {
+  id: string;
+  title: string;
+  authors: string[];
+  isbn?: string | null;
+  year?: number | null;
+  publisher?: string | null;
+  coverUrl?: string | null;
+  abstract: string;
+  notes: string;
+  sourceUrl?: string | null;
+  tags: string[];
+  createdAt: number;
+  updatedAt: number;
+}
+
+// ---------- Writer documents ----------
+
+export type DocumentStatus = 'draft' | 'in_review' | 'published';
+
+export interface ResearchDocument {
+  id: string;
+  title: string;
+  content: string;             // markdown
+  paperRefs: string[];         // arxiv ids
+  bookRefs:  string[];         // book ids
+  tags: string[];
+  status: DocumentStatus;
+  wordCount?: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export type Provider = 'google' | 'imap';
 
 export interface ImapConfig {

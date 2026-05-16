@@ -228,7 +228,117 @@ export const db = {
       [userId, trackerId],
     );
   },
+
+  // ----- books -----
+
+  async getBooks(userId) {
+    const { rows } = await pool.query(
+      `SELECT * FROM books WHERE user_id=$1 ORDER BY updated_at DESC`,
+      [userId],
+    );
+    return rows.map(rowToBook);
+  },
+
+  async upsertBook(userId, b) {
+    await pool.query(
+      `INSERT INTO books (
+         id, user_id, title, authors, isbn, year, publisher, cover_url,
+         abstract, notes, source_url, tags, created_at, updated_at
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,
+                 to_timestamp($13/1000.0), to_timestamp($14/1000.0))
+       ON CONFLICT (user_id, id) DO UPDATE SET
+         title=$3, authors=$4, isbn=$5, year=$6, publisher=$7, cover_url=$8,
+         abstract=$9, notes=$10, source_url=$11, tags=$12, updated_at=to_timestamp($14/1000.0)`,
+      [
+        b.id, userId, b.title, b.authors ?? [], b.isbn ?? null, b.year ?? null,
+        b.publisher ?? null, b.coverUrl ?? null, b.abstract ?? '', b.notes ?? '',
+        b.sourceUrl ?? null, b.tags ?? [], b.createdAt, b.updatedAt,
+      ],
+    );
+  },
+
+  async deleteBook(userId, id) {
+    await pool.query(`DELETE FROM books WHERE user_id=$1 AND id=$2`, [userId, id]);
+  },
+
+  // ----- documents (Writer drafts) -----
+
+  async getDocuments(userId) {
+    const { rows } = await pool.query(
+      `SELECT * FROM documents WHERE user_id=$1 ORDER BY updated_at DESC`,
+      [userId],
+    );
+    return rows.map(rowToDocument);
+  },
+
+  async getDocument(userId, id) {
+    const { rows } = await pool.query(
+      `SELECT * FROM documents WHERE user_id=$1 AND id=$2`,
+      [userId, id],
+    );
+    return rows[0] ? rowToDocument(rows[0]) : null;
+  },
+
+  async upsertDocument(userId, d) {
+    const wc = wordCount(d.content ?? '');
+    await pool.query(
+      `INSERT INTO documents (
+         id, user_id, title, content, paper_refs, book_refs, tags, status,
+         word_count, created_at, updated_at
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,
+                 to_timestamp($10/1000.0), to_timestamp($11/1000.0))
+       ON CONFLICT (user_id, id) DO UPDATE SET
+         title=$3, content=$4, paper_refs=$5, book_refs=$6, tags=$7,
+         status=$8, word_count=$9, updated_at=to_timestamp($11/1000.0)`,
+      [
+        d.id, userId, d.title ?? 'Untitled', d.content ?? '',
+        d.paperRefs ?? [], d.bookRefs ?? [], d.tags ?? [], d.status ?? 'draft',
+        wc, d.createdAt, d.updatedAt,
+      ],
+    );
+  },
+
+  async deleteDocument(userId, id) {
+    await pool.query(`DELETE FROM documents WHERE user_id=$1 AND id=$2`, [userId, id]);
+  },
 };
+
+function wordCount(s) {
+  return String(s).trim() === '' ? 0 : String(s).trim().split(/\s+/).length;
+}
+
+function rowToBook(r) {
+  return {
+    id:         r.id,
+    title:      r.title,
+    authors:    r.authors ?? [],
+    isbn:       r.isbn,
+    year:       r.year,
+    publisher:  r.publisher,
+    coverUrl:   r.cover_url,
+    abstract:   r.abstract ?? '',
+    notes:      r.notes ?? '',
+    sourceUrl:  r.source_url,
+    tags:       r.tags ?? [],
+    createdAt:  new Date(r.created_at).getTime(),
+    updatedAt:  new Date(r.updated_at).getTime(),
+  };
+}
+
+function rowToDocument(r) {
+  return {
+    id:         r.id,
+    title:      r.title,
+    content:    r.content ?? '',
+    paperRefs:  r.paper_refs ?? [],
+    bookRefs:   r.book_refs ?? [],
+    tags:       r.tags ?? [],
+    status:     r.status,
+    wordCount:  r.word_count ?? 0,
+    createdAt:  new Date(r.created_at).getTime(),
+    updatedAt:  new Date(r.updated_at).getTime(),
+  };
+}
 
 // ----- row → typed object mappers -----
 
