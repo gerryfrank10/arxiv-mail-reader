@@ -1,4 +1,4 @@
-import { Search, ChevronDown, SortAsc, SortDesc, X, User, Compass, Target, MailCheck, Upload, MoreHorizontal, Library, Pen, Plus, FileText, Trash2, Mail } from 'lucide-react';
+import { Search, ChevronDown, SortAsc, SortDesc, X, User, Compass, Target, MailCheck, Upload, MoreHorizontal, Library, Pen, Plus, FileText, Trash2, Mail, RefreshCw } from 'lucide-react';
 import { useState, useRef, useEffect, useMemo } from 'react';
 import { usePapers } from '../contexts/PapersContext';
 import { useLibrary } from '../contexts/LibraryContext';
@@ -6,6 +6,7 @@ import { useTracking } from '../contexts/TrackingContext';
 import { useBooks } from '../contexts/BooksContext';
 import { useWriter } from '../contexts/WriterContext';
 import { useCollections } from '../contexts/CollectionsContext';
+import { useMagazine } from '../contexts/MagazineContext';
 import { useConfirm } from '../contexts/ConfirmContext';
 import { TRACKER_COLOR_CLASSES } from '../utils/trackerScoring';
 import { usePagination } from '../hooks/usePagination';
@@ -43,6 +44,7 @@ export default function Sidebar({ activeView }: Props) {
       {activeView === 'books'       && <BooksPane />}
       {activeView === 'writer'      && <WriterPane />}
       {activeView === 'collections' && <CollectionsPane />}
+      {activeView === 'magazine'    && <MagazinePane />}
     </aside>
   );
 }
@@ -531,6 +533,76 @@ function CollectionsPane() {
         })}
       </div>
     </>
+  );
+}
+
+// =========================================================================
+// Magazine pane
+// =========================================================================
+
+function MagazinePane() {
+  const { issues, active, dbEnabled, setActiveId, generateThisWeek, generating } = useMagazine();
+  const pager = usePagination(issues, 30);
+  return (
+    <>
+      <PaneHeader
+        title="Magazine"
+        subtitle={dbEnabled ? `${issues.length} issue${issues.length !== 1 ? 's' : ''}` : 'requires server DB'}
+        right={dbEnabled ? (
+          <button
+            onClick={() => generateThisWeek()}
+            disabled={generating}
+            title="Generate this week's issue"
+            className="p-1 rounded text-rose-300 hover:text-white hover:bg-slate-800 disabled:opacity-40"
+          >
+            {generating ? <RefreshCw size={13} className="animate-spin" /> : <Plus size={13} />}
+          </button>
+        ) : null}
+      />
+      <div className="flex-1 overflow-y-auto custom-scroll px-2 py-2 space-y-0.5">
+        {!dbEnabled ? <DbDisabledHint /> : issues.length === 0 ? (
+          <div className="text-center py-8 px-3">
+            <NewspaperDot />
+            <p className="text-slate-400 text-xs mt-3">No issues yet.</p>
+            <button
+              onClick={() => generateThisWeek()}
+              disabled={generating}
+              className="mt-3 text-xs text-rose-400 hover:text-rose-300 font-medium disabled:opacity-50"
+            >
+              {generating ? 'Generating…' : 'Generate this week →'}
+            </button>
+          </div>
+        ) : pager.slice.map(it => {
+          const isActive = active?.id === it.id;
+          return (
+            <button
+              key={it.id}
+              onClick={() => setActiveId(it.id)}
+              className={`w-full text-left px-3 py-2 rounded-lg transition-colors ${
+                isActive ? 'bg-rose-600/20 border-l-2 border-l-rose-500' : 'border-l-2 border-l-transparent hover:bg-slate-800/60'
+              }`}
+            >
+              <div className="flex items-baseline gap-1.5">
+                <p className={`text-xs font-medium truncate flex-1 ${isActive ? 'text-white' : 'text-slate-200'}`}>{it.title}</p>
+                <span className="text-[10px] text-slate-500 shrink-0">#{it.editionNumber}</span>
+              </div>
+              <p className="text-[10px] text-slate-500 mt-0.5">{it.weekStart} → {it.weekEnd}</p>
+            </button>
+          );
+        })}
+      </div>
+      {issues.length > 0 && <Pager pagination={pager} variant="dark" size="sm" label="issues" pageSizes={[30, 60]} />}
+    </>
+  );
+}
+
+function NewspaperDot() {
+  return (
+    <div className="w-12 h-12 rounded-2xl bg-slate-800 mx-auto flex items-center justify-center">
+      <svg className="w-5 h-5 text-rose-400/60" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M12 7.5h1.5m-1.5 3h1.5m-7.5 3h7.5m-7.5 3h7.5m3-9h3.375c.621 0 1.125.504 1.125 1.125V18a2.25 2.25 0 01-2.25 2.25M16.5 7.5V18a2.25 2.25 0 002.25 2.25M16.5 7.5V4.875c0-.621-.504-1.125-1.125-1.125H4.125C3.504 3.75 3 4.254 3 4.875V18a2.25 2.25 0 002.25 2.25h13.5M6 7.5h3v3H6v-3z" />
+      </svg>
+    </div>
   );
 }
 

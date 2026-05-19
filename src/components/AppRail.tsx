@@ -1,4 +1,4 @@
-import { Inbox, Compass, Target, BookMarked, Library, Pen, Sparkles, Settings, RefreshCw, FolderOpen } from 'lucide-react';
+import { Inbox, Compass, Target, BookMarked, Library, Pen, Sparkles, Settings, RefreshCw, FolderOpen, Newspaper } from 'lucide-react';
 import { ActiveView } from './AppLayout';
 import { usePapers } from '../contexts/PapersContext';
 import { useAuth } from '../contexts/AuthContext';
@@ -18,7 +18,7 @@ interface RailItem {
   icon:   React.ReactNode;
   label:  string;
   badge?: number | null;
-  accent: 'blue' | 'indigo' | 'emerald' | 'amber' | 'cyan' | 'violet' | 'fuchsia';
+  accent: 'blue' | 'indigo' | 'emerald' | 'amber' | 'cyan' | 'violet' | 'fuchsia' | 'rose';
 }
 
 // Static color maps so Tailwind's JIT picks up the classes
@@ -30,6 +30,7 @@ const ACCENT_BAR: Record<RailItem['accent'], string> = {
   cyan:    'bg-cyan-400',
   violet:  'bg-violet-400',
   fuchsia: 'bg-fuchsia-400',
+  rose:    'bg-rose-400',
 };
 const ACCENT_BADGE: Record<RailItem['accent'], string> = {
   blue:    'bg-blue-500',
@@ -39,6 +40,7 @@ const ACCENT_BADGE: Record<RailItem['accent'], string> = {
   cyan:    'bg-cyan-500',
   violet:  'bg-violet-500',
   fuchsia: 'bg-fuchsia-500',
+  rose:    'bg-rose-500',
 };
 
 export default function AppRail({ activeView, setActiveView, onAISuggest, onSettings }: Props) {
@@ -59,6 +61,7 @@ export default function AppRail({ activeView, setActiveView, onAISuggest, onSett
     { id: 'library',     icon: <BookMarked size={18} />, label: 'Library',     badge: savedPapers.length || null, accent: 'amber' },
     { id: 'books',       icon: <Library    size={18} />, label: 'Books',       badge: null,                       accent: 'cyan' },
     { id: 'collections', icon: <FolderOpen size={18} />, label: 'Collections', badge: null,                       accent: 'fuchsia' },
+    { id: 'magazine',    icon: <Newspaper  size={18} />, label: 'Magazine',    badge: null,                       accent: 'rose' },
     { id: 'writer',      icon: <Pen        size={18} />, label: 'Writer',      badge: null,                       accent: 'violet' },
   ];
 

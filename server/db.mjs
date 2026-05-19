@@ -595,6 +595,123 @@ db.findPapersMissingCorrelations = async function (userId, candidateArxivIds, li
   return rows.map(r => r.arxiv_id);
 };
 
+// ----- magazine issues -----
+
+db.listMagazineIssues = async function (userId, limit = 30) {
+  const { rows } = await pool.query(
+    `SELECT id, week_start, week_end, edition_number, title, subtitle,
+            sources, ai_provider, created_at,
+            jsonb_object_keys(content) AS section_key
+     FROM magazine_issues
+     WHERE user_id=$1
+     ORDER BY week_start DESC, created_at DESC
+     LIMIT $2`,
+    [userId, limit],
+  );
+  // The jsonb_object_keys expansion creates one row per top-level key;
+  // collapse back to one entry per issue with the section list.
+  const byId = new Map();
+  for (const r of rows) {
+    let entry = byId.get(r.id);
+    if (!entry) {
+      entry = {
+        id:            r.id,
+        weekStart:     new Date(r.week_start).toISOString().slice(0, 10),
+        weekEnd:       new Date(r.week_end).toISOString().slice(0, 10),
+        editionNumber: r.edition_number,
+        title:         r.title,
+        subtitle:      r.subtitle ?? '',
+        sources:       r.sources ?? [],
+        aiProvider:    r.ai_provider ?? null,
+        createdAt:     new Date(r.created_at).getTime(),
+        sectionKeys:   [],
+      };
+      byId.set(r.id, entry);
+    }
+    if (r.section_key) entry.sectionKeys.push(r.section_key);
+  }
+  return [...byId.values()];
+};
+
+db.getMagazineIssue = async function (userId, id) {
+  const { rows } = await pool.query(
+    `SELECT * FROM magazine_issues WHERE user_id=$1 AND id=$2`,
+    [userId, id],
+  );
+  if (!rows[0]) return null;
+  const r = rows[0];
+  return {
+    id:            r.id,
+    weekStart:     new Date(r.week_start).toISOString().slice(0, 10),
+    weekEnd:       new Date(r.week_end).toISOString().slice(0, 10),
+    editionNumber: r.edition_number,
+    title:         r.title,
+    subtitle:      r.subtitle ?? '',
+    content:       r.content,
+    sources:       r.sources ?? [],
+    aiProvider:    r.ai_provider ?? null,
+    createdAt:     new Date(r.created_at).getTime(),
+  };
+};
+
+db.nextMagazineEdition = async function (userId) {
+  const { rows } = await pool.query(
+    `SELECT COALESCE(MAX(edition_number), 0) + 1 AS n
+     FROM magazine_issues WHERE user_id=$1`,
+    [userId],
+  );
+  return rows[0]?.n ?? 1;
+};
+
+db.insertMagazineIssue = async function (userId, issue) {
+  await pool.query(
+    `INSERT INTO magazine_issues
+       (id, user_id, week_start, week_end, edition_number, title, subtitle,
+        content, sources, ai_provider)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10)`,
+    [
+      issue.id, userId, issue.weekStart, issue.weekEnd, issue.editionNumber,
+      issue.title, issue.subtitle ?? '', JSON.stringify(issue.content),
+      issue.sources ?? [], issue.aiProvider ?? null,
+    ],
+  );
+};
+
+db.deleteMagazineIssue = async function (userId, id) {
+  await pool.query(`DELETE FROM magazine_issues WHERE user_id=$1 AND id=$2`, [userId, id]);
+};
+
+// Recently-arrived papers (by digest_date) for the magazine's inbox digest.
+db.papersForWeek = async function (userId, weekStartIso, weekEndIso) {
+  const { rows } = await pool.query(
+    `SELECT * FROM papers
+     WHERE user_id=$1
+       AND digest_date >= $2::date
+       AND digest_date <  ($3::date + interval '1 day')
+     ORDER BY digest_date DESC`,
+    [userId, weekStartIso, weekEndIso],
+  );
+  // Reuse the rowToPaper shape that the existing list endpoint returns
+  return rows.map(r => ({
+    id:            r.id,
+    arxivId:       r.arxiv_id,
+    title:         r.title,
+    authors:       r.authors,
+    authorList:    r.author_list ?? [],
+    categories:    r.categories ?? [],
+    abstract:      r.abstract ?? '',
+    comments:      r.comments ?? '',
+    url:           r.url ?? '',
+    pdfUrl:        r.pdf_url ?? '',
+    size:          r.size ?? '',
+    date:          r.date ?? '',
+    emailId:       r.email_id ?? '',
+    digestSubject: r.digest_subject ?? '',
+    digestDate:    new Date(r.digest_date).toISOString(),
+    source:        r.source ?? 'email',
+  }));
+};
+
 function rowToCorrelation(r) {
   return {
     sourceArxivId: r.source_arxiv_id,

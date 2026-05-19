@@ -9,6 +9,7 @@ import TrackingView from './TrackingView';
 import BooksView from './BooksView';
 import WriterView from './WriterView';
 import CollectionsView from './CollectionsView';
+import MagazineView from './MagazineView';
 import AISuggestPanel from './AISuggestPanel';
 import SettingsModal from './SettingsModal';
 import { usePapers } from '../contexts/PapersContext';
@@ -20,8 +21,9 @@ import { CollectionsProvider } from '../contexts/CollectionsContext';
 import { LinksProvider } from '../contexts/LinksContext';
 import { ConfirmProvider } from '../contexts/ConfirmContext';
 import { CorrelationsProvider } from '../contexts/CorrelationsContext';
+import { MagazineProvider } from '../contexts/MagazineContext';
 
-export type ActiveView = 'inbox' | 'library' | 'discover' | 'tracking' | 'books' | 'writer' | 'collections';
+export type ActiveView = 'inbox' | 'library' | 'discover' | 'tracking' | 'books' | 'writer' | 'collections' | 'magazine';
 
 function AppLayoutInner() {
   const { selectedPaper } = usePapers();
@@ -38,6 +40,7 @@ function AppLayoutInner() {
       case 'books':       return <BooksView />;
       case 'writer':      return <WriterView />;
       case 'collections': return <CollectionsView />;
+      case 'magazine':    return <MagazineView />;
       default:            return <Dashboard />;
     }
   };
@@ -72,7 +75,9 @@ export default function AppLayout() {
               <CollectionsProvider>
                 <LinksProvider>
                   <CorrelationsProvider>
-                    <AppLayoutInner />
+                    <MagazineProvider>
+                      <AppLayoutInner />
+                    </MagazineProvider>
                   </CorrelationsProvider>
                 </LinksProvider>
               </CollectionsProvider>

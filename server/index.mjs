@@ -8,6 +8,7 @@ import { mkdirSync, unlinkSync, existsSync, statSync } from 'fs';
 import multer from 'multer';
 import 'dotenv/config';
 import { db } from './db.mjs';
+import { fetchSources } from './sources.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -933,6 +934,86 @@ app.get('/api/books/lookup', async (req, res) => {
     res.status(502).json({ error: `Lookup failed: ${e.message}` });
   }
 });
+
+// ---------- Magazine: external source proxies (cached) ----------
+// These are public, no-auth (just CORS-blocked) sources. Proxying via our
+// server keeps the browser happy and gives us a single in-memory cache.
+
+app.get('/api/sources/hackernews',  async (_req, res) => {
+  try { res.json({ items: await (await import('./sources.mjs')).fetchHackerNewsTop() }); }
+  catch (e) { res.status(502).json({ error: e.message }); }
+});
+app.get('/api/sources/huggingface', async (_req, res) => {
+  try { res.json({ items: await (await import('./sources.mjs')).fetchHuggingFaceTrending() }); }
+  catch (e) { res.status(502).json({ error: e.message }); }
+});
+app.get('/api/sources/github',      async (_req, res) => {
+  try { res.json({ items: await (await import('./sources.mjs')).fetchGitHubTrending() }); }
+  catch (e) { res.status(502).json({ error: e.message }); }
+});
+app.get('/api/sources/modelscope',  async (_req, res) => {
+  try { res.json({ items: await (await import('./sources.mjs')).fetchModelScopeTrending() }); }
+  catch (e) { res.status(502).json({ error: e.message }); }
+});
+
+// ---------- Magazine: issue CRUD ----------
+
+app.get('/api/db/magazine', (req, res) => withUser(req, res, async (uid) => {
+  res.json({ issues: await db.listMagazineIssues(uid) });
+}));
+
+app.get('/api/db/magazine/:id', (req, res) => withUser(req, res, async (uid) => {
+  const issue = await db.getMagazineIssue(uid, req.params.id);
+  if (!issue) return res.status(404).json({ error: 'not found' });
+  res.json({ issue });
+}));
+
+app.delete('/api/db/magazine/:id', (req, res) => withUser(req, res, async (uid) => {
+  await db.deleteMagazineIssue(uid, req.params.id);
+  res.json({ ok: true });
+}));
+
+// Generate this week's issue. Body: { sources: [...], weekStart?: 'YYYY-MM-DD' }.
+// The AI editorial is NOT generated server-side; the client does it after
+// receiving the compiled draft so it can use the configured AI provider.
+// The client then POSTs the finished issue (with editorial) back via the
+// /api/db/magazine/:id PUT route. This way we don't need API keys on the
+// server side.
+app.post('/api/db/magazine/draft', (req, res) => withUser(req, res, async (uid) => {
+  const { sources = ['hackernews', 'huggingface', 'github', 'modelscope'], weekStart } = req.body ?? {};
+
+  // Compute the week window: the 7 days ending today (or ending weekStart+7).
+  const end = new Date();
+  const start = weekStart ? new Date(weekStart) : new Date(end);
+  if (!weekStart) start.setDate(end.getDate() - 6);
+  const weekStartIso = start.toISOString().slice(0, 10);
+  const weekEndIso   = end.toISOString().slice(0, 10);
+
+  // 1) the user's inbox papers for the week (sorted client-side by score)
+  const inboxPapers = await db.papersForWeek(uid, weekStartIso, weekEndIso);
+
+  // 2) external sources (parallel, fault-tolerant)
+  const { results: sourceResults, errors: sourceErrors } = await fetchSources(sources);
+
+  // 3) bump edition number
+  const editionNumber = await db.nextMagazineEdition(uid);
+
+  res.json({
+    weekStart:     weekStartIso,
+    weekEnd:       weekEndIso,
+    editionNumber,
+    sources,
+    sourceErrors,
+    inboxPapers,
+    external:      sourceResults,
+  });
+}));
+
+app.put('/api/db/magazine/:id', (req, res) => withUser(req, res, async (uid) => {
+  const issue = { ...req.body, id: req.params.id };
+  await db.insertMagazineIssue(uid, issue);
+  res.json({ ok: true });
+}));
 
 // Serve built frontend in production
 if (isProd) {

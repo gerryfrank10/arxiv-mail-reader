@@ -193,6 +193,76 @@ export interface CorrelationStats {
   papersInLastHour: number;
 }
 
+// ---------- Magazine ----------
+
+export type MagazineSource = 'hackernews' | 'huggingface' | 'github' | 'modelscope';
+
+// Source items — minimal shapes the renderer needs
+export interface MagazineHNItem      { id: string; title: string; url: string; discussion: string; points: number; comments: number; by: string; ts: number; }
+export interface MagazineHFItem      { id: string; name: string; author: string; downloads: number; likes: number; tags: string[]; pipeline: string | null; library: string | null; url: string; ts: number; }
+export interface MagazineGitHubItem  { id: string; name: string; description: string; url: string; stars: number; forks: number; language: string; topics: string[]; ts: number; owner: string; ownerAvatar: string | null; }
+export interface MagazineMSItem      { id: string; name: string; chineseName: string; author: string; downloads: number; stars: number; tags: string[]; url: string; ts: number; }
+
+export interface MagazineExternal {
+  hackernews?:  MagazineHNItem[];
+  huggingface?: MagazineHFItem[];
+  github?:      MagazineGitHubItem[];
+  modelscope?:  MagazineMSItem[];
+}
+
+// A draft is what the server returns after collecting raw data — the
+// client adds the AI editorial and POSTs back a finished issue.
+export interface MagazineDraft {
+  weekStart:     string;
+  weekEnd:       string;
+  editionNumber: number;
+  sources:       MagazineSource[];
+  sourceErrors:  Record<string, string>;
+  inboxPapers:   Paper[];
+  external:      MagazineExternal;
+}
+
+export interface MagazineEditorial {
+  cover:     string;     // 2-3 sentence cover blurb
+  inboxNote: string;     // 1 paragraph about the user's inbox highlights
+  takeaways: string[];   // 3-5 bullet "this week in research" takeaways
+}
+
+export interface MagazineContent {
+  editorial?: MagazineEditorial;
+  inboxPapers: Paper[];
+  external:    MagazineExternal;
+  /** Source errors carried into the issue so the reader sees what failed */
+  sourceErrors?: Record<string, string>;
+}
+
+export interface MagazineIssue {
+  id:            string;
+  weekStart:     string;   // YYYY-MM-DD
+  weekEnd:       string;
+  editionNumber: number;
+  title:         string;
+  subtitle:      string;
+  content:       MagazineContent;
+  sources:       MagazineSource[];
+  aiProvider:    string | null;
+  createdAt:     number;
+}
+
+/** Summary used in the issue list — full content omitted to keep payloads small */
+export interface MagazineIssueSummary {
+  id:            string;
+  weekStart:     string;
+  weekEnd:       string;
+  editionNumber: number;
+  title:         string;
+  subtitle:      string;
+  sources:       MagazineSource[];
+  aiProvider:    string | null;
+  createdAt:     number;
+  sectionKeys:   string[];
+}
+
 export type Provider = 'google' | 'imap';
 
 export interface ImapConfig {

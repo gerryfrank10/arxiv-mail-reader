@@ -4,7 +4,7 @@
 // isn't enabled, the status endpoint returns { enabled: false } and the
 // client UI shows a setup hint instead of an empty/broken state.
 
-import { Book, Collection, CollectionItem, CorrelationStats, EntityKind, Link, LinkRel, Paper, PaperCorrelation, PaperScore, ResearchDocument, Tracker } from '../types';
+import { Book, Collection, CollectionItem, CorrelationStats, EntityKind, Link, LinkRel, MagazineDraft, MagazineIssue, MagazineIssueSummary, MagazineSource, Paper, PaperCorrelation, PaperScore, ResearchDocument, Tracker } from '../types';
 
 function userEmailFromLocalStorage(): string | null {
   try {
@@ -277,6 +277,40 @@ export async function apiUpsertScores(scores: PaperScore[]): Promise<void> {
 
 export async function apiDeleteScoresForTracker(trackerId: string): Promise<void> {
   await call(`/api/db/scores/tracker/${encodeURIComponent(trackerId)}`, { method: 'DELETE' });
+}
+
+// ---------- Magazine ----------
+
+export async function apiListMagazineIssues(): Promise<MagazineIssueSummary[]> {
+  const { issues } = await call<{ issues: MagazineIssueSummary[] }>('/api/db/magazine');
+  return issues;
+}
+
+export async function apiGetMagazineIssue(id: string): Promise<MagazineIssue> {
+  const { issue } = await call<{ issue: MagazineIssue }>(`/api/db/magazine/${encodeURIComponent(id)}`);
+  return issue;
+}
+
+export async function apiDeleteMagazineIssue(id: string): Promise<void> {
+  await call(`/api/db/magazine/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+export async function apiDraftMagazine(opts: { sources?: MagazineSource[]; weekStart?: string } = {}): Promise<MagazineDraft> {
+  return call('/api/db/magazine/draft', {
+    method: 'POST',
+    body: JSON.stringify(opts),
+  });
+}
+
+export async function apiSaveMagazineIssue(issue: MagazineIssue): Promise<void> {
+  await call(`/api/db/magazine/${encodeURIComponent(issue.id)}`, {
+    method: 'PUT',
+    body: JSON.stringify(issue),
+  });
+}
+
+export function newMagazineIssueId(): string {
+  return `mag-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
 // ---------- AI correlations cache ----------
