@@ -23,6 +23,8 @@ import { LinksProvider } from '../contexts/LinksContext';
 import { ConfirmProvider } from '../contexts/ConfirmContext';
 import { CorrelationsProvider } from '../contexts/CorrelationsContext';
 import { MagazineProvider } from '../contexts/MagazineContext';
+import { AIActivityProvider } from '../contexts/AIActivityContext';
+import AIActivityPanel from './AIActivityPanel';
 
 export type ActiveView = 'inbox' | 'library' | 'discover' | 'tracking' | 'books' | 'writer' | 'collections' | 'magazine';
 
@@ -32,6 +34,7 @@ function AppLayoutInner() {
   const [showAISuggest, setShowAISuggest] = useState(false);
   const [showSettings,  setShowSettings]  = useState(false);
   const [showSearch,    setShowSearch]    = useState(false);
+  const [showActivity,  setShowActivity]  = useState(false);
 
   // Cmd+K / Ctrl+K opens the global search overlay from anywhere
   useEffect(() => {
@@ -69,6 +72,7 @@ function AppLayoutInner() {
         onAISuggest={() => setShowAISuggest(true)}
         onSettings={() => setShowSettings(true)}
         onSearch={() => setShowSearch(true)}
+        onActivity={() => setShowActivity(true)}
       />
       <Sidebar activeView={activeView} setActiveView={setActiveView} />
       <main className="flex-1 overflow-hidden">
@@ -77,12 +81,14 @@ function AppLayoutInner() {
       {showAISuggest && <AISuggestPanel  onClose={() => setShowAISuggest(false)} />}
       {showSettings  && <SettingsModal   onClose={() => setShowSettings(false)} />}
       {showSearch    && <SearchOverlay   onClose={() => setShowSearch(false)} setActiveView={setActiveView} />}
+      {showActivity  && <AIActivityPanel onClose={() => setShowActivity(false)} />}
     </div>
   );
 }
 
 export default function AppLayout() {
   return (
+    <AIActivityProvider>
     <ConfirmProvider>
       <LibraryProvider>
         <TrackingProvider>
@@ -102,5 +108,6 @@ export default function AppLayout() {
         </TrackingProvider>
       </LibraryProvider>
     </ConfirmProvider>
+    </AIActivityProvider>
   );
 }

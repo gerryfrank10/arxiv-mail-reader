@@ -6,6 +6,7 @@ import {
 } from '../utils/researchApi';
 import { scoreCorrelationsForPaper } from '../utils/correlationScoring';
 import { hasAI } from '../utils/aiProvider';
+import { isAIPaused } from './AIActivityContext';
 import { usePapers } from './PapersContext';
 import { useLibrary } from './LibraryContext';
 
@@ -148,6 +149,7 @@ export function CorrelationsProvider({ children }: { children: React.ReactNode }
     }
     async function tick() {
       if (workerBusy) return;
+      if (isAIPaused()) return;          // master-pause respects user intent
       pruneRecentRuns();
       if (recentRunsRef.current.length >= PAPERS_PER_HOUR) return;
       try {

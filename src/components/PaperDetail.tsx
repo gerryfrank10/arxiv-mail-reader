@@ -157,7 +157,7 @@ Return exactly this JSON structure (no other text):
       const text = await aiChat(
         [{ role: 'user', content: prompt }],
         settings,
-        { maxTokens: 800, temperature: 0.3, timeoutMs: 60_000 },
+        { maxTokens: 800, temperature: 0.3, timeoutMs: 60_000, purpose: 'paper-summary' },
       );
       const jsonMatch = text.match(/\{[\s\S]*\}/);
       if (!jsonMatch) throw new Error('Could not parse response');

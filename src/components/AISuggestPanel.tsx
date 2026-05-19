@@ -58,7 +58,7 @@ Select up to 5 most relevant papers (by index). "searches" should be 3–5 arXiv
       const text = await aiChat(
         [{ role: 'user', content: prompt }],
         settings,
-        { maxTokens: 800, temperature: 0.3, timeoutMs: 30_000 },
+        { maxTokens: 800, temperature: 0.3, timeoutMs: 30_000, purpose: 'ai-suggest' },
       );
       const jsonMatch = text.match(/\{[\s\S]*\}/);
       if (!jsonMatch) throw new Error('Could not parse AI response');

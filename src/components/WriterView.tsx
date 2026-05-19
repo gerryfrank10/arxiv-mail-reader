@@ -145,7 +145,7 @@ Return up to 5 suggestions, ranked by relevance. Penalise generic matches; rewar
       const text = await aiChat(
         [{ role: 'user', content: prompt }],
         settings,
-        { maxTokens: 600, temperature: 0.3, timeoutMs: 45_000 },
+        { maxTokens: 600, temperature: 0.3, timeoutMs: 45_000, purpose: 'writer-cite-suggest' },
       );
       const m = text.match(/\[[\s\S]*\]/);
       if (!m) throw new Error('Could not parse AI response');

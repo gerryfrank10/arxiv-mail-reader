@@ -1,4 +1,5 @@
 import { AIConfig, AIProvider, Settings } from '../types';
+import { _aiActivityFinish, _aiActivityStart } from '../contexts/AIActivityContext';
 
 // Sensible defaults so the user only needs to pick a provider + paste a key
 export const AI_DEFAULTS: Record<AIProvider, { baseUrl?: string; model?: string; label: string; help: string }> = {
@@ -75,6 +76,9 @@ export interface ChatOptions {
   signal?: AbortSignal;
   /** Approximate timeout in ms (used when no signal is supplied) */
   timeoutMs?: number;
+  /** A short label so the activity log can group calls — e.g. 'tracker-score',
+   *  'magazine-editorial', 'paper-summary', 'ai-suggest', 'connection-test'. */
+  purpose?: string;
 }
 
 /**
@@ -100,12 +104,35 @@ export async function aiChat(
   const signal = opts.signal ?? AbortSignal.timeout(opts.timeoutMs ?? 30_000);
   const maxTokens = opts.maxTokens ?? 1024;
   const temperature = opts.temperature ?? 0.4;
+  const promptChars = messages.reduce((n, m) => n + (m.content?.length ?? 0), 0);
 
-  if (config.provider === 'claude') {
-    return callClaude(messages, config, { maxTokens, temperature, signal });
+  const actId = _aiActivityStart({
+    purpose:  opts.purpose ?? 'chat',
+    provider: config.provider,
+    model:    config.model,
+    promptChars,
+  });
+
+  try {
+    const text = config.provider === 'claude'
+      ? await callClaude(messages, config, { maxTokens, temperature, signal })
+      : await callOpenAICompatible(messages, config, { maxTokens, temperature, signal });
+    _aiActivityFinish(actId, { status: 'success', responseChars: text.length });
+    return text;
+  } catch (e) {
+    const err = e as Error;
+    // Distinguish abort/cancellation from real failures so the activity log
+    // can show e.g. NS_BINDING_ABORTED as 'cancelled' rather than 'error'.
+    const isAbort =
+      err?.name === 'AbortError' ||
+      err?.name === 'TimeoutError' ||
+      /aborted|NS_BINDING_ABORTED/i.test(err?.message ?? '');
+    _aiActivityFinish(actId, {
+      status: isAbort ? 'cancelled' : 'error',
+      error:  err?.message ?? 'unknown error',
+    });
+    throw e;
   }
-  // Everything else is OpenAI-compatible, proxied through our server.
-  return callOpenAICompatible(messages, config, { maxTokens, temperature, signal });
 }
 
 async function callClaude(

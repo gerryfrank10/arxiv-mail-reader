@@ -221,7 +221,7 @@ Return ONLY a JSON array, one object per paper, with no extra text:
   const text = await aiChat(
     [{ role: 'user', content: userPrompt }],
     settings,
-    { maxTokens: 2000, temperature: 0.2 },
+    { maxTokens: 2000, temperature: 0.2, purpose: 'tracker-score' },
   );
   // Be lenient: grab the first JSON array
   const match = text.match(/\[[\s\S]*\]/);

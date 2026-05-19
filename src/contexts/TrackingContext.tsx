@@ -2,6 +2,7 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useR
 import { Paper, PaperScore, Tracker } from '../types';
 import { scorePapersAgainstTracker } from '../utils/trackerScoring';
 import { trackersStore, scoresStore, onStorageModeChange } from '../utils/storage';
+import { isAIPaused } from './AIActivityContext';
 import { usePapers } from './PapersContext';
 
 interface ScoringState {
@@ -112,12 +113,16 @@ export function TrackingProvider({ children }: { children: React.ReactNode }) {
     }
   }, [trackers, scores, scoreSubset]);
 
-  // Auto-score on paper change — debounced so rapid sync updates don't pile up
+  // Auto-score on paper change — debounced so rapid sync updates don't pile up.
+  // Skipped entirely when AI background activity is paused (master switch in
+  // the Activity panel) so the user can pin Ollama down for manual debugging.
   const autoScoreTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     if (!ready || trackers.length === 0 || papers.length === 0) return;
+    if (isAIPaused()) return;
     if (autoScoreTimer.current) clearTimeout(autoScoreTimer.current);
     autoScoreTimer.current = setTimeout(() => {
+      if (isAIPaused()) return;
       scoreNewPapers(papers).catch(e => console.warn('[tracking] auto-score failed', e));
     }, 600);
     return () => { if (autoScoreTimer.current) clearTimeout(autoScoreTimer.current); };

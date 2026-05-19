@@ -54,7 +54,12 @@ Return strict JSON only, one object per candidate:
   const text = await aiChat(
     [{ role: 'user', content: prompt }],
     settings,
-    { maxTokens: Math.min(2500, 80 + candidates.length * 40), temperature: 0.2, timeoutMs: 60_000 },
+    {
+      maxTokens: Math.min(2500, 80 + candidates.length * 40),
+      temperature: 0.2,
+      timeoutMs: 60_000,
+      purpose: 'correlation-score',
+    },
   );
 
   const m = text.match(/\[[\s\S]*\]/);

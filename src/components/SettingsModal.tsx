@@ -77,7 +77,7 @@ export default function SettingsModal({ onClose }: Props) {
       const text = await aiChat(
         [{ role: 'user', content: 'Reply with just the word "ok".' }],
         transientSettings,
-        { maxTokens: 8, temperature: 0, timeoutMs: 20_000 },
+        { maxTokens: 8, temperature: 0, timeoutMs: 20_000, purpose: 'connection-test' },
       );
       setTestResult({ ok: true, message: `Connected. Replied: "${text.trim().slice(0, 40)}"` });
     } catch (e) {

@@ -118,7 +118,7 @@ Return this JSON (and nothing else):
     const text = await aiChat(
       [{ role: 'user', content: prompt }],
       settings,
-      { maxTokens: 1200, temperature: 0.4, timeoutMs: 90_000 },
+      { maxTokens: 1200, temperature: 0.4, timeoutMs: 90_000, purpose: 'magazine-editorial' },
     );
 
     const parsed = parseEditorialJson(text);

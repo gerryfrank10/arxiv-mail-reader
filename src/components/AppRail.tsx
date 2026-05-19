@@ -1,4 +1,5 @@
-import { Inbox, Compass, Target, BookMarked, Library, Pen, Sparkles, Settings, RefreshCw, FolderOpen, Newspaper, Search } from 'lucide-react';
+import { Inbox, Compass, Target, BookMarked, Library, Pen, Sparkles, Settings, RefreshCw, FolderOpen, Newspaper, Search, Activity } from 'lucide-react';
+import { useAIActivity } from '../contexts/AIActivityContext';
 import { ActiveView } from './AppLayout';
 import { usePapers } from '../contexts/PapersContext';
 import { useAuth } from '../contexts/AuthContext';
@@ -12,6 +13,7 @@ interface Props {
   onAISuggest: () => void;
   onSettings: () => void;
   onSearch: () => void;
+  onActivity: () => void;
 }
 
 interface RailItem {
@@ -44,7 +46,8 @@ const ACCENT_BADGE: Record<RailItem['accent'], string> = {
   rose:    'bg-rose-500',
 };
 
-export default function AppRail({ activeView, setActiveView, onAISuggest, onSettings, onSearch }: Props) {
+export default function AppRail({ activeView, setActiveView, onAISuggest, onSettings, onSearch, onActivity }: Props) {
+  const { inFlight, paused } = useAIActivity();
   const { unreadCount, loading, sync, setSelectedPaper } = usePapers();
   const { savedPapers } = useLibrary();
   const { trackers, matchesByTracker, scoring } = useTracking();
@@ -120,13 +123,29 @@ export default function AppRail({ activeView, setActiveView, onAISuggest, onSett
 
       <div className="flex-1" />
 
-      {/* Search + Sync + AI suggest + Settings */}
+      {/* Search + Activity + Sync + AI suggest + Settings */}
       <button
         onClick={onSearch}
         title="Search everything (⌘K)"
         className="w-10 h-10 rounded-lg flex items-center justify-center text-slate-400 hover:text-white hover:bg-slate-800 transition-all"
       >
         <Search size={14} />
+      </button>
+      <button
+        onClick={onActivity}
+        title={`AI activity${paused ? ' · paused' : ''}${inFlight > 0 ? ` · ${inFlight} in flight` : ''}`}
+        className={`relative w-10 h-10 rounded-lg flex items-center justify-center transition-all ${
+          paused
+            ? 'text-amber-300 hover:text-amber-200 hover:bg-slate-800'
+            : 'text-slate-400 hover:text-white hover:bg-slate-800'
+        }`}
+      >
+        <Activity size={14} className={inFlight > 0 ? 'animate-pulse' : ''} />
+        {(inFlight > 0 || paused) && (
+          <span className={`absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full ring-2 ring-slate-900 ${
+            paused ? 'bg-amber-400' : 'bg-blue-400 animate-pulse'
+          }`} />
+        )}
       </button>
       <button
         onClick={() => sync(true)}
