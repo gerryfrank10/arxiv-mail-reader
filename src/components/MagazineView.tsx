@@ -18,7 +18,7 @@ const SOURCE_LABEL: Record<MagazineSource, string> = {
 };
 
 export default function MagazineView() {
-  const { issues, active, dbEnabled, generating, error, generateThisWeek, refresh, removeIssue } = useMagazine();
+  const { issues, active, dbEnabled, generating, error, editorialError, editorialBusy, generateThisWeek, generateEditorialFor, refresh, removeIssue } = useMagazine();
   const { settings, setSelectedPaper } = usePapers();
   const confirm = useConfirm();
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -124,6 +124,9 @@ export default function MagazineView() {
               });
               if (ok) removeIssue(active.id);
             }}
+            onGenerateEditorial={() => generateEditorialFor(active.id)}
+            editorialBusy={editorialBusy}
+            editorialError={editorialError}
           />
         )}
       </div>
@@ -136,8 +139,20 @@ export default function MagazineView() {
 // Issue reader
 // =========================================================================
 
-function IssueReader({ issue, onOpenPaper, onDelete }: { issue: import('../types').MagazineIssue; onOpenPaper: (p: Paper) => void; onDelete: () => void; }) {
+function IssueReader({
+  issue, onOpenPaper, onDelete, onGenerateEditorial, editorialBusy, editorialError,
+}: {
+  issue: import('../types').MagazineIssue;
+  onOpenPaper: (p: Paper) => void;
+  onDelete: () => void;
+  onGenerateEditorial: () => void;
+  editorialBusy: boolean;
+  editorialError: string | null;
+}) {
+  const { settings } = usePapers();
+  const aiOn = hasAI(settings);
   const c = issue.content;
+  const hasEditorial = !!c.editorial && (c.editorial.cover || c.editorial.inboxNote || (c.editorial.takeaways?.length ?? 0) > 0);
   // Inbox papers may have come back as ISO strings if loaded from server
   const inboxPapers = (c.inboxPapers ?? []).map(p => ({
     ...p,
@@ -183,6 +198,47 @@ function IssueReader({ issue, onOpenPaper, onDelete }: { issue: import('../types
 
       {/* Body */}
       <div className="p-8 space-y-10">
+        {/* Missing-editorial CTA (auto-generated issues / failed generations) */}
+        {!hasEditorial && (
+          <section className="rounded-xl border border-violet-200 bg-gradient-to-br from-violet-50 to-fuchsia-50 px-5 py-4 flex items-start gap-3">
+            <Sparkles size={18} className="text-violet-500 shrink-0 mt-0.5" />
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-semibold text-slate-800">No editorial yet</p>
+              <p className="text-xs text-slate-600 mt-0.5">
+                {aiOn
+                  ? 'Auto-generated issues have no editorial commentary (the server can\'t reach your AI provider). Click to compose one now using your configured provider.'
+                  : 'Configure an AI provider in Settings to generate editorial commentary for this issue.'}
+              </p>
+              {editorialError && (
+                <p className="text-xs text-amber-700 mt-2 bg-amber-50 border border-amber-200 rounded-md px-2 py-1 inline-block">
+                  <AlertCircle size={11} className="inline -mt-0.5 mr-1" />
+                  {editorialError}
+                </p>
+              )}
+            </div>
+            <button
+              onClick={onGenerateEditorial}
+              disabled={editorialBusy || !aiOn}
+              className="shrink-0 flex items-center gap-1.5 px-3.5 py-2 bg-violet-600 text-white text-sm font-medium rounded-lg hover:bg-violet-700 disabled:opacity-50 transition-colors"
+            >
+              {editorialBusy ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />}
+              {editorialBusy ? 'Composing…' : 'Generate editorial'}
+            </button>
+          </section>
+        )}
+
+        {/* Re-run banner for issues that DO have an editorial but the user
+            wants to re-compose, OR show last error if one happened */}
+        {hasEditorial && editorialError && (
+          <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-800 flex items-start gap-2">
+            <AlertCircle size={14} className="shrink-0 mt-0.5" />
+            <span>Last editorial attempt failed: {editorialError}</span>
+            <button onClick={onGenerateEditorial} disabled={editorialBusy} className="ml-auto text-xs text-amber-900 hover:underline font-medium">
+              {editorialBusy ? 'retrying…' : 'retry'}
+            </button>
+          </div>
+        )}
+
         {/* Editorial takeaways */}
         {c.editorial?.takeaways && c.editorial.takeaways.length > 0 && (
           <Section title="This week's takeaways" icon={<Sparkles size={14} className="text-violet-500" />}>
