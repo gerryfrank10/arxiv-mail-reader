@@ -313,6 +313,48 @@ export function newMagazineIssueId(): string {
   return `mag-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+export interface MagazineAutoPrefs {
+  email:       string;
+  auto:        boolean;
+  dayOfWeek:   number;   // 1=Mon..7=Sun
+  hour:        number;   // 0..23
+  sources:     MagazineSource[];
+  lastAutoRun: number | null;
+}
+
+export async function apiGetMagazineAutoPrefs(): Promise<MagazineAutoPrefs | null> {
+  const { prefs } = await call<{ prefs: MagazineAutoPrefs | null }>('/api/db/magazine/auto/prefs');
+  return prefs;
+}
+
+export async function apiSetMagazineAutoPrefs(prefs: Partial<Omit<MagazineAutoPrefs, 'email' | 'lastAutoRun'>>): Promise<MagazineAutoPrefs | null> {
+  const { prefs: next } = await call<{ prefs: MagazineAutoPrefs | null }>('/api/db/magazine/auto/prefs', {
+    method: 'PUT',
+    body: JSON.stringify(prefs),
+  });
+  return next;
+}
+
+// ---------- Global search ----------
+
+export type SearchResultKind = 'paper' | 'book' | 'document' | 'collection' | 'magazine';
+
+export interface SearchResult {
+  kind:    SearchResultKind;
+  id:      string;
+  title:   string;
+  snippet: string;
+  sub:     string;
+  ts:      number | null;
+}
+
+export async function apiGlobalSearch(query: string, limit = 40): Promise<SearchResult[]> {
+  if (!query || query.length < 2) return [];
+  const url = `/api/db/search?q=${encodeURIComponent(query)}&limit=${limit}`;
+  const { results } = await call<{ results: SearchResult[] }>(url);
+  return results;
+}
+
 // ---------- AI correlations cache ----------
 
 export async function apiGetCorrelationsForPaper(arxivId: string, opts: { limit?: number; minScore?: number } = {}): Promise<PaperCorrelation[]> {

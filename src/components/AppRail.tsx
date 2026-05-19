@@ -1,4 +1,4 @@
-import { Inbox, Compass, Target, BookMarked, Library, Pen, Sparkles, Settings, RefreshCw, FolderOpen, Newspaper } from 'lucide-react';
+import { Inbox, Compass, Target, BookMarked, Library, Pen, Sparkles, Settings, RefreshCw, FolderOpen, Newspaper, Search } from 'lucide-react';
 import { ActiveView } from './AppLayout';
 import { usePapers } from '../contexts/PapersContext';
 import { useAuth } from '../contexts/AuthContext';
@@ -11,6 +11,7 @@ interface Props {
   setActiveView: (v: ActiveView) => void;
   onAISuggest: () => void;
   onSettings: () => void;
+  onSearch: () => void;
 }
 
 interface RailItem {
@@ -43,7 +44,7 @@ const ACCENT_BADGE: Record<RailItem['accent'], string> = {
   rose:    'bg-rose-500',
 };
 
-export default function AppRail({ activeView, setActiveView, onAISuggest, onSettings }: Props) {
+export default function AppRail({ activeView, setActiveView, onAISuggest, onSettings, onSearch }: Props) {
   const { unreadCount, loading, sync, setSelectedPaper } = usePapers();
   const { savedPapers } = useLibrary();
   const { trackers, matchesByTracker, scoring } = useTracking();
@@ -119,7 +120,14 @@ export default function AppRail({ activeView, setActiveView, onAISuggest, onSett
 
       <div className="flex-1" />
 
-      {/* Sync + AI suggest + Settings */}
+      {/* Search + Sync + AI suggest + Settings */}
+      <button
+        onClick={onSearch}
+        title="Search everything (⌘K)"
+        className="w-10 h-10 rounded-lg flex items-center justify-center text-slate-400 hover:text-white hover:bg-slate-800 transition-all"
+      >
+        <Search size={14} />
+      </button>
       <button
         onClick={() => sync(true)}
         disabled={loading}

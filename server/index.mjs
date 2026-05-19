@@ -1015,6 +1015,83 @@ app.put('/api/db/magazine/:id', (req, res) => withUser(req, res, async (uid) => 
   res.json({ ok: true });
 }));
 
+// ---------- Global search ----------
+app.get('/api/db/search', (req, res) => withUser(req, res, async (uid) => {
+  const q = String(req.query.q ?? '').trim();
+  if (!q || q.length < 2) return res.json({ results: [] });
+  const limit = Math.min(parseInt(String(req.query.limit ?? '40'), 10) || 40, 100);
+  try { res.json({ results: await db.globalSearch(uid, q, limit) }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+}));
+
+// Per-user auto-gen preferences (read + write)
+app.get('/api/db/magazine/auto/prefs', (req, res) => withUser(req, res, async (uid) => {
+  res.json({ prefs: await db.getUserMagazinePrefs(uid) });
+}));
+app.put('/api/db/magazine/auto/prefs', (req, res) => withUser(req, res, async (uid) => {
+  await db.setUserMagazinePrefs(uid, req.body ?? {});
+  res.json({ prefs: await db.getUserMagazinePrefs(uid) });
+}));
+
+// ---------- Magazine auto-generation worker ----------
+// Polls every 5 minutes; picks users whose magazine_auto is on, today is
+// their preferred ISO day-of-week, the server is past their preferred hour,
+// and their last auto-run is >6 days old. For each, drafts a new issue
+// (no AI editorial — the server doesn't have the user's AI credentials)
+// and saves it. The next time the user opens the Magazine workspace
+// they'll see the new issue and can add an editorial on-demand.
+const SCHEDULER_INTERVAL_MS = 5 * 60 * 1000;
+async function tickMagazineScheduler() {
+  if (!db.enabled) return;
+  let users = [];
+  try { users = await db.dueMagazineUsers(); } catch (e) {
+    console.warn('[scheduler] dueMagazineUsers failed:', e.message);
+    return;
+  }
+  for (const u of users) {
+    try {
+      const end   = new Date();
+      const start = new Date(end);
+      start.setDate(end.getDate() - 6);
+      const weekStartIso = start.toISOString().slice(0, 10);
+      const weekEndIso   = end.toISOString().slice(0, 10);
+      const sources      = u.sources && u.sources.length > 0 ? u.sources : ['hackernews', 'huggingface', 'github'];
+      const inboxPapers  = await db.papersForWeek(u.id, weekStartIso, weekEndIso);
+      const { results, errors } = await fetchSources(sources);
+      const editionNumber = await db.nextMagazineEdition(u.id);
+      const id = `mag-auto-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      await db.insertMagazineIssue(u.id, {
+        id,
+        weekStart:     weekStartIso,
+        weekEnd:       weekEndIso,
+        editionNumber,
+        title:         `Week of ${new Date(weekStartIso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`,
+        subtitle:      `Edition #${editionNumber} · auto-generated`,
+        content:       { editorial: undefined, inboxPapers, external: results, sourceErrors: errors },
+        sources,
+        aiProvider:    null,
+      });
+      await db.markMagazineAutoRun(u.id);
+      console.log(`[scheduler] generated magazine edition #${editionNumber} for ${u.email}`);
+    } catch (e) {
+      console.warn(`[scheduler] failed for ${u.email}:`, e.message);
+    }
+  }
+}
+
+// Kick off the scheduler once DB is connected (the listen handler below
+// awaits db.init then starts polling). Skip in test envs by setting
+// DISABLE_MAGAZINE_SCHEDULER=1.
+function startMagazineScheduler() {
+  if (process.env.DISABLE_MAGAZINE_SCHEDULER === '1') return;
+  if (!db.enabled) return;
+  console.log(`[scheduler] magazine auto-gen worker active (tick every ${SCHEDULER_INTERVAL_MS / 1000}s)`);
+  setInterval(() => { tickMagazineScheduler().catch(() => {}); }, SCHEDULER_INTERVAL_MS);
+  // First tick after 10s so a server restart picks up anyone who became
+  // due while we were down.
+  setTimeout(() => { tickMagazineScheduler().catch(() => {}); }, 10_000);
+}
+
 // Serve built frontend in production
 if (isProd) {
   const distPath = join(__dirname, '../dist');
@@ -1025,4 +1102,5 @@ if (isProd) {
 app.listen(PORT, async () => {
   console.log(`[arxiv-server] running on http://localhost:${PORT} (${isProd ? 'production' : 'development'})`);
   await db.init();
+  startMagazineScheduler();
 });

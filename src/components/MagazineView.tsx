@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Newspaper, Sparkles, Loader2, AlertCircle, Trash2, ExternalLink, Star, GitBranch, Cpu, MessageSquare, ArrowRight, Calendar, BookOpen } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Newspaper, Sparkles, Loader2, AlertCircle, Trash2, ExternalLink, Star, GitBranch, Cpu, MessageSquare, ArrowRight, Calendar, BookOpen, Clock, Check } from 'lucide-react';
 import { useMagazine } from '../contexts/MagazineContext';
 import { useConfirm } from '../contexts/ConfirmContext';
 import { usePapers } from '../contexts/PapersContext';
@@ -8,6 +8,7 @@ import { computeAssessment, ASSESSMENT_BADGE } from '../utils/assessment';
 import { CATEGORY_COLORS_LIGHT } from '../utils/categories';
 import { MagazineGitHubItem, MagazineHFItem, MagazineHNItem, MagazineMSItem, MagazineSource, Paper } from '../types';
 import { format, formatDistanceToNow } from 'date-fns';
+import { apiGetMagazineAutoPrefs, apiSetMagazineAutoPrefs, MagazineAutoPrefs } from '../utils/researchApi';
 
 const SOURCE_LABEL: Record<MagazineSource, string> = {
   hackernews:  'Hacker News',
@@ -107,6 +108,8 @@ export default function MagazineView() {
             <AlertCircle size={15} className="shrink-0 mt-0.5" /><span>{error}</span>
           </div>
         )}
+
+        <AutoPrefsStrip />
 
         {active && (
           <IssueReader
@@ -442,6 +445,101 @@ function SourceTeaser({ icon, title, desc }: { icon: React.ReactNode; title: str
     <div className="bg-white border border-slate-200 rounded-xl p-4 text-left">
       <div className="flex items-center gap-2 mb-1">{icon}<p className="text-sm font-semibold text-slate-800">{title}</p></div>
       <p className="text-xs text-slate-500 leading-relaxed">{desc}</p>
+    </div>
+  );
+}
+
+// =========================================================================
+// Auto-generation strip — opt-in weekly schedule
+// =========================================================================
+
+const DAY_NAMES: Record<number, string> = { 1: 'Monday', 2: 'Tuesday', 3: 'Wednesday', 4: 'Thursday', 5: 'Friday', 6: 'Saturday', 7: 'Sunday' };
+
+function AutoPrefsStrip() {
+  const [prefs, setPrefs] = useState<MagazineAutoPrefs | null>(null);
+  const [busy, setBusy]   = useState(false);
+  const [open, setOpen]   = useState(false);
+
+  useEffect(() => { apiGetMagazineAutoPrefs().then(setPrefs).catch(() => {}); }, []);
+
+  async function save(patch: Partial<MagazineAutoPrefs>) {
+    setBusy(true);
+    try {
+      const next = await apiSetMagazineAutoPrefs(patch);
+      setPrefs(next);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!prefs) return null;
+
+  return (
+    <div className="mb-5 rounded-xl border border-slate-200 bg-white px-4 py-3 flex items-center gap-3 text-sm">
+      <Clock size={15} className={prefs.auto ? 'text-rose-500' : 'text-slate-400'} />
+      <div className="flex-1 min-w-0">
+        {prefs.auto ? (
+          <p className="text-slate-700">
+            <span className="font-medium">Auto-generate</span> every <span className="font-semibold">{DAY_NAMES[prefs.dayOfWeek]}</span> at <span className="font-semibold">{prefs.hour.toString().padStart(2, '0')}:00 UTC</span>
+            {prefs.lastAutoRun && <span className="text-slate-400"> · last run {formatDistanceToNow(new Date(prefs.lastAutoRun), { addSuffix: true })}</span>}
+          </p>
+        ) : (
+          <p className="text-slate-500">
+            Magazine isn't auto-generated. <button onClick={() => save({ auto: true })} className="text-rose-600 hover:underline font-medium">Enable weekly</button> to get a fresh issue every Monday morning.
+          </p>
+        )}
+      </div>
+      {prefs.auto && (
+        <>
+          <button
+            onClick={() => setOpen(o => !o)}
+            disabled={busy}
+            className="text-xs px-2.5 py-1 rounded-md border border-slate-200 text-slate-600 hover:bg-slate-50"
+          >
+            {open ? 'Done' : 'Edit'}
+          </button>
+          <button
+            onClick={() => save({ auto: false })}
+            disabled={busy}
+            className="text-xs px-2.5 py-1 rounded-md text-red-600 hover:bg-red-50"
+          >
+            Disable
+          </button>
+        </>
+      )}
+      {open && prefs.auto && (
+        <div className="absolute right-8 mt-44 w-72 z-30 bg-white border border-slate-200 rounded-xl shadow-lg p-4">
+          <p className="text-xs font-semibold text-slate-500 uppercase tracking-widest mb-2">Schedule</p>
+          <div className="space-y-2">
+            <label className="text-xs text-slate-600 block">
+              Day of week
+              <select
+                value={prefs.dayOfWeek}
+                onChange={e => save({ dayOfWeek: parseInt(e.target.value, 10) })}
+                disabled={busy}
+                className="w-full mt-1 px-2 py-1.5 border border-slate-200 rounded-md text-sm"
+              >
+                {Object.entries(DAY_NAMES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+              </select>
+            </label>
+            <label className="text-xs text-slate-600 block">
+              Hour (UTC)
+              <select
+                value={prefs.hour}
+                onChange={e => save({ hour: parseInt(e.target.value, 10) })}
+                disabled={busy}
+                className="w-full mt-1 px-2 py-1.5 border border-slate-200 rounded-md text-sm"
+              >
+                {Array.from({ length: 24 }).map((_, h) => <option key={h} value={h}>{h.toString().padStart(2, '0')}:00</option>)}
+              </select>
+            </label>
+            <p className="text-[10px] text-slate-400 leading-relaxed pt-1">
+              The server checks every 5 minutes. Auto-issues have no AI editorial — open the issue and click "compute editorial" to add one with your configured AI provider.
+            </p>
+            {busy && <p className="text-[10px] text-slate-400 flex items-center gap-1"><Check size={9} /> saving…</p>}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import AppRail from './AppRail';
+import SearchOverlay from './SearchOverlay';
 import Sidebar from './Sidebar';
 import Dashboard from './Dashboard';
 import PaperDetail from './PaperDetail';
@@ -30,6 +31,19 @@ function AppLayoutInner() {
   const [activeView,    setActiveView]    = useState<ActiveView>('inbox');
   const [showAISuggest, setShowAISuggest] = useState(false);
   const [showSettings,  setShowSettings]  = useState(false);
+  const [showSearch,    setShowSearch]    = useState(false);
+
+  // Cmd+K / Ctrl+K opens the global search overlay from anywhere
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) {
+        e.preventDefault();
+        setShowSearch(true);
+      }
+    }
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, []);
 
   const mainContent = () => {
     if (selectedPaper) return <PaperDetail paper={selectedPaper} />;
@@ -54,6 +68,7 @@ function AppLayoutInner() {
         setActiveView={setActiveView}
         onAISuggest={() => setShowAISuggest(true)}
         onSettings={() => setShowSettings(true)}
+        onSearch={() => setShowSearch(true)}
       />
       <Sidebar activeView={activeView} setActiveView={setActiveView} />
       <main className="flex-1 overflow-hidden">
@@ -61,6 +76,7 @@ function AppLayoutInner() {
       </main>
       {showAISuggest && <AISuggestPanel  onClose={() => setShowAISuggest(false)} />}
       {showSettings  && <SettingsModal   onClose={() => setShowSettings(false)} />}
+      {showSearch    && <SearchOverlay   onClose={() => setShowSearch(false)} setActiveView={setActiveView} />}
     </div>
   );
 }

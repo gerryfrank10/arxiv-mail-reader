@@ -681,6 +681,69 @@ db.deleteMagazineIssue = async function (userId, id) {
   await pool.query(`DELETE FROM magazine_issues WHERE user_id=$1 AND id=$2`, [userId, id]);
 };
 
+// ----- user preferences (Magazine auto-gen) -----
+
+db.getUserMagazinePrefs = async function (userId) {
+  const { rows } = await pool.query(
+    `SELECT email, magazine_auto, magazine_day_of_week, magazine_hour,
+            magazine_sources, magazine_last_auto_run
+     FROM users WHERE id=$1`,
+    [userId],
+  );
+  if (!rows[0]) return null;
+  const r = rows[0];
+  return {
+    email:        r.email,
+    auto:         r.magazine_auto,
+    dayOfWeek:    r.magazine_day_of_week,
+    hour:         r.magazine_hour,
+    sources:      r.magazine_sources ?? [],
+    lastAutoRun:  r.magazine_last_auto_run ? new Date(r.magazine_last_auto_run).getTime() : null,
+  };
+};
+
+db.setUserMagazinePrefs = async function (userId, prefs) {
+  await pool.query(
+    `UPDATE users SET
+       magazine_auto         = COALESCE($2, magazine_auto),
+       magazine_day_of_week  = COALESCE($3, magazine_day_of_week),
+       magazine_hour         = COALESCE($4, magazine_hour),
+       magazine_sources      = COALESCE($5, magazine_sources)
+     WHERE id=$1`,
+    [userId, prefs.auto ?? null, prefs.dayOfWeek ?? null, prefs.hour ?? null, prefs.sources ?? null],
+  );
+};
+
+db.markMagazineAutoRun = async function (userId, ts = new Date()) {
+  await pool.query(
+    `UPDATE users SET magazine_last_auto_run=$2 WHERE id=$1`,
+    [userId, ts],
+  );
+};
+
+// Users due for an auto-generated issue: opted in, on the right day-of-week,
+// and either never run or run >6 days ago.
+db.dueMagazineUsers = async function () {
+  const { rows } = await pool.query(
+    `SELECT id, email, magazine_day_of_week, magazine_hour, magazine_sources,
+            magazine_last_auto_run
+     FROM users
+     WHERE magazine_auto IS TRUE
+       AND EXTRACT(ISODOW FROM now() AT TIME ZONE 'UTC') = magazine_day_of_week
+       AND EXTRACT(HOUR  FROM now() AT TIME ZONE 'UTC') >= magazine_hour
+       AND (magazine_last_auto_run IS NULL
+            OR magazine_last_auto_run < now() - interval '6 days')`,
+  );
+  return rows.map(r => ({
+    id:           r.id,
+    email:        r.email,
+    dayOfWeek:    r.magazine_day_of_week,
+    hour:         r.magazine_hour,
+    sources:      r.magazine_sources ?? [],
+    lastAutoRun:  r.magazine_last_auto_run ? new Date(r.magazine_last_auto_run).getTime() : null,
+  }));
+};
+
 // Recently-arrived papers (by digest_date) for the magazine's inbox digest.
 db.papersForWeek = async function (userId, weekStartIso, weekEndIso) {
   const { rows } = await pool.query(
@@ -709,6 +772,79 @@ db.papersForWeek = async function (userId, weekStartIso, weekEndIso) {
     digestSubject: r.digest_subject ?? '',
     digestDate:    new Date(r.digest_date).toISOString(),
     source:        r.source ?? 'email',
+  }));
+};
+
+// ----- global search -----
+//
+// Cross-table search using ILIKE on a few high-signal fields per kind.
+// We don't yet have a real text-search index — switching to tsvector
+// is a clean follow-up if performance becomes a concern, but for the
+// sizes we're dealing with (one user's library) ILIKE is plenty fast.
+db.globalSearch = async function (userId, query, limit = 40) {
+  const q = `%${query.toLowerCase()}%`;
+  const { rows } = await pool.query(
+    `
+    WITH found AS (
+      SELECT 'paper'::text       AS kind,
+             id::text             AS id,
+             title                AS title,
+             COALESCE(abstract, '') AS snippet,
+             arxiv_id             AS sub,
+             EXTRACT(EPOCH FROM digest_date)*1000 AS ts
+      FROM papers
+      WHERE user_id = $1
+        AND (lower(title) LIKE $2 OR lower(abstract) LIKE $2 OR lower(authors) LIKE $2 OR arxiv_id LIKE $2)
+
+      UNION ALL
+
+      SELECT 'book',  id::text, title,
+             COALESCE(notes, abstract, ''),
+             COALESCE(array_to_string(authors, ', '), ''),
+             EXTRACT(EPOCH FROM updated_at)*1000
+      FROM books
+      WHERE user_id = $1
+        AND (lower(title) LIKE $2 OR lower(coalesce(notes,'')) LIKE $2 OR lower(coalesce(abstract,'')) LIKE $2 OR lower(array_to_string(authors, ' ')) LIKE $2)
+
+      UNION ALL
+
+      SELECT 'document', id::text, title, content,
+             status,
+             EXTRACT(EPOCH FROM updated_at)*1000
+      FROM documents
+      WHERE user_id = $1
+        AND (lower(title) LIKE $2 OR lower(content) LIKE $2)
+
+      UNION ALL
+
+      SELECT 'collection', id::text, name, description,
+             kind::text,
+             EXTRACT(EPOCH FROM updated_at)*1000
+      FROM collections
+      WHERE user_id = $1
+        AND (lower(name) LIKE $2 OR lower(coalesce(description,'')) LIKE $2 OR lower(array_to_string(tags, ' ')) LIKE $2)
+
+      UNION ALL
+
+      SELECT 'magazine', id::text, title,
+             COALESCE(subtitle, ''),
+             week_start::text,
+             EXTRACT(EPOCH FROM created_at)*1000
+      FROM magazine_issues
+      WHERE user_id = $1
+        AND (lower(title) LIKE $2 OR lower(coalesce(subtitle,'')) LIKE $2 OR content::text ILIKE $2)
+    )
+    SELECT * FROM found ORDER BY ts DESC NULLS LAST LIMIT $3
+    `,
+    [userId, q, limit],
+  );
+  return rows.map(r => ({
+    kind:    r.kind,
+    id:      r.id,
+    title:   r.title,
+    snippet: (r.snippet ?? '').slice(0, 200),
+    sub:     r.sub ?? '',
+    ts:      r.ts ? Number(r.ts) : null,
   }));
 };
 
