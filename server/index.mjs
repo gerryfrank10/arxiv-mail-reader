@@ -989,8 +989,10 @@ app.post('/api/db/magazine/draft', (req, res) => withUser(req, res, async (uid) 
   const weekStartIso = start.toISOString().slice(0, 10);
   const weekEndIso   = end.toISOString().slice(0, 10);
 
-  // 1) the user's inbox papers for the week (sorted client-side by score)
-  const inboxPapers = await db.papersForWeek(uid, weekStartIso, weekEndIso);
+  // 1) the user's inbox papers for the week — capped at 200 to keep the
+  //    JSONB issue body lean. The client will further slice to top-N by
+  //    assessment score before saving.
+  const inboxResult = await db.papersForWeek(uid, weekStartIso, weekEndIso, 200);
 
   // 2) external sources (parallel, fault-tolerant)
   const { results: sourceResults, errors: sourceErrors } = await fetchSources(sources);
@@ -1004,8 +1006,9 @@ app.post('/api/db/magazine/draft', (req, res) => withUser(req, res, async (uid) 
     editionNumber,
     sources,
     sourceErrors,
-    inboxPapers,
-    external:      sourceResults,
+    inboxPapers:    inboxResult.papers,
+    inboxTotal:     inboxResult.total,
+    external:       sourceResults,
   });
 }));
 
@@ -1055,8 +1058,10 @@ async function tickMagazineScheduler() {
       start.setDate(end.getDate() - 6);
       const weekStartIso = start.toISOString().slice(0, 10);
       const weekEndIso   = end.toISOString().slice(0, 10);
-      const sources      = u.sources && u.sources.length > 0 ? u.sources : ['hackernews', 'huggingface', 'github'];
-      const inboxPapers  = await db.papersForWeek(u.id, weekStartIso, weekEndIso);
+      const sources       = u.sources && u.sources.length > 0 ? u.sources : ['hackernews', 'huggingface', 'github'];
+      // Cap at 50 for auto-issues — there's no editorial that needs more,
+      // and small JSONB payloads keep the reader snappy.
+      const inboxResult   = await db.papersForWeek(u.id, weekStartIso, weekEndIso, 50);
       const { results, errors } = await fetchSources(sources);
       const editionNumber = await db.nextMagazineEdition(u.id);
       const id = `mag-auto-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
@@ -1067,7 +1072,13 @@ async function tickMagazineScheduler() {
         editionNumber,
         title:         `Week of ${new Date(weekStartIso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`,
         subtitle:      `Edition #${editionNumber} · auto-generated`,
-        content:       { editorial: undefined, inboxPapers, external: results, sourceErrors: errors },
+        content:       {
+          editorial:        undefined,
+          inboxPapers:      inboxResult.papers,
+          inboxTotalCount:  inboxResult.total,
+          external:         results,
+          sourceErrors:     errors,
+        },
         sources,
         aiProvider:    null,
       });

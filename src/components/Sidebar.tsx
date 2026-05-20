@@ -541,8 +541,20 @@ function CollectionsPane() {
 // =========================================================================
 
 function MagazinePane() {
-  const { issues, active, dbEnabled, setActiveId, generateThisWeek, generating } = useMagazine();
+  const { issues, active, dbEnabled, setActiveId, generateThisWeek, generating, removeIssue } = useMagazine();
+  const confirm = useConfirm();
   const pager = usePagination(issues, 30);
+
+  async function handleDelete(it: { id: string; title: string; editionNumber: number }) {
+    const ok = await confirm({
+      title: 'Delete this issue?',
+      message: `"${it.title}" — Edition #${it.editionNumber}. This can't be undone.`,
+      destructive: true,
+      confirmLabel: 'Delete',
+    });
+    if (ok) await removeIssue(it.id);
+  }
+
   return (
     <>
       <PaneHeader
@@ -575,10 +587,15 @@ function MagazinePane() {
         ) : pager.slice.map(it => {
           const isActive = active?.id === it.id;
           return (
-            <button
+            // Outer is a <div> with role=button so the inner Trash control
+            // can be a real <button> (no nested-button DOM warning).
+            <div
               key={it.id}
+              role="button"
+              tabIndex={0}
               onClick={() => setActiveId(it.id)}
-              className={`w-full text-left px-3 py-2 rounded-lg transition-colors ${
+              onKeyDown={e => { if (e.key === 'Enter') setActiveId(it.id); }}
+              className={`group w-full text-left px-3 py-2 rounded-lg transition-colors cursor-pointer ${
                 isActive ? 'bg-rose-600/20 border-l-2 border-l-rose-500' : 'border-l-2 border-l-transparent hover:bg-slate-800/60'
               }`}
             >
@@ -586,8 +603,17 @@ function MagazinePane() {
                 <p className={`text-xs font-medium truncate flex-1 ${isActive ? 'text-white' : 'text-slate-200'}`}>{it.title}</p>
                 <span className="text-[10px] text-slate-500 shrink-0">#{it.editionNumber}</span>
               </div>
-              <p className="text-[10px] text-slate-500 mt-0.5">{it.weekStart} → {it.weekEnd}</p>
-            </button>
+              <div className="flex items-center justify-between mt-0.5">
+                <p className="text-[10px] text-slate-500">{it.weekStart} → {it.weekEnd}</p>
+                <button
+                  onClick={e => { e.stopPropagation(); handleDelete(it); }}
+                  title="Delete issue"
+                  className="opacity-0 group-hover:opacity-100 text-slate-500 hover:text-red-400 transition-all p-0.5 -mr-0.5"
+                >
+                  <Trash2 size={10} />
+                </button>
+              </div>
+            </div>
           );
         })}
       </div>

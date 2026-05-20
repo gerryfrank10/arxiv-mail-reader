@@ -745,17 +745,34 @@ db.dueMagazineUsers = async function () {
 };
 
 // Recently-arrived papers (by digest_date) for the magazine's inbox digest.
-db.papersForWeek = async function (userId, weekStartIso, weekEndIso) {
-  const { rows } = await pool.query(
-    `SELECT * FROM papers
-     WHERE user_id=$1
-       AND digest_date >= $2::date
-       AND digest_date <  ($3::date + interval '1 day')
-     ORDER BY digest_date DESC`,
-    [userId, weekStartIso, weekEndIso],
-  );
-  // Reuse the rowToPaper shape that the existing list endpoint returns
-  return rows.map(r => ({
+// `limit` caps the rows returned (the magazine only renders ~6 papers and
+// the AI editorial only sees the top 8) so we don't ship megabytes of
+// abstracts the client will throw away. Total count is returned separately
+// so the magazine header can show "X this week".
+db.papersForWeek = async function (userId, weekStartIso, weekEndIso, limit = 200) {
+  const cap = Math.min(Math.max(parseInt(String(limit), 10) || 200, 1), 500);
+  const [rowsRes, countRes] = await Promise.all([
+    pool.query(
+      `SELECT id, arxiv_id, title, authors, author_list, categories,
+              abstract, comments, url, pdf_url, size, date, email_id,
+              digest_subject, digest_date, source
+       FROM papers
+       WHERE user_id=$1
+         AND digest_date >= $2::date
+         AND digest_date <  ($3::date + interval '1 day')
+       ORDER BY digest_date DESC
+       LIMIT $4`,
+      [userId, weekStartIso, weekEndIso, cap],
+    ),
+    pool.query(
+      `SELECT COUNT(*)::int AS n FROM papers
+       WHERE user_id=$1
+         AND digest_date >= $2::date
+         AND digest_date <  ($3::date + interval '1 day')`,
+      [userId, weekStartIso, weekEndIso],
+    ),
+  ]);
+  const papers = rowsRes.rows.map(r => ({
     id:            r.id,
     arxivId:       r.arxiv_id,
     title:         r.title,
@@ -773,6 +790,7 @@ db.papersForWeek = async function (userId, weekStartIso, weekEndIso) {
     digestDate:    new Date(r.digest_date).toISOString(),
     source:        r.source ?? 'email',
   }));
+  return { papers, total: countRes.rows[0]?.n ?? papers.length };
 };
 
 // ----- global search -----

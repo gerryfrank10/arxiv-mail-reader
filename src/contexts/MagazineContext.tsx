@@ -144,10 +144,17 @@ Return this JSON (and nothing else):
       // Surface editorial failures explicitly — silent fallbacks confused
       // the user when one issue had an editorial and the next didn't.
       setEditorialError(null);
-      const inboxPapers: Paper[] = draft.inboxPapers.map(p => ({
+      // The server already capped at 200 (or 50 for auto-issues). We further
+      // trim to the top 30 by assessment score before saving so the JSONB
+      // body stays small and the reader loads instantly. The total count
+      // comes from the server so the "X this week" header stays honest.
+      const allFetched: Paper[] = draft.inboxPapers.map(p => ({
         ...p,
         digestDate: typeof p.digestDate === 'string' ? new Date(p.digestDate) : p.digestDate,
       }));
+      const inboxPapers = [...allFetched]
+        .sort((a, b) => computeAssessment(b).score - computeAssessment(a).score)
+        .slice(0, 30);
       if (useAi && hasAI(settings)) {
         try { editorial = await buildEditorial(draft.weekStart, draft.weekEnd, inboxPapers, draft.external); }
         catch (e) {
@@ -171,6 +178,7 @@ Return this JSON (and nothing else):
         content: {
           editorial,
           inboxPapers,
+          inboxTotalCount: draft.inboxTotal ?? allFetched.length,
           external: draft.external,
           sourceErrors: draft.sourceErrors,
         },

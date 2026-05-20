@@ -245,7 +245,12 @@ export interface MagazineDraft {
   editionNumber: number;
   sources:       MagazineSource[];
   sourceErrors:  Record<string, string>;
+  /** Capped subset (server-side limit ~200) of the inbox papers for the
+   *  week — kept small so the saved JSONB stays light. */
   inboxPapers:   Paper[];
+  /** Total inbox papers for the week, before the server cap. Used by the
+   *  reader to render "X this week" honestly. */
+  inboxTotal:    number;
   external:      MagazineExternal;
 }
 
@@ -257,7 +262,12 @@ export interface MagazineEditorial {
 
 export interface MagazineContent {
   editorial?: MagazineEditorial;
+  /** Top-N papers (by assessment score) we want to render + cite. Kept
+   *  small — the magazine view only needs ~6 highlights and the editorial
+   *  only sees the top 8. */
   inboxPapers: Paper[];
+  /** Original count of inbox papers for the week, before truncation. */
+  inboxTotalCount?: number;
   external:    MagazineExternal;
   /** Source errors carried into the issue so the reader sees what failed */
   sourceErrors?: Record<string, string>;

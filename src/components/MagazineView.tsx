@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { memo, useEffect, useMemo, useState } from 'react';
 import { Newspaper, Sparkles, Loader2, AlertCircle, Trash2, ExternalLink, Star, GitBranch, Cpu, MessageSquare, ArrowRight, Calendar, BookOpen, Clock, Check } from 'lucide-react';
 import { useMagazine } from '../contexts/MagazineContext';
 import { useConfirm } from '../contexts/ConfirmContext';
@@ -153,14 +153,24 @@ function IssueReader({
   const aiOn = hasAI(settings);
   const c = issue.content;
   const hasEditorial = !!c.editorial && (c.editorial.cover || c.editorial.inboxNote || (c.editorial.takeaways?.length ?? 0) > 0);
-  // Inbox papers may have come back as ISO strings if loaded from server
-  const inboxPapers = (c.inboxPapers ?? []).map(p => ({
-    ...p,
-    digestDate: typeof p.digestDate === 'string' ? new Date(p.digestDate) : p.digestDate,
-  }));
-  const topInbox = [...inboxPapers]
-    .sort((a, b) => computeAssessment(b).score - computeAssessment(a).score)
-    .slice(0, 6);
+
+  // Memoize the heavy paths so re-renders from parent contexts (papers,
+  // tracking, activity log, etc.) don't re-shape and re-sort the full
+  // inbox array on every tick.
+  const inboxPapers = useMemo(
+    () => (c.inboxPapers ?? []).map(p => ({
+      ...p,
+      digestDate: typeof p.digestDate === 'string' ? new Date(p.digestDate) : p.digestDate,
+    })),
+    [c.inboxPapers],
+  );
+  const topInbox = useMemo(
+    () => [...inboxPapers].sort((a, b) => computeAssessment(b).score - computeAssessment(a).score).slice(0, 6),
+    [inboxPapers],
+  );
+  // Honour the canonical total from the server when present; fall back
+  // to the stored array length for older issues that pre-date the field.
+  const inboxTotalCount = c.inboxTotalCount ?? inboxPapers.length;
 
   return (
     <article className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
@@ -255,7 +265,7 @@ function IssueReader({
 
         {/* Inbox papers */}
         {topInbox.length > 0 && (
-          <Section title={`From your inbox · ${inboxPapers.length} this week`} icon={<BookOpen size={14} className="text-blue-500" />}>
+          <Section title={`From your inbox · ${inboxTotalCount.toLocaleString()} this week`} icon={<BookOpen size={14} className="text-blue-500" />}>
             {c.editorial?.inboxNote && (
               <p className="text-sm text-slate-600 italic leading-relaxed mb-4 border-l-2 border-blue-200 pl-3">{c.editorial.inboxNote}</p>
             )}
@@ -339,7 +349,7 @@ function IssueReader({
 // Source-specific list renderers
 // =========================================================================
 
-function HNList({ items }: { items: MagazineHNItem[] }) {
+const HNList = memo(function HNList({ items }: { items: MagazineHNItem[] }) {
   return (
     <div className="space-y-1.5">
       {items.map(h => (
@@ -359,9 +369,9 @@ function HNList({ items }: { items: MagazineHNItem[] }) {
       ))}
     </div>
   );
-}
+});
 
-function HFList({ items }: { items: MagazineHFItem[] }) {
+const HFList = memo(function HFList({ items }: { items: MagazineHFItem[] }) {
   return (
     <div className="grid sm:grid-cols-2 gap-2">
       {items.map(m => (
@@ -382,9 +392,9 @@ function HFList({ items }: { items: MagazineHFItem[] }) {
       ))}
     </div>
   );
-}
+});
 
-function GHList({ items }: { items: MagazineGitHubItem[] }) {
+const GHList = memo(function GHList({ items }: { items: MagazineGitHubItem[] }) {
   return (
     <div className="space-y-2">
       {items.map(r => (
@@ -402,9 +412,9 @@ function GHList({ items }: { items: MagazineGitHubItem[] }) {
       ))}
     </div>
   );
-}
+});
 
-function MSList({ items }: { items: MagazineMSItem[] }) {
+const MSList = memo(function MSList({ items }: { items: MagazineMSItem[] }) {
   return (
     <div className="grid sm:grid-cols-2 gap-2">
       {items.map(m => (
@@ -416,7 +426,7 @@ function MSList({ items }: { items: MagazineMSItem[] }) {
       ))}
     </div>
   );
-}
+});
 
 // =========================================================================
 // Generate picker (modal) — pick sources + AI toggle
