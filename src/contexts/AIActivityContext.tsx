@@ -11,6 +11,8 @@ export interface AIActivityRecord {
   purpose:   string;          // 'tracker-score', 'paper-summary', 'magazine-editorial', etc.
   provider:  string;          // 'ollama', 'claude', 'openai', …
   model?:    string;
+  /** Which profile slot routed the call: 'default' | 'premium' | 'legacy' */
+  profile?:  string;
   startedAt: number;
   endedAt?:  number;
   status:    AIActivityStatus;
@@ -55,13 +57,14 @@ function emit(e: { kind: 'start' | 'finish'; record: AIActivityRecord }) {
 }
 
 // Public functions that aiChat can import without needing React.
-export function _aiActivityStart(info: { purpose: string; provider: string; model?: string; promptChars?: number }): string {
+export function _aiActivityStart(info: { purpose: string; provider: string; model?: string; profile?: string; promptChars?: number }): string {
   const id = `act-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const record: AIActivityRecord = {
     id,
     purpose:    info.purpose,
     provider:   info.provider,
     model:      info.model,
+    profile:    info.profile,
     startedAt:  Date.now(),
     status:     'pending',
     promptChars: info.promptChars,

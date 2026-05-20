@@ -1,4 +1,4 @@
-import { AIConfig, AIProvider, Settings } from '../types';
+import { AIConfig, AIProfileSlot, AIProvider, AIPurpose, Settings } from '../types';
 import { _aiActivityFinish, _aiActivityStart } from '../contexts/AIActivityContext';
 
 // Sensible defaults so the user only needs to pick a provider + paste a key
@@ -41,9 +41,15 @@ export const AI_DEFAULTS: Record<AIProvider, { baseUrl?: string; model?: string;
 
 export const AI_PROVIDERS: AIProvider[] = ['claude', 'openai', 'groq', 'ollama', 'custom', 'none'];
 
-// Derive the effective config: prefer settings.ai, otherwise translate the
-// legacy claudeApiKey field into a Claude config so old keys keep working.
+// Derive the legacy single-provider config: prefer settings.ai, otherwise
+// translate the legacy claudeApiKey field. Used as a fallback when
+// aiProfiles isn't configured.
 export function resolveAIConfig(s: Settings | undefined): AIConfig {
+  // If two-tier profiles are set, expose the premium one (or default) as
+  // the "primary" config for backward-compatible callers like the header
+  // badge that just wants to display "provider name".
+  if (s?.aiProfiles?.premium?.provider) return s.aiProfiles.premium;
+  if (s?.aiProfiles?.default?.provider) return s.aiProfiles.default;
   if (s?.ai && s.ai.provider) return s.ai;
   if (s?.claudeApiKey)        return { provider: 'claude', apiKey: s.claudeApiKey };
   return { provider: 'none' };
@@ -54,6 +60,46 @@ export function hasAI(s: Settings | undefined): boolean {
   if (c.provider === 'none') return false;
   if (c.provider === 'ollama') return true; // no key needed
   return !!c.apiKey;
+}
+
+// =========================================================================
+// Two-tier routing
+// =========================================================================
+
+/** Sensible defaults: bulk/high-volume → 'default' (cheap/local),
+ *  user-triggered quality work → 'premium' (cloud/best). */
+const DEFAULT_ROUTING: Record<AIPurpose, AIProfileSlot> = {
+  'tracker-score':       'default',
+  'correlation-score':   'default',
+  'magazine-editorial':  'premium',
+  'paper-summary':       'premium',
+  'ai-suggest':          'premium',
+  'writer-cite-suggest': 'premium',
+  'connection-test':     'default',
+  'chat':                'default',
+};
+
+/** Returns the AIConfig the given purpose should run on, with graceful
+ *  fallback: if the preferred tier is unset, falls back to the other tier,
+ *  then to the legacy single-config, then to 'none'. */
+export function resolveProfileForPurpose(s: Settings | undefined, purpose: string | undefined): { config: AIConfig; slot: AIProfileSlot | 'legacy' | 'none' } {
+  const profiles = s?.aiProfiles;
+  // If no profiles configured at all, fall back to legacy single-config.
+  if (!profiles?.default && !profiles?.premium) {
+    const c = resolveAIConfig(s);
+    return { config: c, slot: c.provider === 'none' ? 'none' : 'legacy' };
+  }
+  const requested: AIProfileSlot =
+    (purpose ? s?.aiRouting?.[purpose as AIPurpose] : undefined) ??
+    DEFAULT_ROUTING[purpose as AIPurpose] ??
+    'default';
+  const primary = profiles[requested];
+  if (primary?.provider && primary.provider !== 'none') return { config: primary, slot: requested };
+  // Fallback to the other tier
+  const other: AIProfileSlot = requested === 'premium' ? 'default' : 'premium';
+  const fallback = profiles[other];
+  if (fallback?.provider && fallback.provider !== 'none') return { config: fallback, slot: other };
+  return { config: { provider: 'none' }, slot: 'none' };
 }
 
 export function providerLabel(c: AIConfig): string {
@@ -93,12 +139,15 @@ export async function aiChat(
   settings: Settings | undefined,
   opts: ChatOptions = {},
 ): Promise<string> {
-  const config = resolveAIConfig(settings);
+  // Route by purpose. When the user has two-tier profiles set up, this is
+  // the difference between burning Claude tokens on every tracker tick
+  // vs running them locally through Ollama.
+  const { config, slot } = resolveProfileForPurpose(settings, opts.purpose);
   if (config.provider === 'none') {
     throw new Error('No AI provider configured. Open Settings and pick a provider.');
   }
   if (config.provider !== 'ollama' && !config.apiKey) {
-    throw new Error(`No API key for ${providerLabel(config)}.`);
+    throw new Error(`No API key for ${providerLabel(config)} (${slot} profile).`);
   }
 
   const signal = opts.signal ?? AbortSignal.timeout(opts.timeoutMs ?? 30_000);
@@ -110,6 +159,7 @@ export async function aiChat(
     purpose:  opts.purpose ?? 'chat',
     provider: config.provider,
     model:    config.model,
+    profile:  slot,
     promptChars,
   });
 
@@ -169,6 +219,41 @@ async function callClaude(
   }
   const data = await resp.json() as { content: Array<{ text: string }> };
   return data.content[0]?.text ?? '';
+}
+
+// =========================================================================
+// List available models from a provider so the user doesn't have to type
+// the model name. For Ollama we hit /api/tags (no auth); for everything
+// else we hit GET /v1/models with the Bearer key.
+// =========================================================================
+
+export async function listAvailableModels(config: AIConfig): Promise<string[]> {
+  if (config.provider === 'none') return [];
+  if (config.provider === 'ollama') {
+    const base = (config.baseUrl || AI_DEFAULTS.ollama.baseUrl || '').replace(/\/v1\/?$/, '');
+    const r = await fetch(`${base}/api/tags`, { signal: AbortSignal.timeout(10_000) });
+    if (!r.ok) throw new Error(`Ollama list-models ${r.status}`);
+    const data = await r.json() as { models?: Array<{ name?: string }> };
+    return (data.models ?? []).map(m => m.name ?? '').filter(Boolean).sort();
+  }
+  if (config.provider === 'claude') {
+    // Anthropic doesn't expose a list-models endpoint as part of the v1 API,
+    // so return the well-known IDs.
+    return [
+      'claude-opus-4-7',
+      'claude-sonnet-4-6',
+      'claude-haiku-4-5-20251001',
+    ];
+  }
+  // OpenAI-compatible (OpenAI, Groq, custom, …)
+  const baseUrl = config.baseUrl || AI_DEFAULTS[config.provider]?.baseUrl;
+  if (!baseUrl) throw new Error(`No base URL for ${config.provider}`);
+  const headers: Record<string, string> = { Accept: 'application/json' };
+  if (config.apiKey) headers['Authorization'] = `Bearer ${config.apiKey}`;
+  const r = await fetch(`${baseUrl}/models`, { headers, signal: AbortSignal.timeout(10_000) });
+  if (!r.ok) throw new Error(`${config.provider} list-models ${r.status}`);
+  const data = await r.json() as { data?: Array<{ id?: string }> };
+  return (data.data ?? []).map(m => m.id ?? '').filter(Boolean).sort();
 }
 
 async function callOpenAICompatible(

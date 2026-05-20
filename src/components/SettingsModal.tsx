@@ -1,8 +1,8 @@
 import { useState, useEffect, useMemo } from 'react';
-import { X, Mail, Hash, RefreshCw, Key, Eye, EyeOff, Cpu, ChevronDown, ExternalLink, CheckCircle2, AlertCircle, Loader2, Database, UploadCloud } from 'lucide-react';
+import { X, Mail, Hash, RefreshCw, Key, Eye, EyeOff, Cpu, ChevronDown, ExternalLink, CheckCircle2, AlertCircle, Loader2, Database, UploadCloud, Sparkle } from 'lucide-react';
 import { usePapers } from '../contexts/PapersContext';
-import { AI_DEFAULTS, AI_PROVIDERS, resolveAIConfig } from '../utils/aiProvider';
-import { AIProvider, AIConfig } from '../types';
+import { AI_DEFAULTS, AI_PROVIDERS, listAvailableModels, resolveAIConfig } from '../utils/aiProvider';
+import { AIProvider, AIConfig, AIPurpose, AIProfileSlot, Settings } from '../types';
 import { dbExportAll } from '../utils/paperDb';
 import { getDbStatus, migrateFromIdb } from '../utils/researchApi';
 import { getStorageMode, setStorageMode } from '../utils/storage';
@@ -39,16 +39,45 @@ export default function SettingsModal({ onClose }: Props) {
   const [showKey,  setShowKey]  = useState(false);
   const [testing,  setTesting]  = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
+  // List-models helper (per profile)
+  const [availableModels,    setAvailableModels]    = useState<string[]>([]);
+  const [listingModels,      setListingModels]      = useState(false);
+  const [premAvailableModels, setPremAvailableModels] = useState<string[]>([]);
+  const [premListingModels,  setPremListingModels]  = useState(false);
+
+  // ----- Premium (two-tier) AI profile state -----
+  const initialPremium = settings.aiProfiles?.premium;
+  const [premiumEnabled, setPremiumEnabled] = useState<boolean>(!!initialPremium?.provider);
+  const [premProvider,   setPremProvider]   = useState<AIProvider>(initialPremium?.provider ?? 'claude');
+  const [premApiKey,     setPremApiKey]     = useState(initialPremium?.apiKey ?? '');
+  const [premBaseUrl,    setPremBaseUrl]    = useState(initialPremium?.baseUrl ?? AI_DEFAULTS[initialPremium?.provider ?? 'claude'].baseUrl ?? '');
+  const [premModel,      setPremModel]      = useState(initialPremium?.model ?? AI_DEFAULTS[initialPremium?.provider ?? 'claude'].model ?? '');
+  const [premShowKey,    setPremShowKey]    = useState(false);
+  const [premTesting,    setPremTesting]    = useState(false);
+  const [premTestResult, setPremTestResult] = useState<{ ok: boolean; message: string } | null>(null);
+  // Per-purpose routing overrides (only relevant when premium is enabled)
+  const [routing, setRouting] = useState<Partial<Record<AIPurpose, AIProfileSlot>>>(settings.aiRouting ?? {});
 
   useEffect(() => {
     setSenderEmail(settings.senderEmail);
     setMaxEmails(settings.maxEmails);
     setS2Key(settings.s2ApiKey ?? '');
-    const r = resolveAIConfig(settings);
-    setProvider(r.provider);
-    setApiKey(r.apiKey ?? '');
-    setBaseUrl(r.baseUrl ?? AI_DEFAULTS[r.provider]?.baseUrl ?? '');
-    setModel(r.model ?? AI_DEFAULTS[r.provider]?.model ?? '');
+    // Default profile: prefer aiProfiles.default, else legacy resolveAIConfig
+    const defp = settings.aiProfiles?.default ?? resolveAIConfig(settings);
+    setProvider(defp.provider);
+    setApiKey(defp.apiKey ?? '');
+    setBaseUrl(defp.baseUrl ?? AI_DEFAULTS[defp.provider]?.baseUrl ?? '');
+    setModel(defp.model ?? AI_DEFAULTS[defp.provider]?.model ?? '');
+    // Premium profile
+    const prem = settings.aiProfiles?.premium;
+    setPremiumEnabled(!!prem?.provider);
+    if (prem) {
+      setPremProvider(prem.provider);
+      setPremApiKey(prem.apiKey ?? '');
+      setPremBaseUrl(prem.baseUrl ?? AI_DEFAULTS[prem.provider]?.baseUrl ?? '');
+      setPremModel(prem.model ?? AI_DEFAULTS[prem.provider]?.model ?? '');
+    }
+    setRouting(settings.aiRouting ?? {});
   }, [settings]);
 
   // When the user picks a new provider, fill in defaults
@@ -57,7 +86,62 @@ export default function SettingsModal({ onClose }: Props) {
     setBaseUrl(AI_DEFAULTS[p]?.baseUrl ?? '');
     setModel(AI_DEFAULTS[p]?.model ?? '');
     setTestResult(null);
+    setAvailableModels([]);
     if (p === 'ollama' || p === 'none') setApiKey('');
+  }
+  function pickPremiumProvider(p: AIProvider) {
+    setPremProvider(p);
+    setPremBaseUrl(AI_DEFAULTS[p]?.baseUrl ?? '');
+    setPremModel(AI_DEFAULTS[p]?.model ?? '');
+    setPremTestResult(null);
+    setPremAvailableModels([]);
+    if (p === 'ollama' || p === 'none') setPremApiKey('');
+  }
+
+  async function fetchModels(which: 'default' | 'premium') {
+    const config: AIConfig = which === 'default'
+      ? { provider, apiKey, baseUrl, model }
+      : { provider: premProvider, apiKey: premApiKey, baseUrl: premBaseUrl, model: premModel };
+    const setBusy = which === 'default' ? setListingModels : setPremListingModels;
+    const setList = which === 'default' ? setAvailableModels : setPremAvailableModels;
+    setBusy(true);
+    setList([]);
+    try {
+      const list = await listAvailableModels(config);
+      setList(list);
+    } catch (e) {
+      setList([]);
+      if (which === 'default') setTestResult({ ok: false, message: e instanceof Error ? e.message : 'List models failed' });
+      else                      setPremTestResult({ ok: false, message: e instanceof Error ? e.message : 'List models failed' });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleTestPremium() {
+    setPremTesting(true);
+    setPremTestResult(null);
+    try {
+      const { aiChat } = await import('../utils/aiProvider');
+      const premConfig: AIConfig = { provider: premProvider, apiKey: premApiKey, baseUrl: premBaseUrl, model: premModel };
+      // Build a transient settings object that uses the premium profile
+      // as if it were the only one — so connection-test purpose hits it.
+      const transient = {
+        ...settings,
+        aiProfiles: { default: premConfig },
+        ai: premConfig,
+      };
+      const text = await aiChat(
+        [{ role: 'user', content: 'Reply with just the word "ok".' }],
+        transient,
+        { maxTokens: 8, temperature: 0, timeoutMs: 20_000, purpose: 'connection-test' },
+      );
+      setPremTestResult({ ok: true, message: `Connected. Replied: "${text.trim().slice(0, 40)}"` });
+    } catch (e) {
+      setPremTestResult({ ok: false, message: e instanceof Error ? e.message : 'Test failed' });
+    } finally {
+      setPremTesting(false);
+    }
   }
 
   const def = AI_DEFAULTS[provider];
@@ -96,6 +180,21 @@ export default function SettingsModal({ onClose }: Props) {
           baseUrl: baseUrl.trim() || undefined,
           model:   model.trim()   || undefined,
         };
+    // The default tier always mirrors the single-provider section (so the
+    // back-compat single-provider path keeps working). Premium is stored
+    // separately and is optional.
+    const aiProfiles: Settings['aiProfiles'] = {
+      default: ai,
+    };
+    if (premiumEnabled && premProvider !== 'none') {
+      const premNeedsKey = premProvider !== 'ollama';
+      aiProfiles.premium = {
+        provider: premProvider,
+        apiKey:   premNeedsKey ? (premApiKey.trim() || undefined) : undefined,
+        baseUrl:  premBaseUrl.trim() || undefined,
+        model:    premModel.trim()   || undefined,
+      };
+    }
     updateSettings({
       senderEmail,
       maxEmails,
@@ -103,6 +202,8 @@ export default function SettingsModal({ onClose }: Props) {
       claudeApiKey: provider === 'claude' && apiKey.trim() ? apiKey.trim() : undefined,
       s2ApiKey:     s2Key.trim() || undefined,
       ai,
+      aiProfiles,
+      aiRouting:    Object.keys(routing).length > 0 ? routing : undefined,
     });
     onClose();
     setTimeout(() => sync(true), 100);
@@ -155,9 +256,10 @@ export default function SettingsModal({ onClose }: Props) {
             </div>
           </Section>
 
-          {/* ---------- AI provider ---------- */}
-          <Section title="AI provider"
-            description="Used for tracker scoring, paper summaries, and inbox suggestions. Pick free/local Ollama, free-tier Groq, or any OpenAI-compatible endpoint.">
+          {/* ---------- Default AI profile ---------- */}
+          <Section
+            title="Default AI profile"
+            description="Used for high-volume background tasks (tracker scoring, AI correlations) and as the fallback for everything else. Pick something cheap or local — Ollama is ideal.">
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1.5 flex items-center gap-1.5">
                 <Cpu size={13} className="text-blue-500" />
@@ -216,20 +318,55 @@ export default function SettingsModal({ onClose }: Props) {
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-slate-500 mb-1">Model</label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-xs font-medium text-slate-500">Model</label>
+                    <button
+                      type="button"
+                      onClick={() => fetchModels('default')}
+                      disabled={listingModels || (needsKey && !apiKey.trim())}
+                      className="text-[10px] text-blue-600 hover:underline disabled:opacity-40"
+                    >
+                      {listingModels ? 'loading…' : 'List models'}
+                    </button>
+                  </div>
                   <input
                     type="text"
                     value={model}
                     onChange={e => setModel(e.target.value)}
                     placeholder={def?.model}
+                    list="ai-default-models"
                     className="w-full px-2.5 py-2 border border-slate-200 rounded-lg text-xs font-mono focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-400"
                   />
+                  {availableModels.length > 0 && (
+                    <datalist id="ai-default-models">
+                      {availableModels.map(m => <option key={m} value={m} />)}
+                    </datalist>
+                  )}
+                  {availableModels.length > 0 && (
+                    <div className="mt-1.5 flex flex-wrap gap-1">
+                      {availableModels.slice(0, 8).map(m => (
+                        <button
+                          key={m}
+                          type="button"
+                          onClick={() => setModel(m)}
+                          className={`text-[10px] font-mono px-1.5 py-0.5 rounded border transition-colors ${
+                            model === m
+                              ? 'bg-blue-100 text-blue-700 border-blue-300'
+                              : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-blue-50 hover:border-blue-300'
+                          }`}
+                        >
+                          {m}
+                        </button>
+                      ))}
+                      {availableModels.length > 8 && <span className="text-[10px] text-slate-400 px-1">+{availableModels.length - 8} more in the input dropdown</span>}
+                    </div>
+                  )}
                 </div>
               </div>
             )}
 
             {provider !== 'none' && (
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <button
                   onClick={handleTest}
                   disabled={testing || (needsKey && !apiKey.trim())}
@@ -254,6 +391,146 @@ export default function SettingsModal({ onClose }: Props) {
                 2. Pull a model: <code className="px-1 py-0.5 bg-white rounded border border-slate-200 font-mono">ollama pull llama3.1</code><br />
                 3. Click <em>Test connection</em>
               </div>
+            )}
+          </Section>
+
+          {/* ---------- Premium AI profile (two-tier) ---------- */}
+          <Section
+            title="Premium AI profile (optional)"
+            description="A more capable model for quality-critical tasks: magazine editorials, paper summaries, AI Suggest, Writer citation suggestions. Background tasks keep using the default profile."
+          >
+            <label className="flex items-center gap-3 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={premiumEnabled}
+                onChange={e => setPremiumEnabled(e.target.checked)}
+                className="w-4 h-4 accent-violet-500"
+              />
+              <span className="text-sm text-slate-700">
+                Use a separate premium profile <span className="text-xs text-slate-400">(routes quality tasks here, leaves background tasks on the default)</span>
+              </span>
+            </label>
+
+            {premiumEnabled && (
+              <>
+                <div className="rounded-lg border border-violet-200 bg-violet-50/40 p-4 space-y-3.5 mt-2">
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1.5 flex items-center gap-1.5">
+                      <Sparkle size={13} className="text-violet-500" />
+                      Provider
+                    </label>
+                    <div className="relative">
+                      <select
+                        value={premProvider}
+                        onChange={e => pickPremiumProvider(e.target.value as AIProvider)}
+                        className="w-full pl-3 pr-9 py-2.5 border border-slate-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-violet-500/40 appearance-none"
+                      >
+                        {AI_PROVIDERS.filter(p => p !== 'none').map(p => (
+                          <option key={p} value={p}>{AI_DEFAULTS[p].label}</option>
+                        ))}
+                      </select>
+                      <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                    </div>
+                  </div>
+                  {premProvider !== 'ollama' && (
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1.5 flex items-center gap-1.5">
+                        <Key size={13} className="text-slate-400" />
+                        API key
+                      </label>
+                      <div className="relative">
+                        <input
+                          type={premShowKey ? 'text' : 'password'}
+                          value={premApiKey}
+                          onChange={e => setPremApiKey(e.target.value)}
+                          placeholder={premProvider === 'claude' ? 'sk-ant-…' : premProvider === 'openai' ? 'sk-…' : premProvider === 'groq' ? 'gsk_…' : 'your api key'}
+                          className="w-full pl-3 pr-10 py-2.5 border border-slate-200 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-violet-500/40"
+                        />
+                        <button type="button" onClick={() => setPremShowKey(v => !v)} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600">
+                          {premShowKey ? <EyeOff size={15} /> : <Eye size={15} />}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-medium text-slate-500 mb-1">Base URL</label>
+                      <input
+                        type="text"
+                        value={premBaseUrl}
+                        onChange={e => setPremBaseUrl(e.target.value)}
+                        placeholder={AI_DEFAULTS[premProvider]?.baseUrl}
+                        className="w-full px-2.5 py-2 border border-slate-200 rounded-lg text-xs font-mono focus:outline-none focus:ring-2 focus:ring-violet-500/40"
+                      />
+                    </div>
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="block text-xs font-medium text-slate-500">Model</label>
+                        <button
+                          type="button"
+                          onClick={() => fetchModels('premium')}
+                          disabled={premListingModels || (premProvider !== 'ollama' && !premApiKey.trim())}
+                          className="text-[10px] text-violet-600 hover:underline disabled:opacity-40"
+                        >
+                          {premListingModels ? 'loading…' : 'List models'}
+                        </button>
+                      </div>
+                      <input
+                        type="text"
+                        value={premModel}
+                        onChange={e => setPremModel(e.target.value)}
+                        placeholder={AI_DEFAULTS[premProvider]?.model}
+                        list="ai-premium-models"
+                        className="w-full px-2.5 py-2 border border-slate-200 rounded-lg text-xs font-mono focus:outline-none focus:ring-2 focus:ring-violet-500/40"
+                      />
+                      {premAvailableModels.length > 0 && (
+                        <datalist id="ai-premium-models">
+                          {premAvailableModels.map(m => <option key={m} value={m} />)}
+                        </datalist>
+                      )}
+                      {premAvailableModels.length > 0 && (
+                        <div className="mt-1.5 flex flex-wrap gap-1">
+                          {premAvailableModels.slice(0, 8).map(m => (
+                            <button
+                              key={m}
+                              type="button"
+                              onClick={() => setPremModel(m)}
+                              className={`text-[10px] font-mono px-1.5 py-0.5 rounded border transition-colors ${
+                                premModel === m
+                                  ? 'bg-violet-100 text-violet-700 border-violet-300'
+                                  : 'bg-white text-slate-600 border-slate-200 hover:bg-violet-50 hover:border-violet-300'
+                              }`}
+                            >
+                              {m}
+                            </button>
+                          ))}
+                          {premAvailableModels.length > 8 && <span className="text-[10px] text-slate-400 px-1">+{premAvailableModels.length - 8} more</span>}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <button
+                      onClick={handleTestPremium}
+                      disabled={premTesting || (premProvider !== 'ollama' && !premApiKey.trim())}
+                      className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 border border-slate-200 rounded-lg hover:bg-slate-50 disabled:opacity-40 transition-colors"
+                    >
+                      {premTesting ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
+                      {premTesting ? 'Testing…' : 'Test connection'}
+                    </button>
+                    {premTestResult && (
+                      <span className={`text-xs flex items-center gap-1 ${premTestResult.ok ? 'text-emerald-600' : 'text-red-500'}`}>
+                        {premTestResult.ok ? <CheckCircle2 size={12} /> : <AlertCircle size={12} />}
+                        {premTestResult.message}
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {/* Per-purpose routing */}
+                <RoutingTable routing={routing} setRouting={setRouting} />
+              </>
             )}
           </Section>
 
@@ -620,5 +897,95 @@ function CorrelationsSection() {
         </p>
       )}
     </Section>
+  );
+}
+
+// =========================================================================
+// Per-purpose routing override table
+// =========================================================================
+
+const PURPOSE_LABELS: Array<{ key: AIPurpose; label: string; hint: string; defaultSlot: AIProfileSlot }> = [
+  { key: 'tracker-score',       label: 'Tracker scoring',       hint: 'high volume — runs every minute when scoring backlogged papers', defaultSlot: 'default' },
+  { key: 'correlation-score',   label: 'AI correlations',       hint: 'high volume — background worker, 100/hour cap',                  defaultSlot: 'default' },
+  { key: 'magazine-editorial',  label: 'Magazine editorial',    hint: 'one-off — weekly issue summary',                                 defaultSlot: 'premium' },
+  { key: 'paper-summary',       label: 'Paper summary',         hint: 'user-triggered — Summarize button on paper detail',              defaultSlot: 'premium' },
+  { key: 'ai-suggest',          label: 'AI Suggest',            hint: 'user-triggered — Inbox AI suggestions',                          defaultSlot: 'premium' },
+  { key: 'writer-cite-suggest', label: 'Writer cite suggest',   hint: 'user-triggered — citation picker in the Writer',                 defaultSlot: 'premium' },
+];
+
+function RoutingTable({ routing, setRouting }: {
+  routing: Partial<Record<AIPurpose, AIProfileSlot>>;
+  setRouting: (r: Partial<Record<AIPurpose, AIProfileSlot>>) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const overrides = Object.keys(routing).length;
+
+  return (
+    <div className="mt-4">
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center gap-2 text-xs text-slate-500 hover:text-slate-700 transition-colors"
+      >
+        <ChevronDown size={11} className={`transition-transform ${open ? 'rotate-180' : ''}`} />
+        Routing rules {overrides > 0 && <span className="text-violet-600">({overrides} override{overrides !== 1 ? 's' : ''})</span>}
+      </button>
+      {open && (
+        <div className="mt-3 rounded-lg border border-slate-200 bg-white overflow-hidden">
+          <div className="grid grid-cols-[1fr_auto_auto] gap-x-3 px-3 py-2 text-[10px] uppercase tracking-wider text-slate-400 font-semibold border-b border-slate-100 bg-slate-50">
+            <span>Task</span>
+            <span>Default</span>
+            <span>Premium</span>
+          </div>
+          {PURPOSE_LABELS.map(p => {
+            const current = routing[p.key] ?? p.defaultSlot;
+            return (
+              <div key={p.key} className="grid grid-cols-[1fr_auto_auto] gap-x-3 px-3 py-2 items-center border-b border-slate-100 last:border-b-0">
+                <div>
+                  <p className="text-xs font-medium text-slate-700">{p.label}</p>
+                  <p className="text-[10px] text-slate-400">{p.hint}</p>
+                </div>
+                <RoutingRadio
+                  checked={current === 'default'}
+                  onChange={() => {
+                    const next = { ...routing };
+                    if (p.defaultSlot === 'default') delete next[p.key];
+                    else                              next[p.key] = 'default';
+                    setRouting(next);
+                  }}
+                  tone="emerald"
+                />
+                <RoutingRadio
+                  checked={current === 'premium'}
+                  onChange={() => {
+                    const next = { ...routing };
+                    if (p.defaultSlot === 'premium') delete next[p.key];
+                    else                              next[p.key] = 'premium';
+                    setRouting(next);
+                  }}
+                  tone="violet"
+                />
+              </div>
+            );
+          })}
+          <div className="px-3 py-2 text-[10px] text-slate-400 bg-slate-50 border-t border-slate-100">
+            Built-in defaults shown selected. Pick the other column to override per task.
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RoutingRadio({ checked, onChange, tone }: { checked: boolean; onChange: () => void; tone: 'emerald' | 'violet' }) {
+  const cls = tone === 'emerald'
+    ? 'border-emerald-500 bg-emerald-500'
+    : 'border-violet-500 bg-violet-500';
+  return (
+    <button
+      type="button"
+      onClick={onChange}
+      className={`w-4 h-4 rounded-full border-2 transition-all ${checked ? cls : 'border-slate-300 bg-white hover:border-slate-400'}`}
+    />
   );
 }

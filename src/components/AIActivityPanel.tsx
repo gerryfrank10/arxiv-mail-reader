@@ -163,6 +163,13 @@ function RecordRow({ r }: { r: AIActivityRecord }) {
         <span className="ml-auto text-[11px] text-slate-400 font-mono">{elapsed}</span>
       </div>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-slate-500">
+        {r.profile && r.profile !== 'legacy' && r.profile !== 'none' && (
+          <span className={`text-[9px] uppercase tracking-wider font-semibold px-1.5 py-0.5 rounded border ${
+            r.profile === 'premium'
+              ? 'bg-violet-50 text-violet-700 border-violet-200'
+              : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+          }`}>{r.profile}</span>
+        )}
         <span>
           <span className="font-medium text-slate-600">{r.provider}</span>
           {r.model && <> · <span className="font-mono">{r.model}</span></>}

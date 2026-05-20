@@ -27,14 +27,41 @@ export interface AIConfig {
   model?: string;        // optional override
 }
 
+/** Named tier of an AI profile. 'default' is used for routine high-volume
+ *  tasks (tracker scoring, correlations); 'premium' is for the few tasks
+ *  where quality matters more than cost (editorials, summaries). */
+export type AIProfileSlot = 'default' | 'premium';
+
+/** Purposes correspond to the `purpose:` tag passed to aiChat(). */
+export type AIPurpose =
+  | 'tracker-score'
+  | 'correlation-score'
+  | 'magazine-editorial'
+  | 'paper-summary'
+  | 'ai-suggest'
+  | 'writer-cite-suggest'
+  | 'connection-test'
+  | 'chat';
+
+export type AIRoutingMap = Partial<Record<AIPurpose, AIProfileSlot>>;
+
+export interface AIProfiles {
+  default?: AIConfig;
+  premium?: AIConfig;
+}
+
 export interface Settings {
   senderEmail: string;
   maxEmails: number;
   // Legacy single-key fields (kept for backward compat — used as fallback)
   claudeApiKey?: string;
   s2ApiKey?: string;
-  // Multi-provider config
+  // Legacy single-provider AIConfig (kept as fallback when aiProfiles unset)
   ai?: AIConfig;
+  // Two-tier AI profiles. When set, supersede `ai`.
+  aiProfiles?: AIProfiles;
+  // Per-purpose overrides. When unset, the built-in default mapping is used.
+  aiRouting?: AIRoutingMap;
 }
 
 export interface S2Author {
