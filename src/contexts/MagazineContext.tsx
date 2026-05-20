@@ -8,6 +8,7 @@ import {
   apiListMagazineIssues, apiSaveMagazineIssue, getDbStatus, newMagazineIssueId,
 } from '../utils/researchApi';
 import { aiChat, hasAI, providerLabel, resolveAIConfig } from '../utils/aiProvider';
+import { extractJson } from '../utils/aiJson';
 import { computeAssessment } from '../utils/assessment';
 import { usePapers } from './PapersContext';
 
@@ -267,60 +268,11 @@ function prettyDate(isoDate: string): string {
   return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
-/**
- * Extract a JSON object from an AI response. Tolerates:
- *   - markdown code fences (```json ... ``` or ``` ... ```)
- *   - leading "Here's the JSON:" preamble
- *   - trailing commentary after the JSON
- *   - trailing commas inside arrays/objects (some models add them)
- *   - smart quotes converted to straight quotes
- */
+/** Editorial JSON extractor — thin shim over the shared aiJson util so
+ *  empty / truncated / malformed cases get distinct error types we can
+ *  show in the UI. */
 function parseEditorialJson(raw: string): MagazineEditorial {
-  let text = raw.trim();
-
-  // 1) Strip ```json … ``` or ``` … ``` fences if present.
-  const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if (fence) text = fence[1].trim();
-
-  // 2) Locate the outermost JSON object. We scan brace-by-brace so an
-  //    unclosed array inside the cover string can't fool the regex.
-  const start = text.indexOf('{');
-  if (start < 0) throw new Error('Editorial AI returned no JSON object');
-  let depth = 0;
-  let end   = -1;
-  let inStr = false;
-  let escape = false;
-  for (let i = start; i < text.length; i++) {
-    const ch = text[i];
-    if (escape) { escape = false; continue; }
-    if (ch === '\\' && inStr) { escape = true; continue; }
-    if (ch === '"') { inStr = !inStr; continue; }
-    if (inStr) continue;
-    if (ch === '{') depth++;
-    else if (ch === '}') {
-      depth--;
-      if (depth === 0) { end = i; break; }
-    }
-  }
-  if (end < 0) throw new Error('Editorial AI: unbalanced JSON braces');
-  let body = text.slice(start, end + 1);
-
-  // 3) Common fixups.
-  //   - Smart APOSTROPHES → straight apostrophes (safe inside JSON strings).
-  //   - Trailing commas before } or ] (some models add them).
-  //   - We deliberately do NOT replace smart double-quotes — converting
-  //     them to straight " would corrupt JSON string values that legitimately
-  //     contain them (e.g. `"cover": "ships \"Zero\" language"`). They render
-  //     fine as Unicode in the cover blurb.
-  body = body
-    .replace(/[‘’]/g, "'")
-    .replace(/,\s*([}\]])/g, '$1');
-
-  try {
-    return JSON.parse(body) as MagazineEditorial;
-  } catch (e) {
-    throw new Error(`Editorial AI returned malformed JSON: ${(e as Error).message}. First 120 chars: ${body.slice(0, 120)}…`);
-  }
+  return extractJson<MagazineEditorial>(raw, 'object');
 }
 
 // Helper exported for view code that needs to format provider label
