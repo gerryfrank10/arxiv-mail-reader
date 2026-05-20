@@ -523,77 +523,10 @@ db.deleteLink = async function (userId, link) {
   );
 };
 
-// ----- AI correlations cache -----
-
-db.getCorrelationsForPaper = async function (userId, arxivId, limit = 20, minScore = 50) {
-  const { rows } = await pool.query(
-    `SELECT * FROM paper_correlations
-     WHERE user_id=$1 AND source_arxiv_id=$2 AND score >= $4
-     ORDER BY score DESC, computed_at DESC
-     LIMIT $3`,
-    [userId, arxivId, limit, minScore],
-  );
-  return rows.map(rowToCorrelation);
-};
-
-db.upsertCorrelations = async function (userId, correlations) {
-  if (!correlations.length) return;
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    for (const c of correlations) {
-      if (c.sourceArxivId === c.targetArxivId) continue;
-      await client.query(
-        `INSERT INTO paper_correlations (user_id, source_arxiv_id, target_arxiv_id, score, rationale, ai_provider, computed_at)
-         VALUES ($1, $2, $3, $4, $5, $6, now())
-         ON CONFLICT (user_id, source_arxiv_id, target_arxiv_id) DO UPDATE SET
-           score=$4, rationale=$5, ai_provider=$6, computed_at=now()`,
-        [userId, c.sourceArxivId, c.targetArxivId, c.score, c.rationale ?? '', c.aiProvider ?? ''],
-      );
-    }
-    await client.query('COMMIT');
-  } catch (e) {
-    await client.query('ROLLBACK');
-    throw e;
-  } finally {
-    client.release();
-  }
-};
-
-db.getCorrelationStats = async function (userId) {
-  const [{ rows: totals }, { rows: sources }, { rows: lastHour }] = await Promise.all([
-    pool.query(`SELECT COUNT(*)::int AS n FROM paper_correlations WHERE user_id=$1`, [userId]),
-    pool.query(`SELECT COUNT(DISTINCT source_arxiv_id)::int AS n FROM paper_correlations WHERE user_id=$1`, [userId]),
-    pool.query(
-      `SELECT COUNT(DISTINCT source_arxiv_id)::int AS n
-       FROM paper_correlations
-       WHERE user_id=$1 AND computed_at >= now() - interval '1 hour'`,
-      [userId],
-    ),
-  ]);
-  return {
-    total:              totals[0]?.n ?? 0,
-    distinctSources:    sources[0]?.n ?? 0,
-    papersInLastHour:   lastHour[0]?.n ?? 0,
-  };
-};
-
-// Which arxiv IDs (out of the candidates list) DON'T yet have a correlation
-// row as a source? Used by the worker to pick the next batch.
-db.findPapersMissingCorrelations = async function (userId, candidateArxivIds, limit = 1) {
-  if (!candidateArxivIds.length) return [];
-  const { rows } = await pool.query(
-    `SELECT cand AS arxiv_id
-     FROM unnest($2::text[]) AS cand
-     WHERE NOT EXISTS (
-       SELECT 1 FROM paper_correlations
-       WHERE user_id=$1 AND source_arxiv_id=cand
-     )
-     LIMIT $3`,
-    [userId, candidateArxivIds, limit],
-  );
-  return rows.map(r => r.arxiv_id);
-};
+// (Old AI-correlations cache removed — see migration 005's paper_correlations
+// table; it's now unused. The Similar Papers panel computes TF-IDF
+// similarity client-side. The table is kept around to avoid a destructive
+// migration; safe to DROP TABLE paper_correlations when convenient.)
 
 // ----- magazine issues -----
 
@@ -866,16 +799,6 @@ db.globalSearch = async function (userId, query, limit = 40) {
   }));
 };
 
-function rowToCorrelation(r) {
-  return {
-    sourceArxivId: r.source_arxiv_id,
-    targetArxivId: r.target_arxiv_id,
-    score:         r.score,
-    rationale:     r.rationale ?? '',
-    aiProvider:    r.ai_provider ?? '',
-    computedAt:    new Date(r.computed_at).getTime(),
-  };
-}
 
 function rowToBook(r) {
   return {

@@ -35,7 +35,6 @@ export type AIProfileSlot = 'default' | 'premium';
 /** Purposes correspond to the `purpose:` tag passed to aiChat(). */
 export type AIPurpose =
   | 'tracker-score'
-  | 'correlation-score'
   | 'magazine-editorial'
   | 'paper-summary'
   | 'ai-suggest'
@@ -207,23 +206,6 @@ export interface Link {
   rel:        LinkRel;
   note:       string;
   createdAt:  number;
-}
-
-// ---------- AI correlations cache ----------
-
-export interface PaperCorrelation {
-  sourceArxivId: string;
-  targetArxivId: string;
-  score:         number;   // 0..100
-  rationale:     string;
-  aiProvider:    string;
-  computedAt:    number;
-}
-
-export interface CorrelationStats {
-  total:            number;
-  distinctSources:  number;
-  papersInLastHour: number;
 }
 
 // ---------- Magazine ----------

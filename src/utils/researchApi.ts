@@ -4,7 +4,7 @@
 // isn't enabled, the status endpoint returns { enabled: false } and the
 // client UI shows a setup hint instead of an empty/broken state.
 
-import { Book, Collection, CollectionItem, CorrelationStats, EntityKind, Link, LinkRel, MagazineDraft, MagazineIssue, MagazineIssueSummary, MagazineSource, Paper, PaperCorrelation, PaperScore, ResearchDocument, Tracker } from '../types';
+import { Book, Collection, CollectionItem, EntityKind, Link, LinkRel, MagazineDraft, MagazineIssue, MagazineIssueSummary, MagazineSource, Paper, PaperScore, ResearchDocument, Tracker } from '../types';
 
 function userEmailFromLocalStorage(): string | null {
   try {
@@ -353,33 +353,6 @@ export async function apiGlobalSearch(query: string, limit = 40): Promise<Search
   const url = `/api/db/search?q=${encodeURIComponent(query)}&limit=${limit}`;
   const { results } = await call<{ results: SearchResult[] }>(url);
   return results;
-}
-
-// ---------- AI correlations cache ----------
-
-export async function apiGetCorrelationsForPaper(arxivId: string, opts: { limit?: number; minScore?: number } = {}): Promise<PaperCorrelation[]> {
-  const params = new URLSearchParams();
-  if (opts.limit    != null) params.set('limit',    String(opts.limit));
-  if (opts.minScore != null) params.set('minScore', String(opts.minScore));
-  const url = `/api/db/correlations/${encodeURIComponent(arxivId)}${params.toString() ? `?${params}` : ''}`;
-  const { correlations } = await call<{ correlations: PaperCorrelation[] }>(url);
-  return correlations;
-}
-
-export async function apiUpsertCorrelations(correlations: PaperCorrelation[]): Promise<void> {
-  await call('/api/db/correlations', { method: 'POST', body: JSON.stringify({ correlations }) });
-}
-
-export async function apiGetCorrelationStats(): Promise<CorrelationStats> {
-  return call('/api/db/correlations-stats');
-}
-
-export async function apiFindPapersMissingCorrelations(candidates: string[], limit = 1): Promise<string[]> {
-  const { arxivIds } = await call<{ arxivIds: string[] }>('/api/db/correlations-missing', {
-    method: 'POST',
-    body: JSON.stringify({ candidates, limit }),
-  });
-  return arxivIds;
 }
 
 // ---------- IndexedDB → Postgres migration ----------

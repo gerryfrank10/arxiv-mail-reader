@@ -21,7 +21,6 @@ import { WriterProvider } from '../contexts/WriterContext';
 import { CollectionsProvider } from '../contexts/CollectionsContext';
 import { LinksProvider } from '../contexts/LinksContext';
 import { ConfirmProvider } from '../contexts/ConfirmContext';
-import { CorrelationsProvider } from '../contexts/CorrelationsContext';
 import { MagazineProvider } from '../contexts/MagazineContext';
 import { AIActivityProvider } from '../contexts/AIActivityContext';
 import AIActivityPanel from './AIActivityPanel';
@@ -96,11 +95,9 @@ export default function AppLayout() {
             <WriterProvider>
               <CollectionsProvider>
                 <LinksProvider>
-                  <CorrelationsProvider>
-                    <MagazineProvider>
-                      <AppLayoutInner />
-                    </MagazineProvider>
-                  </CorrelationsProvider>
+                  <MagazineProvider>
+                    <AppLayoutInner />
+                  </MagazineProvider>
                 </LinksProvider>
               </CollectionsProvider>
             </WriterProvider>

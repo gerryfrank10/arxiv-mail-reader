@@ -858,25 +858,6 @@ app.delete('/api/db/links', (req, res) => withUser(req, res, async (uid) => {
   await db.deleteLink(uid, req.body); res.json({ ok: true });
 }));
 
-// AI correlations cache
-app.get('/api/db/correlations/:arxivId', (req, res) => withUser(req, res, async (uid) => {
-  const limit    = Math.min(parseInt(String(req.query.limit ?? '20'), 10) || 20, 100);
-  const minScore = Math.min(100, Math.max(0, parseInt(String(req.query.minScore ?? '50'), 10) || 50));
-  res.json({ correlations: await db.getCorrelationsForPaper(uid, req.params.arxivId, limit, minScore) });
-}));
-app.post('/api/db/correlations', (req, res) => withUser(req, res, async (uid) => {
-  await db.upsertCorrelations(uid, req.body.correlations ?? []);
-  res.json({ ok: true });
-}));
-app.get('/api/db/correlations-stats', (req, res) => withUser(req, res, async (uid) => {
-  res.json(await db.getCorrelationStats(uid));
-}));
-app.post('/api/db/correlations-missing', (req, res) => withUser(req, res, async (uid) => {
-  const candidates = req.body.candidates ?? [];
-  const limit      = Math.min(parseInt(String(req.body.limit ?? '1'), 10) || 1, 20);
-  res.json({ arxivIds: await db.findPapersMissingCorrelations(uid, candidates, limit) });
-}));
-
 // Bulk migration ingest: client posts everything from IndexedDB in one shot.
 // Per-row tolerance — duplicates / FK violations are skipped, not fatal.
 app.post('/api/db/migrate-from-idb', (req, res) => withUser(req, res, async (uid) => {

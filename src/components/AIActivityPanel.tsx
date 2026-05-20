@@ -2,7 +2,6 @@ import { useMemo } from 'react';
 import { Activity, X, Pause, Play, Trash2, CheckCircle2, AlertCircle, Loader2, XCircle, Sparkles } from 'lucide-react';
 import { AIActivityRecord, AIActivityStatus, useAIActivity } from '../contexts/AIActivityContext';
 import { useTracking } from '../contexts/TrackingContext';
-import { useCorrelations } from '../contexts/CorrelationsContext';
 import { providerLabel } from '../utils/aiProvider';
 import { usePapers } from '../contexts/PapersContext';
 import { resolveAIConfig } from '../utils/aiProvider';
@@ -12,7 +11,6 @@ interface Props { onClose: () => void }
 
 const PURPOSE_LABEL: Record<string, string> = {
   'tracker-score':       'Tracker scoring',
-  'correlation-score':   'AI correlations',
   'magazine-editorial':  'Magazine editorial',
   'paper-summary':       'Paper summary',
   'ai-suggest':          'AI Suggest',
@@ -31,7 +29,6 @@ const STATUS_STYLE: Record<AIActivityStatus, { label: string; classes: string; i
 export default function AIActivityPanel({ onClose }: Props) {
   const { records, paused, setPaused, clear, inFlight } = useAIActivity();
   const { scoring } = useTracking();
-  const corr = useCorrelations();
   const { settings } = usePapers();
 
   const aiLabel = providerLabel(resolveAIConfig(settings));
@@ -99,19 +96,11 @@ export default function AIActivityPanel({ onClose }: Props) {
             </div>
           </button>
 
-          <div className="grid grid-cols-2 gap-2 text-xs">
-            <WorkerCard
-              label="Tracker scoring"
-              busy={!!scoring}
-              detail={scoring ? `${scoring.done} / ${scoring.total}` : 'idle'}
-            />
-            <WorkerCard
-              label="Correlations"
-              busy={corr.workerBusy}
-              detail={corr.stats ? `${corr.stats.papersInLastHour}/100 this hour` : 'no stats yet'}
-              error={corr.workerLastError ?? undefined}
-            />
-          </div>
+          <WorkerCard
+            label="Tracker scoring"
+            busy={!!scoring}
+            detail={scoring ? `${scoring.done} / ${scoring.total}` : 'idle'}
+          />
 
           <div className="grid grid-cols-4 gap-2 text-center">
             <StatPill label="last 60m" value={stats.last60min} />

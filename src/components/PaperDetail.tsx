@@ -12,7 +12,7 @@ import { format } from 'date-fns';
 import CiteMenu from './CiteMenu';
 import PaperDiscoveryPanel from './PaperDiscoveryPanel';
 import CrossRefsPanel from './CrossRefsPanel';
-import AICorrelationsPanel from './AICorrelationsPanel';
+import SimilarPapersPanel from './SimilarPapersPanel';
 import { aiChat, hasAI, resolveAIConfig, providerLabel } from '../utils/aiProvider';
 import { ArrowLeft } from 'lucide-react';
 
@@ -491,8 +491,8 @@ Return exactly this JSON structure (no other text):
         {/* Your own cross-references (books, other papers, your docs) */}
         <CrossRefsPanel sourceKind="paper" sourceId={paper.arxivId} title="My cross-references" />
 
-        {/* Cached AI correlations against the user's library */}
-        <AICorrelationsPanel paper={paper} />
+        {/* Local TF-IDF similarity against library + inbox */}
+        <SimilarPapersPanel paper={paper} />
 
         {/* Citation-graph exploration via Semantic Scholar */}
         <PaperDiscoveryPanel paper={paper} />

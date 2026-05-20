@@ -70,7 +70,6 @@ export function hasAI(s: Settings | undefined): boolean {
  *  user-triggered quality work → 'premium' (cloud/best). */
 const DEFAULT_ROUTING: Record<AIPurpose, AIProfileSlot> = {
   'tracker-score':       'default',
-  'correlation-score':   'default',
   'magazine-editorial':  'premium',
   'paper-summary':       'premium',
   'ai-suggest':          'premium',
