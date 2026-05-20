@@ -1,5 +1,5 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { Paper, PaperScore, Tracker } from '../types';
+import { Paper, PaperScore, Settings, Tracker } from '../types';
 import { scorePapersAgainstTracker } from '../utils/trackerScoring';
 import { trackersStore, scoresStore, onStorageModeChange } from '../utils/storage';
 import { isAIPaused } from './AIActivityContext';
@@ -22,6 +22,8 @@ interface TrackingValue {
   deleteTracker: (id: string) => Promise<void>;
   // Scoring
   rescoreTracker: (id: string) => Promise<void>;
+  /** Score only the unscored papers for this tracker, on demand. */
+  scoreTrackerNow: (id: string, mode: 'keyword' | 'ai') => Promise<void>;
   scoreNewPapers: (papers: Paper[]) => Promise<void>;
   // Derived
   matchesByTracker: (trackerId: string) => Array<{ paper: Paper; score: PaperScore }>;
@@ -91,6 +93,32 @@ export function TrackingProvider({ children }: { children: React.ReactNode }) {
     }
   }, [seedsFor, settings]);
 
+  // Same as scoreSubset but forces a specific mode:
+  //   'keyword' → strips AI config so the keyword fallback runs (fast, free)
+  //   'ai'      → uses the user's actual settings (real AI provider)
+  const scoreSubsetWithMode = useCallback(async (subset: Paper[], tracker: Tracker, mode: 'keyword' | 'ai') => {
+    if (!tracker.enabled || subset.length === 0) return;
+    setScoring({ trackerId: tracker.id, done: 0, total: subset.length });
+    try {
+      const seeds = seedsFor(tracker);
+      const settingsForRun = mode === 'ai'
+        ? settings
+        : ({ ...settings, ai: undefined, aiProfiles: undefined, claudeApiKey: undefined } as Settings);
+      const newScores = await scorePapersAgainstTracker(subset, tracker, seeds, {
+        settings: settingsForRun,
+        onProgress: (done, total) => setScoring({ trackerId: tracker.id, done, total }),
+      });
+      await scoresStore.upsert(newScores);
+      setScores(prev => {
+        const byId = new Map(prev.map(s => [s.id, s]));
+        for (const s of newScores) byId.set(s.id, s);
+        return [...byId.values()];
+      });
+    } finally {
+      setScoring(null);
+    }
+  }, [seedsFor, settings]);
+
   const rescoreTracker = useCallback(async (id: string) => {
     const tracker = trackers.find(t => t.id === id);
     if (!tracker) return;
@@ -100,18 +128,38 @@ export function TrackingProvider({ children }: { children: React.ReactNode }) {
     await scoreSubset(papers, tracker);
   }, [trackers, papers, scoreSubset]);
 
+  // Score only the papers that don't yet have a score for this tracker.
+  // Called from the 'Score with AI now' / 'Score with keywords now' buttons.
+  const scoreTrackerNow = useCallback(async (id: string, mode: 'keyword' | 'ai') => {
+    const tracker = trackers.find(t => t.id === id);
+    if (!tracker) return;
+    const have = new Set(scores.filter(s => s.trackerId === id).map(s => s.paperId));
+    const todo = papers.filter(p => !have.has(p.id));
+    if (todo.length === 0) return;
+    await scoreSubsetWithMode(todo, tracker, mode);
+  }, [trackers, papers, scores, scoreSubsetWithMode]);
+
   // Score only papers that don't yet have a score for each enabled tracker.
   // Called automatically when the papers array changes (e.g. after sync).
+  //
+  // Per-tracker auto_score_mode controls behaviour:
+  //   - 'manual'  → skip (user explicitly chose not to spend tokens)
+  //   - 'keyword' → force the keyword path (fast, no AI calls)
+  //   - 'ai'      → use the configured AI provider (the old behaviour)
   const scoreNewPapers = useCallback(async (papersToScore: Paper[]) => {
     if (papersToScore.length === 0) return;
     for (const tracker of trackers) {
       if (!tracker.enabled) continue;
+      // 'manual' trackers don't run on auto. The user can still trigger
+      // them explicitly via the 'Score with AI' button or the CLI.
+      const mode = tracker.autoScoreMode ?? 'manual';
+      if (mode === 'manual') continue;
       const have = new Set(scores.filter(s => s.trackerId === tracker.id).map(s => s.paperId));
       const todo = papersToScore.filter(p => !have.has(p.id));
       if (todo.length === 0) continue;
-      await scoreSubset(todo, tracker);
+      await scoreSubsetWithMode(todo, tracker, mode);
     }
-  }, [trackers, scores, scoreSubset]);
+  }, [trackers, scores, scoreSubsetWithMode]);
 
   // Auto-score on paper change — debounced so rapid sync updates don't pile up.
   // Skipped entirely when AI background activity is paused (master switch in
@@ -181,7 +229,7 @@ export function TrackingProvider({ children }: { children: React.ReactNode }) {
     <TrackingContext.Provider value={{
       trackers, scores, ready, scoring,
       createTracker, updateTracker, deleteTracker,
-      rescoreTracker, scoreNewPapers,
+      rescoreTracker, scoreTrackerNow, scoreNewPapers,
       matchesByTracker, scoresForPaper,
     }}>
       {children}

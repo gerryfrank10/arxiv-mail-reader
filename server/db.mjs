@@ -212,14 +212,14 @@ export const db = {
     await pool.query(
       `INSERT INTO trackers (
          id, user_id, name, description, keywords, seed_arxiv_ids, enabled,
-         color, min_score, created_at, updated_at
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9, to_timestamp($10/1000.0), to_timestamp($11/1000.0))
+         color, min_score, auto_score_mode, created_at, updated_at
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10, to_timestamp($11/1000.0), to_timestamp($12/1000.0))
        ON CONFLICT (user_id, id) DO UPDATE SET
          name=$3, description=$4, keywords=$5, seed_arxiv_ids=$6, enabled=$7,
-         color=$8, min_score=$9, updated_at=to_timestamp($11/1000.0)`,
+         color=$8, min_score=$9, auto_score_mode=$10, updated_at=to_timestamp($12/1000.0)`,
       [
         t.id, userId, t.name, t.description, t.keywords, t.seedArxivIds, t.enabled,
-        t.color, t.minScore, t.createdAt, t.updatedAt,
+        t.color, t.minScore, t.autoScoreMode ?? 'manual', t.createdAt, t.updatedAt,
       ],
     );
   },
@@ -940,15 +940,16 @@ function rowToPaper(r) {
 
 function rowToTracker(r) {
   return {
-    id:           r.id,
-    name:         r.name,
-    description:  r.description ?? '',
-    keywords:     r.keywords ?? [],
-    seedArxivIds: r.seed_arxiv_ids ?? [],
-    enabled:      r.enabled,
-    color:        r.color,
-    minScore:     r.min_score,
-    createdAt:    new Date(r.created_at).getTime(),
-    updatedAt:    new Date(r.updated_at).getTime(),
+    id:            r.id,
+    name:          r.name,
+    description:   r.description ?? '',
+    keywords:      r.keywords ?? [],
+    seedArxivIds:  r.seed_arxiv_ids ?? [],
+    enabled:       r.enabled,
+    color:         r.color,
+    minScore:      r.min_score,
+    autoScoreMode: r.auto_score_mode ?? 'manual',
+    createdAt:     new Date(r.created_at).getTime(),
+    updatedAt:     new Date(r.updated_at).getTime(),
   };
 }

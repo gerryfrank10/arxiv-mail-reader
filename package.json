@@ -11,6 +11,7 @@
     "db:down": "docker compose down",
     "db:reset": "docker compose down -v && docker compose up -d",
     "db:psql": "docker exec -it arxiv-reader-db psql -U arxiv -d arxiv_reader",
+    "score-papers": "node scripts/score-papers.mjs",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "start": "node server/index.mjs"

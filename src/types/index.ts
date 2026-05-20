@@ -97,6 +97,8 @@ export interface S2AuthorProfile {
 
 // ---------- Tracking ----------
 
+export type TrackerAutoScoreMode = 'manual' | 'keyword' | 'ai';
+
 export interface Tracker {
   id: string;
   name: string;
@@ -106,6 +108,10 @@ export interface Tracker {
   enabled: boolean;
   color: string;             // tailwind color name e.g. 'blue', 'rose'
   minScore: number;          // 0..100 threshold for surfacing matches
+  /** How new papers from sync are scored. Defaults to 'manual' — no surprise
+   *  AI calls. Manual scoring is always available via the 'Score with AI'
+   *  button or the scripts/score-papers.mjs CLI. */
+  autoScoreMode: TrackerAutoScoreMode;
   createdAt: number;
   updatedAt: number;
 }

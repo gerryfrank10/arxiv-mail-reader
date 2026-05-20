@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { X, Target, Hash, Sparkles, FileText, Trash2 } from 'lucide-react';
-import { Tracker } from '../types';
+import { Tracker, TrackerAutoScoreMode } from '../types';
 import { TRACKER_COLORS, TRACKER_COLOR_CLASSES } from '../utils/trackerScoring';
 import { useTracking } from '../contexts/TrackingContext';
 import { usePapers } from '../contexts/PapersContext';
@@ -23,6 +23,9 @@ export default function TrackerForm({ tracker, onClose }: Props) {
   const [color,       setColor]       = useState(tracker?.color ?? 'blue');
   const [minScore,    setMinScore]    = useState(tracker?.minScore ?? 60);
   const [enabled,     setEnabled]     = useState(tracker?.enabled ?? true);
+  // Auto-score mode defaults to 'manual' so the user doesn't get surprised
+  // by background AI calls. They can flip per-tracker to keyword or AI.
+  const [autoScoreMode, setAutoScoreMode] = useState<TrackerAutoScoreMode>(tracker?.autoScoreMode ?? 'manual');
   const [confirmDelete, setConfirmDelete] = useState(false);
 
   useEffect(() => {
@@ -45,6 +48,7 @@ export default function TrackerForm({ tracker, onClose }: Props) {
       enabled,
       color,
       minScore,
+      autoScoreMode,
     };
     if (editing) await updateTracker(tracker!.id, payload);
     else         await createTracker(payload);
@@ -198,6 +202,39 @@ export default function TrackerForm({ tracker, onClose }: Props) {
             </div>
           </div>
 
+          {/* Auto-score mode on new papers */}
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-1.5">On new papers</label>
+            <div className="grid grid-cols-3 gap-2">
+              {([
+                { id: 'manual',  label: 'Manual',  hint: 'Default. Score only when you click — no surprise tokens.' },
+                { id: 'keyword', label: 'Keyword', hint: 'Fast, no AI. Uses your keywords + seed papers.' },
+                { id: 'ai',      label: 'AI',      hint: 'Use configured AI provider. Costs tokens per sync.' },
+              ] as const).map(opt => (
+                <button
+                  key={opt.id}
+                  type="button"
+                  onClick={() => setAutoScoreMode(opt.id)}
+                  className={`text-left rounded-lg border px-3 py-2 transition-all ${
+                    autoScoreMode === opt.id
+                      ? opt.id === 'ai'
+                        ? 'border-violet-400 bg-violet-50 ring-2 ring-violet-100'
+                        : opt.id === 'keyword'
+                          ? 'border-emerald-400 bg-emerald-50 ring-2 ring-emerald-100'
+                          : 'border-blue-400 bg-blue-50 ring-2 ring-blue-100'
+                      : 'border-slate-200 hover:bg-slate-50'
+                  }`}
+                >
+                  <p className="text-xs font-semibold text-slate-800">{opt.label}</p>
+                  <p className="text-[10px] text-slate-500 leading-snug mt-0.5">{opt.hint}</p>
+                </button>
+              ))}
+            </div>
+            <p className="text-[11px] text-slate-400 mt-1.5">
+              You can always run <em>Score with AI now</em> or use <code className="px-1 py-0.5 bg-slate-100 rounded font-mono text-[10px]">npm run score-papers</code> from the terminal.
+            </p>
+          </div>
+
           {/* Enabled */}
           <label className="flex items-center gap-2 cursor-pointer select-none">
             <input
@@ -206,7 +243,7 @@ export default function TrackerForm({ tracker, onClose }: Props) {
               onChange={e => setEnabled(e.target.checked)}
               className="w-4 h-4 accent-blue-500"
             />
-            <span className="text-sm text-slate-700">Enabled <span className="text-xs text-slate-400">(auto-score new papers from sync)</span></span>
+            <span className="text-sm text-slate-700">Enabled <span className="text-xs text-slate-400">(uncheck to hide this tracker's matches everywhere)</span></span>
           </label>
         </div>
 

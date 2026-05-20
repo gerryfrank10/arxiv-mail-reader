@@ -14,8 +14,8 @@ import Pager from './Pager';
 type SortMode = 'score' | 'date';
 
 export default function TrackingView() {
-  const { trackers, scoring, rescoreTracker, matchesByTracker } = useTracking();
-  const { setSelectedPaper, settings } = usePapers();
+  const { trackers, scores, scoring, rescoreTracker, scoreTrackerNow, matchesByTracker } = useTracking();
+  const { setSelectedPaper, settings, papers } = usePapers();
   const [activeId,    setActiveId]    = useState<string | null>(null);
   const [editing,     setEditing]     = useState<Tracker | null>(null);
   const [creating,    setCreating]    = useState(false);
@@ -173,8 +173,12 @@ export default function TrackingView() {
             matches={sortedMatches}
             sortMode={sortMode}
             setSortMode={setSortMode}
+            scoredCount={scores.filter(s => s.trackerId === active.id).length}
+            totalPapers={papers.length}
+            aiAvailable={hasAI(settings)}
             onEdit={() => setEditing(active)}
             onRescore={() => rescoreTracker(active.id)}
+            onScoreNow={(mode) => scoreTrackerNow(active.id, mode)}
             onOpenPaper={p => setSelectedPaper(p)}
             isScoring={scoring?.trackerId === active.id}
           />
@@ -190,14 +194,19 @@ export default function TrackingView() {
 // ---------- Inner: tracker detail panel ----------
 
 function ActiveTrackerView({
-  tracker, matches, sortMode, setSortMode, onEdit, onRescore, onOpenPaper, isScoring,
+  tracker, matches, sortMode, setSortMode, scoredCount, totalPapers, aiAvailable,
+  onEdit, onRescore, onScoreNow, onOpenPaper, isScoring,
 }: {
   tracker: Tracker;
   matches: ReturnType<ReturnType<typeof useTracking>['matchesByTracker']>;
   sortMode: SortMode;
   setSortMode: (m: SortMode) => void;
+  scoredCount: number;
+  totalPapers: number;
+  aiAvailable: boolean;
   onEdit: () => void;
   onRescore: () => void;
+  onScoreNow: (mode: 'keyword' | 'ai') => Promise<void>;
   onOpenPaper: (p: import('../types').Paper) => void;
   isScoring: boolean;
 }) {
@@ -241,11 +250,11 @@ function ActiveTrackerView({
               <button
                 onClick={onRescore}
                 disabled={isScoring}
-                title="Re-score every paper against this tracker"
+                title="Wipe all scores and re-run from scratch"
                 className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 rounded-lg border border-slate-200 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
               >
                 <RefreshCw size={12} className={isScoring ? 'animate-spin' : ''} />
-                {isScoring ? 'Scoring…' : 'Re-score'}
+                {isScoring ? 'Scoring…' : 'Re-score all'}
               </button>
               <button
                 onClick={onEdit}
@@ -258,6 +267,15 @@ function ActiveTrackerView({
             <p className="text-[11px] text-slate-400">min score · {tracker.minScore}</p>
           </div>
         </div>
+        {/* Score status strip: shows pending count + manual triggers */}
+        <ScoreStatusStrip
+          tracker={tracker}
+          scoredCount={scoredCount}
+          totalPapers={totalPapers}
+          aiAvailable={aiAvailable}
+          isScoring={isScoring}
+          onScoreNow={onScoreNow}
+        />
       </div>
 
       {/* Matches header + sort */}
@@ -358,6 +376,80 @@ function ExampleCard({ title, desc, kw }: { title: string; desc: string; kw: str
       <p className="text-[10px] text-slate-400 font-mono leading-snug">
         keywords: {kw}
       </p>
+    </div>
+  );
+}
+
+// =========================================================================
+// Score status strip — shows scored/pending counts + manual triggers
+// =========================================================================
+
+function ScoreStatusStrip({
+  tracker, scoredCount, totalPapers, aiAvailable, isScoring, onScoreNow,
+}: {
+  tracker: Tracker;
+  scoredCount: number;
+  totalPapers: number;
+  aiAvailable: boolean;
+  isScoring: boolean;
+  onScoreNow: (mode: 'keyword' | 'ai') => Promise<void>;
+}) {
+  const pending = Math.max(0, totalPapers - scoredCount);
+  const cls = TRACKER_COLOR_CLASSES[tracker.color] ?? TRACKER_COLOR_CLASSES.blue;
+  const modeLabel: Record<typeof tracker.autoScoreMode, string> = {
+    manual:  'Manual only',
+    keyword: 'Auto · keyword',
+    ai:      'Auto · AI',
+  };
+
+  return (
+    <div className="mt-4 pt-4 border-t border-slate-200 flex items-center gap-3 flex-wrap text-xs">
+      <div className="flex items-center gap-1.5 text-slate-600">
+        <span className={`w-1.5 h-1.5 rounded-full ${cls.dot}`} />
+        <span className="font-medium">{scoredCount.toLocaleString()}</span>
+        <span className="text-slate-400">scored</span>
+        {pending > 0 && (
+          <>
+            <span className="text-slate-300">·</span>
+            <span className="text-amber-600 font-medium">{pending.toLocaleString()}</span>
+            <span className="text-slate-400">pending</span>
+          </>
+        )}
+      </div>
+      <span className={`text-[10px] uppercase tracking-wider font-semibold px-1.5 py-0.5 rounded-full border ${
+        tracker.autoScoreMode === 'ai'
+          ? 'bg-violet-50 text-violet-700 border-violet-200'
+          : tracker.autoScoreMode === 'keyword'
+            ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+            : 'bg-slate-50 text-slate-600 border-slate-200'
+      }`}>
+        {modeLabel[tracker.autoScoreMode]}
+      </span>
+
+      <div className="flex items-center gap-1.5 ml-auto">
+        <button
+          onClick={() => onScoreNow('keyword')}
+          disabled={isScoring || pending === 0}
+          title={pending === 0 ? 'All papers already scored' : 'Score pending papers with keywords (no AI cost)'}
+          className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-emerald-700 border border-emerald-200 hover:bg-emerald-50 rounded-lg disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+        >
+          {isScoring ? <Loader2 size={11} className="animate-spin" /> : <Hash size={11} />}
+          Score with keywords
+        </button>
+        <button
+          onClick={() => onScoreNow('ai')}
+          disabled={isScoring || pending === 0 || !aiAvailable}
+          title={
+            !aiAvailable      ? 'Configure an AI provider in Settings first' :
+            pending === 0     ? 'All papers already scored' :
+                                `Score ${pending} pending paper${pending === 1 ? '' : 's'} with the configured AI provider`
+          }
+          className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-violet-700 border border-violet-200 hover:bg-violet-50 rounded-lg disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+        >
+          {isScoring ? <Loader2 size={11} className="animate-spin" /> : <Sparkles size={11} />}
+          Score with AI {pending > 0 && `(${pending})`}
+        </button>
+      </div>
     </div>
   );
 }
