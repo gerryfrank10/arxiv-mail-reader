@@ -75,24 +75,18 @@ function extractArxivAbstract(xml) {
  * feed has no entry (e.g. unknown id), otherwise an object suitable for
  * direct JSON response.
  */
-function extractArxivMetadata(xml, requestedId) {
-  // Take the first <entry>...</entry> block
-  const entryMatch = xml.match(/<entry>([\s\S]*?)<\/entry>/);
-  if (!entryMatch) return null;
-  const entry = entryMatch[1];
-
+// Parse a single <entry>…</entry> body into a metadata object.
+function parseArxivEntry(entry, fallbackId) {
   const titleM     = entry.match(/<title>([\s\S]*?)<\/title>/);
   const summaryM   = entry.match(/<summary>([\s\S]*?)<\/summary>/);
   const publishedM = entry.match(/<published>([\s\S]*?)<\/published>/);
   const updatedM   = entry.match(/<updated>([\s\S]*?)<\/updated>/);
   const commentM   = entry.match(/<arxiv:comment[^>]*>([\s\S]*?)<\/arxiv:comment>/);
   const idM        = entry.match(/<id>https?:\/\/arxiv\.org\/abs\/([^<\s]+)<\/id>/);
-  // Authors: <author><name>X</name></author>+
   const authors = [];
   const reAuthor = /<author>\s*<name>([\s\S]*?)<\/name>/g;
   let am;
   while ((am = reAuthor.exec(entry)) !== null) authors.push(decodeXmlText(am[1]));
-  // Categories: <category term="X"/>
   const categories = [];
   const reCat = /<category[^>]*term="([^"]+)"/g;
   let cm;
@@ -103,7 +97,7 @@ function extractArxivMetadata(xml, requestedId) {
     ? new Date(published).toUTCString().replace(/^\w+, /, '').replace(/ GMT$/, '')
     : (updatedM ? updatedM[1].trim() : '');
 
-  const arxivId = (idM ? idM[1] : requestedId).replace(/v\d+$/, '');
+  const arxivId = (idM ? idM[1] : fallbackId ?? '').replace(/v\d+$/, '');
 
   return {
     arxivId,
@@ -115,6 +109,50 @@ function extractArxivMetadata(xml, requestedId) {
     published,
     comments:   commentM ? decodeXmlText(commentM[1]) : '',
   };
+}
+
+// Single-entry extractor (back-compat for the /api/arxiv-metadata route).
+function extractArxivMetadata(xml, requestedId) {
+  const entryMatch = xml.match(/<entry>([\s\S]*?)<\/entry>/);
+  if (!entryMatch) return null;
+  return parseArxivEntry(entryMatch[1], requestedId);
+}
+
+// Multi-entry extractor for batch queries (id_list with many ids).
+function extractAllArxivMetadata(xml) {
+  const out = [];
+  const re = /<entry>([\s\S]*?)<\/entry>/g;
+  let m;
+  while ((m = re.exec(xml)) !== null) {
+    const meta = parseArxivEntry(m[1], null);
+    // arXiv returns a placeholder error <entry> for unknown ids — skip those.
+    if (meta && meta.arxivId && meta.title !== 'Error') out.push(meta);
+  }
+  return out;
+}
+
+// Shared throttled arXiv GET with 429 retry/backoff. Serialised through
+// arxivQueue so concurrent callers can't burst past the rate limit.
+async function arxivFetchText(idList) {
+  return arxivQueue = arxivQueue.then(async () => {
+    const BACKOFFS = [3000, 8000, 20000]; // retries on 429
+    let lastErr;
+    for (let attempt = 0; attempt <= BACKOFFS.length; attempt++) {
+      if (attempt > 0) {
+        console.warn(`[arxiv] 429 — backing off ${BACKOFFS[attempt - 1]}ms (retry ${attempt}/${BACKOFFS.length})`);
+        await new Promise(r => setTimeout(r, BACKOFFS[attempt - 1]));
+      }
+      const wait = Math.max(0, ARXIV_MIN_GAP_MS - (Date.now() - lastArxivCall));
+      if (wait > 0) await new Promise(r => setTimeout(r, wait));
+      lastArxivCall = Date.now();
+      const r = await fetch(`https://export.arxiv.org/api/query?id_list=${encodeURIComponent(idList)}&max_results=100`);
+      const text = await r.text();
+      if (r.status === 200) return text;
+      lastErr = new Error(`arXiv ${r.status}`);
+      if (r.status !== 429) break; // only 429 is worth retrying
+    }
+    throw lastErr ?? new Error('arXiv request failed');
+  }).catch(err => { throw err; });
 }
 
 async function fetchFromArxiv(id) {
@@ -160,16 +198,7 @@ app.get('/api/arxiv-metadata', async (req, res) => {
     return res.json(cached.meta);
   }
   try {
-    // Reuse the throttled arXiv queue but ask for the full body
-    const body = await (arxivQueue = arxivQueue.then(async () => {
-      const wait = Math.max(0, ARXIV_MIN_GAP_MS - (Date.now() - lastArxivCall));
-      if (wait > 0) await new Promise(r => setTimeout(r, wait));
-      lastArxivCall = Date.now();
-      const r = await fetch(`https://export.arxiv.org/api/query?id_list=${encodeURIComponent(id)}`);
-      const text = await r.text();
-      if (r.status !== 200) throw new Error(`arXiv ${r.status}`);
-      return text;
-    }));
+    const body = await arxivFetchText(id);
     const meta = extractArxivMetadata(body, id);
     if (!meta) {
       return res.status(404).json({ error: `No entry for arXiv:${id} — check the id` });
@@ -179,6 +208,60 @@ app.get('/api/arxiv-metadata', async (req, res) => {
   } catch (err) {
     res.status(502).json({ error: `Failed to fetch from arXiv: ${err.message}` });
   }
+});
+
+// Valid arXiv id forms: new "2401.12345" (+ optional vN, already stripped)
+// or old-style "cs/0610001". arXiv 400s the WHOLE batch if any id is
+// malformed, so we filter junk out up front and report it per-id.
+const ARXIV_ID_RE = /^(\d{4}\.\d{4,5}|[a-z-]+(?:\.[a-z-]+)?\/\d{7})$/i;
+
+// Batch metadata: one arXiv call for up to 50 ids. This is what the Import
+// flow should use — it turns "20 papers = 20 rate-limited requests" into a
+// single request. ?ids=2401.0001,1706.03762,...
+app.get('/api/arxiv-metadata-batch', async (req, res) => {
+  const raw = String(req.query.ids ?? '').trim();
+  if (!raw) return res.status(400).json({ error: 'ids is required (comma-separated)' });
+  const requested = [...new Set(
+    raw.split(',').map(s => s.trim().replace(/v\d+$/i, '')).filter(Boolean),
+  )].slice(0, 50);
+  if (requested.length === 0) return res.json({ results: {}, errors: {} });
+
+  const results = {};
+  const errors  = {};
+
+  // Serve cached ids without hitting arXiv; reject malformed ids up front
+  // so they don't 400 the whole upstream query.
+  const toFetch = [];
+  for (const id of requested) {
+    if (!ARXIV_ID_RE.test(id)) { errors[id] = 'not a valid arXiv id'; continue; }
+    const c = metadataCache.get(id);
+    if (c && Date.now() - c.ts < METADATA_TTL_MS) results[id] = c.meta;
+    else toFetch.push(id);
+  }
+
+  if (toFetch.length > 0) {
+    try {
+      const body = await arxivFetchText(toFetch.join(','));
+      const metas = extractAllArxivMetadata(body);
+      // Index returned metadata by arxivId for matching back to requested ids
+      const byArxiv = new Map(metas.map(m => [m.arxivId, m]));
+      for (const id of toFetch) {
+        const meta = byArxiv.get(id);
+        if (meta) {
+          metadataCache.set(id, { meta, ts: Date.now() });
+          results[id] = meta;
+        } else {
+          errors[id] = 'no entry returned by arXiv (check the id)';
+        }
+      }
+    } catch (err) {
+      // Whole-batch failure (e.g. 429 after retries) — report per-id so the
+      // client can show which ones still need retrying.
+      for (const id of toFetch) errors[id] = err.message;
+    }
+  }
+
+  res.json({ results, errors });
 });
 
 app.get('/api/arxiv-abstract', async (req, res) => {

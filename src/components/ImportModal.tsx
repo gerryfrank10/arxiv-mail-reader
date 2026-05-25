@@ -3,7 +3,7 @@ import { X, Upload, FileText, Plus, Loader2, AlertCircle, CheckCircle2, FileUp }
 import { usePapers } from '../contexts/PapersContext';
 import {
   extractArxivIds,
-  fetchArxivMetadata,
+  fetchArxivMetadataBatch,
   metadataToPaper,
   parseBibtex,
   bibEntryToPaper,
@@ -57,15 +57,26 @@ export default function ImportModal({ onClose }: Props) {
     const papers: Paper[] = [];
     const failures: Array<{ id: string; reason: string }> = [];
 
-    for (let i = 0; i < ids.length; i++) {
-      const id = ids[i];
+    // Batch into one arXiv call per CHUNK of 25 ids — avoids the 429s that
+    // one-request-per-paper used to trigger.
+    const CHUNK = 25;
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      const chunk = ids.slice(i, i + CHUNK);
       try {
-        const meta = await fetchArxivMetadata(id);
-        papers.push(metadataToPaper(meta));
+        const { results, errors } = await fetchArxivMetadataBatch(chunk);
+        for (const id of chunk) {
+          // The server keys results by canonical arxivId (version stripped),
+          // so normalise the requested id the same way before lookup.
+          const canonical = id.replace(/v\d+$/i, '');
+          const meta = results[canonical] ?? results[id];
+          if (meta) papers.push(metadataToPaper(meta));
+          else      failures.push({ id, reason: errors[canonical] ?? errors[id] ?? 'not found' });
+        }
       } catch (e) {
-        failures.push({ id, reason: e instanceof Error ? e.message : 'failed' });
+        const reason = e instanceof Error ? e.message : 'batch failed';
+        for (const id of chunk) failures.push({ id, reason });
       }
-      setProgress({ done: i + 1, total: ids.length, failures: [...failures] });
+      setProgress({ done: Math.min(i + CHUNK, ids.length), total: ids.length, failures: [...failures] });
     }
 
     const { added, duplicates } = await addImportedPapers(papers);
@@ -118,15 +129,24 @@ export default function ImportModal({ onClose }: Props) {
     setProgress({ done: 0, total: needsFetch.length, failures: [] });
     const fetched: Paper[] = [];
     const failures: Array<{ id: string; reason: string }> = [];
-    for (let i = 0; i < needsFetch.length; i++) {
-      const id = needsFetch[i];
+    // Enrich abstract-less BibTeX entries via the batch endpoint (one arXiv
+    // call per 25 ids) instead of one request each.
+    const CHUNK = 25;
+    for (let i = 0; i < needsFetch.length; i += CHUNK) {
+      const chunk = needsFetch.slice(i, i + CHUNK);
       try {
-        const meta = await fetchArxivMetadata(id);
-        fetched.push(metadataToPaper(meta));
+        const { results, errors } = await fetchArxivMetadataBatch(chunk);
+        for (const id of chunk) {
+          const canonical = id.replace(/v\d+$/i, '');
+          const meta = results[canonical] ?? results[id];
+          if (meta) fetched.push(metadataToPaper(meta));
+          else      failures.push({ id, reason: errors[canonical] ?? errors[id] ?? 'not found' });
+        }
       } catch (e) {
-        failures.push({ id, reason: e instanceof Error ? e.message : 'failed' });
+        const reason = e instanceof Error ? e.message : 'batch failed';
+        for (const id of chunk) failures.push({ id, reason });
       }
-      setProgress({ done: i + 1, total: needsFetch.length, failures: [...failures] });
+      setProgress({ done: Math.min(i + CHUNK, needsFetch.length), total: needsFetch.length, failures: [...failures] });
     }
 
     const allPapers = [...offlinePapers, ...fetched];

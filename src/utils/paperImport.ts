@@ -61,6 +61,21 @@ export async function fetchArxivMetadata(arxivId: string, signal?: AbortSignal):
     throw new Error(err.error ?? `Failed to fetch ${arxivId} (HTTP ${resp.status})`);
   }
   const data = await resp.json() as ArxivMetadataRaw;
+  return rawToMetadata(data);
+}
+
+interface ArxivMetadataRaw {
+  arxivId: string;
+  title: string;
+  authorList: string[];
+  abstract: string;
+  categories: string[];
+  date: string;
+  published: string;
+  comments?: string;
+}
+
+function rawToMetadata(data: ArxivMetadataRaw): ArxivMetadata {
   return {
     arxivId:    data.arxivId,
     title:      data.title,
@@ -76,15 +91,31 @@ export async function fetchArxivMetadata(arxivId: string, signal?: AbortSignal):
   };
 }
 
-interface ArxivMetadataRaw {
-  arxivId: string;
-  title: string;
-  authorList: string[];
-  abstract: string;
-  categories: string[];
-  date: string;
-  published: string;
-  comments?: string;
+export interface BatchMetadataResult {
+  results: Record<string, ArxivMetadata>;  // keyed by arxivId
+  errors:  Record<string, string>;         // keyed by arxivId
+}
+
+/**
+ * Fetch metadata for many arXiv IDs in ONE request. arXiv's id_list query
+ * accepts up to ~100 comma-separated ids, so this turns "N papers = N
+ * rate-limited requests" into a single call — the fix for the 429s that
+ * bulk import was hitting.
+ */
+export async function fetchArxivMetadataBatch(arxivIds: string[], signal?: AbortSignal): Promise<BatchMetadataResult> {
+  if (arxivIds.length === 0) return { results: {}, errors: {} };
+  const url = `/api/arxiv-metadata-batch?ids=${encodeURIComponent(arxivIds.join(','))}`;
+  const resp = await fetch(url, { signal });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({})) as { error?: string };
+    throw new Error(err.error ?? `Batch fetch failed (HTTP ${resp.status})`);
+  }
+  const data = await resp.json() as { results: Record<string, ArxivMetadataRaw>; errors: Record<string, string> };
+  const results: Record<string, ArxivMetadata> = {};
+  for (const [id, raw] of Object.entries(data.results ?? {})) {
+    results[id] = rawToMetadata(raw);
+  }
+  return { results, errors: data.errors ?? {} };
 }
 
 // =========================================================================
