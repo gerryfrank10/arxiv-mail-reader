@@ -8,7 +8,7 @@ import {
   apiListMagazineIssues, apiSaveMagazineIssue, getDbStatus, newMagazineIssueId,
 } from '../utils/researchApi';
 import { aiChat, hasAI, providerLabel, resolveAIConfig } from '../utils/aiProvider';
-import { extractJson } from '../utils/aiJson';
+import { extractJson, AITruncatedJsonError } from '../utils/aiJson';
 import { computeAssessment } from '../utils/assessment';
 import { usePapers } from './PapersContext';
 
@@ -86,48 +86,70 @@ export function MagazineProvider({ children }: { children: React.ReactNode }) {
     external: import('../types').MagazineExternal,
   ): Promise<MagazineEditorial> {
     if (!hasAI(settings)) throw new Error('No AI provider configured. Open Settings.');
+    // Trim the input aggressively so verbose models (deepseek-v4-pro, etc.)
+    // have more of their completion budget left for the actual editorial.
     const topInboxPapers = [...inboxPapers]
       .sort((a, b) => computeAssessment(b).score - computeAssessment(a).score)
-      .slice(0, 8);
+      .slice(0, 6);
     const summary = {
       weekStart, weekEnd,
       inbox: topInboxPapers.map(p => ({
-        arxivId: p.arxivId, title: p.title,
-        cats:    p.categories.slice(0, 3),
-        gist:    (p.abstract ?? '').slice(0, 220),
+        title: p.title,
+        cats:  p.categories.slice(0, 2),
+        gist:  (p.abstract ?? '').slice(0, 160),
       })),
-      hackernews:  (external.hackernews  ?? []).slice(0, 8).map(h => ({ title: h.title, points: h.points })),
-      huggingface: (external.huggingface ?? []).slice(0, 8).map(m => ({ name: m.name, dl: m.downloads, likes: m.likes, tags: (m.tags || []).slice(0, 3) })),
-      github:      (external.github      ?? []).slice(0, 8).map(r => ({ name: r.name, stars: r.stars, desc: (r.description ?? '').slice(0, 100) })),
-      modelscope:  (external.modelscope  ?? []).slice(0, 6).map(m => ({ name: m.name })),
+      hackernews:  (external.hackernews  ?? []).slice(0, 6).map(h => ({ title: h.title, points: h.points })),
+      huggingface: (external.huggingface ?? []).slice(0, 6).map(m => ({ name: m.name, dl: m.downloads, likes: m.likes })),
+      github:      (external.github      ?? []).slice(0, 6).map(r => ({ name: r.name, stars: r.stars, desc: (r.description ?? '').slice(0, 80) })),
+      modelscope:  (external.modelscope  ?? []).slice(0, 4).map(m => ({ name: m.name })),
     };
 
     const prompt = `You are the editor of a personal weekly research magazine for an ML/AI researcher. Synthesise the data below into editorial copy. Return STRICT JSON ONLY — no markdown fences, no preamble, no explanation.
 
-Be specific, not generic — name the papers, libraries, repos, and models. Avoid hype words like "breakthrough" or "revolutionary". If a section is empty, acknowledge rather than fabricate.
+Be specific, not generic — name the papers, libraries, repos, and models. Avoid hype words like "breakthrough" or "revolutionary". Keep "cover" under 60 words and "inboxNote" under 80 words; takeaways under 20 words each.
 
 Data for week ${weekStart} → ${weekEnd}:
 ${JSON.stringify(summary, null, 2)}
 
-Return this JSON (and nothing else):
+Return this exact JSON shape (all three fields required, non-empty):
 {
-  "cover":     "2-3 sentence cover blurb that previews what's in this issue",
-  "inboxNote": "1 short paragraph (≤ 80 words) tying together the highlights from the user's inbox papers",
-  "takeaways": ["3 to 5 specific takeaways across the whole week — each ≤ 25 words"]
-}`;
+  "cover":     "2-3 sentence cover blurb",
+  "inboxNote": "1 short paragraph tying the inbox highlights together",
+  "takeaways": ["3 to 5 specific takeaways"]
+}
 
-    const text = await aiChat(
-      [{ role: 'user', content: prompt }],
-      settings,
-      { maxTokens: 1200, temperature: 0.4, timeoutMs: 90_000, purpose: 'magazine-editorial' },
-    );
+Do not return empty strings or empty arrays. Do not rename the keys.`;
 
-    const parsed = parseEditorialJson(text);
-    return {
-      cover:     String(parsed.cover ?? '').trim(),
-      inboxNote: String(parsed.inboxNote ?? '').trim(),
-      takeaways: Array.isArray(parsed.takeaways) ? parsed.takeaways.map(s => String(s)).slice(0, 5) : [],
+    const attempt = async (): Promise<MagazineEditorial> => {
+      const text = await aiChat(
+        [{ role: 'user', content: prompt }],
+        settings,
+        // Raised from 1200 → 2500: deepseek-v4-pro and similar verbose
+        // models were getting cut off mid-JSON, which extractJson then
+        // (correctly) reported as AITruncatedJsonError. Salvaging partial
+        // output below covers the residual cases.
+        { maxTokens: 2500, temperature: 0.4, timeoutMs: 120_000, purpose: 'magazine-editorial' },
+      );
+      try {
+        return normaliseEditorial(parseEditorialJson(text));
+      } catch (e) {
+        // The first two fields almost always arrive intact even when the
+        // model runs out of budget mid-takeaway — pull them out with a
+        // regex rather than discarding the whole response.
+        if (e instanceof AITruncatedJsonError) {
+          const salvaged = salvageEditorialFromPartial(e.partial);
+          if (!isEditorialEmpty(salvaged)) return salvaged;
+        }
+        throw e;
+      }
     };
+
+    let editorial = await attempt();
+    if (isEditorialEmpty(editorial)) editorial = await attempt();
+    if (isEditorialEmpty(editorial)) {
+      throw new Error('AI returned an editorial with no usable content — try a larger model or rerun.');
+    }
+    return editorial;
   }
 
   const generateThisWeek = useCallback(async (opts: { sources?: MagazineSource[]; weekStart?: string; useAi?: boolean } = {}) => {
@@ -270,9 +292,110 @@ function prettyDate(isoDate: string): string {
 
 /** Editorial JSON extractor — thin shim over the shared aiJson util so
  *  empty / truncated / malformed cases get distinct error types we can
- *  show in the UI. */
-function parseEditorialJson(raw: string): MagazineEditorial {
-  return extractJson<MagazineEditorial>(raw, 'object');
+ *  show in the UI. The raw JSON is intentionally loosely-typed so the
+ *  normaliser can map common synonyms (cover/summary, takeaways/bullets). */
+function parseEditorialJson(raw: string): Record<string, unknown> {
+  return extractJson<Record<string, unknown>>(raw, 'object');
+}
+
+/** Map noisy AI keys to our canonical {cover, inboxNote, takeaways} shape.
+ *  Smaller local models routinely use synonyms or wrap the payload in an
+ *  extra `editorial` key — silently dropping those produces a blank section
+ *  in the UI, which is what the user reported. */
+function normaliseEditorial(parsed: Record<string, unknown>): MagazineEditorial {
+  // Unwrap one level of nesting (e.g. {"editorial": {...}})
+  const candidates = [parsed];
+  for (const k of ['editorial', 'magazine', 'output', 'result', 'response']) {
+    const inner = parsed?.[k];
+    if (inner && typeof inner === 'object' && !Array.isArray(inner)) {
+      candidates.unshift(inner as Record<string, unknown>);
+    }
+  }
+
+  const pickStr = (keys: string[]): string => {
+    for (const obj of candidates) {
+      for (const k of keys) {
+        const v = obj?.[k];
+        if (typeof v === 'string' && v.trim()) return v.trim();
+      }
+    }
+    return '';
+  };
+
+  const pickArr = (keys: string[]): string[] => {
+    for (const obj of candidates) {
+      for (const k of keys) {
+        const v = obj?.[k];
+        if (Array.isArray(v)) {
+          const out = v.map(x => String(x ?? '').trim()).filter(Boolean);
+          if (out.length > 0) return out.slice(0, 5);
+        }
+      }
+    }
+    return [];
+  };
+
+  return {
+    cover:     pickStr(['cover', 'summary', 'intro', 'introduction', 'lede', 'headline', 'tldr']),
+    inboxNote: pickStr(['inboxNote', 'inbox_note', 'inbox', 'note', 'analysis', 'commentary', 'overview']),
+    takeaways: pickArr(['takeaways', 'key_takeaways', 'keyTakeaways', 'bullets', 'highlights', 'points', 'key_points']),
+  };
+}
+
+/** True when the editorial has nothing the UI can render. */
+function isEditorialEmpty(e: MagazineEditorial): boolean {
+  return !e.cover && !e.inboxNote && (e.takeaways?.length ?? 0) === 0;
+}
+
+/**
+ * Best-effort field-by-field extraction from a truncated AI response.
+ *
+ * deepseek-v4-pro and other verbose models can blow past our max_tokens
+ * budget while emitting takeaways, leaving the JSON unterminated. JSON.parse
+ * rejects the whole payload, but cover/inboxNote almost always survive
+ * intact at the start — so we pull them out individually rather than
+ * discarding the whole response and showing a blank issue.
+ */
+function salvageEditorialFromPartial(partial: string): MagazineEditorial {
+  const grabString = (key: string): string => {
+    // Match "key": "...possibly-escaped..." — non-greedy, allows escaped quotes
+    const re = new RegExp(`"${key}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"`);
+    const m = partial.match(re);
+    if (!m) return '';
+    // Unescape \" and \\ minimally
+    return m[1].replace(/\\"/g, '"').replace(/\\\\/g, '\\').replace(/\\n/g, '\n').trim();
+  };
+
+  const grabStringArray = (key: string): string[] => {
+    // Find the array opener, then collect every complete "..." string until
+    // we hit the closing ] OR run out of input (truncation).
+    const opener = new RegExp(`"${key}"\\s*:\\s*\\[`);
+    const m = partial.match(opener);
+    if (!m) return [];
+    const start = m.index! + m[0].length;
+    const strRe = /"((?:[^"\\]|\\.)*)"/g;
+    strRe.lastIndex = start;
+    const out: string[] = [];
+    let next;
+    // Stop scanning at the first ] after `start`, if present
+    const closeIdx = partial.indexOf(']', start);
+    const limit    = closeIdx >= 0 ? closeIdx : partial.length;
+    while ((next = strRe.exec(partial)) !== null && next.index < limit) {
+      const cleaned = next[1].replace(/\\"/g, '"').replace(/\\\\/g, '\\').replace(/\\n/g, '\n').trim();
+      if (cleaned) out.push(cleaned);
+    }
+    return out.slice(0, 5);
+  };
+
+  return {
+    cover:     grabString('cover')     || grabString('summary')   || grabString('intro') || grabString('tldr'),
+    inboxNote: grabString('inboxNote') || grabString('inbox_note') || grabString('inbox') || grabString('overview'),
+    takeaways: grabStringArray('takeaways').length > 0
+                 ? grabStringArray('takeaways')
+                 : (grabStringArray('key_takeaways').length > 0
+                      ? grabStringArray('key_takeaways')
+                      : grabStringArray('bullets')),
+  };
 }
 
 // Helper exported for view code that needs to format provider label

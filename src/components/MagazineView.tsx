@@ -350,10 +350,21 @@ function IssueReader({
 // =========================================================================
 
 const HNList = memo(function HNList({ items }: { items: MagazineHNItem[] }) {
+  // Each row needs TWO links (article + HN discussion), and nesting <a>
+  // inside <a> is invalid HTML. Use a clickable <div role="link"> as the
+  // outer wrapper so the inner HN-discussion <a> stays a real link.
+  const openArticle = (url: string) => window.open(url, '_blank', 'noopener,noreferrer');
   return (
     <div className="space-y-1.5">
       {items.map(h => (
-        <a key={h.id} href={h.url} target="_blank" rel="noreferrer" className="group flex items-start gap-3 px-3 py-2 rounded-lg hover:bg-orange-50 transition-colors">
+        <div
+          key={h.id}
+          role="link"
+          tabIndex={0}
+          onClick={() => openArticle(h.url)}
+          onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openArticle(h.url); } }}
+          className="group flex items-start gap-3 px-3 py-2 rounded-lg hover:bg-orange-50 transition-colors cursor-pointer focus:outline-none focus:ring-2 focus:ring-orange-300"
+        >
           <div className="shrink-0 w-10 h-10 rounded-md bg-orange-100 text-orange-700 text-xs font-bold flex flex-col items-center justify-center">
             <span>{h.points}</span>
             <span className="text-[8px] uppercase tracking-wider text-orange-500/70">pts</span>
@@ -365,7 +376,7 @@ const HNList = memo(function HNList({ items }: { items: MagazineHNItem[] }) {
               <a href={h.discussion} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} className="text-orange-600 hover:underline">HN discussion</a>
             </p>
           </div>
-        </a>
+        </div>
       ))}
     </div>
   );
