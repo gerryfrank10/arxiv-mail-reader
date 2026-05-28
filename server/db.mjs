@@ -599,14 +599,14 @@ db.nextMagazineEdition = async function (userId) {
 db.insertMagazineIssue = async function (userId, issue) {
   // Upsert: re-saving an existing issue (e.g. attaching/regenerating an
   // editorial via PUT /api/db/magazine/:id) must update in place rather
-  // than collide on the primary key. The WHERE guard keeps a user from
-  // overwriting another user's row should ids ever clash across users.
+  // than collide on the primary key. The conflict target matches the
+  // table's composite primary key (user_id, id) exactly.
   await pool.query(
     `INSERT INTO magazine_issues
        (id, user_id, week_start, week_end, edition_number, title, subtitle,
         content, sources, ai_provider)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10)
-     ON CONFLICT (id) DO UPDATE SET
+     ON CONFLICT (user_id, id) DO UPDATE SET
        week_start     = EXCLUDED.week_start,
        week_end       = EXCLUDED.week_end,
        edition_number = EXCLUDED.edition_number,
@@ -614,8 +614,7 @@ db.insertMagazineIssue = async function (userId, issue) {
        subtitle       = EXCLUDED.subtitle,
        content        = EXCLUDED.content,
        sources        = EXCLUDED.sources,
-       ai_provider    = EXCLUDED.ai_provider
-     WHERE magazine_issues.user_id = EXCLUDED.user_id`,
+       ai_provider    = EXCLUDED.ai_provider`,
     [
       issue.id, userId, issue.weekStart, issue.weekEnd, issue.editionNumber,
       issue.title, issue.subtitle ?? '', JSON.stringify(issue.content),
