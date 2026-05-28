@@ -39,6 +39,8 @@ export type AIPurpose =
   | 'paper-summary'
   | 'ai-suggest'
   | 'writer-cite-suggest'
+  | 'writer-compose'
+  | 'writer-topics'
   | 'connection-test'
   | 'chat';
 

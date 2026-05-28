@@ -17,7 +17,7 @@ interface WriterValue {
   dbEnabled: boolean;
   refresh: () => Promise<void>;
   setActiveId: (id: string | null) => void;
-  newDocument: () => Promise<ResearchDocument>;
+  newDocument: (init?: { title?: string; content?: string }) => Promise<ResearchDocument>;
   updateActive: (patch: Partial<ResearchDocument>) => void;
   removeDocument: (id: string) => Promise<void>;
 }
@@ -96,16 +96,18 @@ export function WriterProvider({ children }: { children: React.ReactNode }) {
     setActiveIdState(id);
   }, [flushSave]);
 
-  const newDocument = useCallback(async () => {
+  const newDocument = useCallback(async (init?: { title?: string; content?: string }) => {
     const now = Date.now();
+    const content = init?.content ?? '';
     const doc: ResearchDocument = {
       id:         newDocumentId(),
-      title:      'Untitled',
-      content:    '',
+      title:      init?.title ?? 'Untitled',
+      content,
       paperRefs:  [],
       bookRefs:   [],
       tags:       [],
       status:     'draft',
+      wordCount:  content.trim() === '' ? 0 : content.trim().split(/\s+/).length,
       createdAt:  now,
       updatedAt:  now,
     };

@@ -74,6 +74,8 @@ const DEFAULT_ROUTING: Record<AIPurpose, AIProfileSlot> = {
   'paper-summary':       'premium',
   'ai-suggest':          'premium',
   'writer-cite-suggest': 'premium',
+  'writer-compose':      'premium',
+  'writer-topics':       'premium',
   'connection-test':     'default',
   'chat':                'default',
 };
