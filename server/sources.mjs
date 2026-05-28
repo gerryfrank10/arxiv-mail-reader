@@ -180,6 +180,124 @@ export const fetchModelScopeTrending = memoize('ms:trending', async () => {
 });
 
 // =========================================================================
+// AI news — aggregated from RSS feeds (no API key required)
+// =========================================================================
+
+// Minimal HTML-entity decoder for feed titles (&amp; &#39; &quot; …).
+function decodeEntities(s) {
+  if (!s) return '';
+  return s
+    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
+    .replace(/&amp;/g,  '&')
+    .replace(/&lt;/g,   '<')
+    .replace(/&gt;/g,   '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&#0?39;/g, "'")
+    .replace(/&apos;/g, "'")
+    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(parseInt(n, 10)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCodePoint(parseInt(n, 16)))
+    .replace(/<[^>]+>/g, '')   // strip any leftover tags (descriptions)
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const tag = (block, name) => {
+  const m = block.match(new RegExp(`<${name}[^>]*>([\\s\\S]*?)</${name}>`, 'i'));
+  return m ? m[1].trim() : '';
+};
+
+// Parse an RSS 2.0 / Atom feed into normalised items. Handles <item> (RSS)
+// and <entry> (Atom). Returns { title, url, source, summary, ts }.
+function parseFeed(xml, fallbackSource) {
+  const items = [];
+  const blocks = xml.match(/<(item|entry)\b[\s\S]*?<\/\1>/gi) ?? [];
+  for (const block of blocks) {
+    let title = decodeEntities(tag(block, 'title'));
+    if (!title) continue;
+
+    // Link: RSS uses <link>url</link>; Atom uses <link href="url"/>
+    let url = decodeEntities(tag(block, 'link'));
+    if (!url) {
+      const hrefM = block.match(/<link[^>]*href="([^"]+)"[^>]*\/?>/i);
+      if (hrefM) url = hrefM[1];
+    }
+
+    const dateStr = tag(block, 'pubDate') || tag(block, 'published') || tag(block, 'updated');
+    const ts = dateStr ? new Date(dateStr).getTime() || 0 : 0;
+
+    // Google News tags each item with its origin <source url="…">Name</source>
+    const sourceM = block.match(/<source[^>]*>([\s\S]*?)<\/source>/i);
+    const source = sourceM ? decodeEntities(sourceM[1]) : fallbackSource;
+
+    // Google News appends " - <Outlet>" to every title — strip it since we
+    // surface the outlet separately as `source`.
+    if (source) title = title.replace(new RegExp(`\\s*[-–|]\\s*${escapeRegExp(source)}\\s*$`), '').trim();
+
+    // Google News descriptions are just the linked title repeated, which is
+    // noise. Drop a summary that merely echoes the title.
+    let summary = decodeEntities(tag(block, 'description') || tag(block, 'summary')).slice(0, 200);
+    const norm = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    if (summary && norm(summary).startsWith(norm(title))) summary = '';
+
+    items.push({ title, url, source, summary, ts });
+  }
+  return items;
+}
+
+const NEWS_FEEDS = [
+  // Google News aggregates AI coverage across many reputable outlets and is
+  // very reliable; the when:7d operator keeps it to the past week.
+  {
+    name: 'Google News',
+    url:  'https://news.google.com/rss/search?q=' +
+          encodeURIComponent('(artificial intelligence OR LLM OR "machine learning" OR OpenAI OR Anthropic) when:7d') +
+          '&hl=en-US&gl=US&ceid=US:en',
+  },
+  // VentureBeat's AI section as a secondary, direct feed.
+  { name: 'VentureBeat', url: 'https://venturebeat.com/category/ai/feed/' },
+];
+
+export const fetchAINews = memoize('news:ai', async () => {
+  const perFeed = await Promise.all(NEWS_FEEDS.map(async (f) => {
+    try {
+      const r = await fetch(f.url, {
+        headers: { 'User-Agent': 'arxiv-mail-reader/1.0', Accept: 'application/rss+xml, application/xml, text/xml' },
+        signal:  AbortSignal.timeout(12_000),
+      });
+      if (!r.ok) return [];
+      return parseFeed(await r.text(), f.name);
+    } catch { return []; }
+  }));
+
+  // Merge, drop items older than ~8 days, dedupe by normalised title, sort by recency.
+  const cutoff = Date.now() - 8 * 24 * 60 * 60 * 1000;
+  const seen = new Set();
+  const merged = [];
+  for (const item of perFeed.flat()) {
+    if (item.ts && item.ts < cutoff) continue;
+    const key = item.title.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().slice(0, 80);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    merged.push(item);
+  }
+  merged.sort((a, b) => b.ts - a.ts);
+
+  if (merged.length === 0) throw new Error('No news items returned from any feed');
+
+  return merged.slice(0, 12).map((it, i) => ({
+    id:      `news-${i}-${it.ts || Date.now()}`,
+    title:   it.title,
+    url:     it.url,
+    source:  it.source,
+    summary: it.summary,
+    ts:      it.ts,
+  }));
+});
+
+// =========================================================================
 // Unified fetcher with per-source toggle
 // =========================================================================
 
@@ -187,6 +305,7 @@ export async function fetchSources(enabledSources) {
   // Run all selected sources in parallel, tolerating individual failures.
   const tasks = [];
   if (enabledSources.includes('hackernews'))   tasks.push(['hackernews',   fetchHackerNewsTop().catch(e => ({ __error: e.message }))]);
+  if (enabledSources.includes('news'))         tasks.push(['news',         fetchAINews().catch(e => ({ __error: e.message }))]);
   if (enabledSources.includes('huggingface'))  tasks.push(['huggingface',  fetchHuggingFaceTrending().catch(e => ({ __error: e.message }))]);
   if (enabledSources.includes('github'))       tasks.push(['github',       fetchGitHubTrending().catch(e => ({ __error: e.message }))]);
   if (enabledSources.includes('modelscope'))   tasks.push(['modelscope',   fetchModelScopeTrending().catch(e => ({ __error: e.message }))]);

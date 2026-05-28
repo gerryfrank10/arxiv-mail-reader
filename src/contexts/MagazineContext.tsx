@@ -34,7 +34,7 @@ interface MagazineValue {
 
 const MagazineContext = createContext<MagazineValue | null>(null);
 
-const DEFAULT_SOURCES: MagazineSource[] = ['hackernews', 'huggingface', 'github', 'modelscope'];
+const DEFAULT_SOURCES: MagazineSource[] = ['hackernews', 'news', 'huggingface', 'github', 'modelscope'];
 
 export function MagazineProvider({ children }: { children: React.ReactNode }) {
   const { settings } = usePapers();
@@ -99,6 +99,7 @@ export function MagazineProvider({ children }: { children: React.ReactNode }) {
         gist:  (p.abstract ?? '').slice(0, 160),
       })),
       hackernews:  (external.hackernews  ?? []).slice(0, 6).map(h => ({ title: h.title, points: h.points })),
+      news:        (external.news         ?? []).slice(0, 6).map(n => ({ title: n.title, source: n.source })),
       huggingface: (external.huggingface ?? []).slice(0, 6).map(m => ({ name: m.name, dl: m.downloads, likes: m.likes })),
       github:      (external.github      ?? []).slice(0, 6).map(r => ({ name: r.name, stars: r.stars, desc: (r.description ?? '').slice(0, 80) })),
       modelscope:  (external.modelscope  ?? []).slice(0, 4).map(m => ({ name: m.name })),

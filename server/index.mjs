@@ -1007,6 +1007,10 @@ app.get('/api/sources/hackernews',  async (_req, res) => {
   try { res.json({ items: await (await import('./sources.mjs')).fetchHackerNewsTop() }); }
   catch (e) { res.status(502).json({ error: e.message }); }
 });
+app.get('/api/sources/news',        async (_req, res) => {
+  try { res.json({ items: await (await import('./sources.mjs')).fetchAINews() }); }
+  catch (e) { res.status(502).json({ error: e.message }); }
+});
 app.get('/api/sources/huggingface', async (_req, res) => {
   try { res.json({ items: await (await import('./sources.mjs')).fetchHuggingFaceTrending() }); }
   catch (e) { res.status(502).json({ error: e.message }); }

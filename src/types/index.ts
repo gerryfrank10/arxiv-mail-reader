@@ -210,16 +210,18 @@ export interface Link {
 
 // ---------- Magazine ----------
 
-export type MagazineSource = 'hackernews' | 'huggingface' | 'github' | 'modelscope';
+export type MagazineSource = 'hackernews' | 'news' | 'huggingface' | 'github' | 'modelscope';
 
 // Source items — minimal shapes the renderer needs
 export interface MagazineHNItem      { id: string; title: string; url: string; discussion: string; points: number; comments: number; by: string; ts: number; }
+export interface MagazineNewsItem    { id: string; title: string; url: string; source: string; summary?: string; ts: number; }
 export interface MagazineHFItem      { id: string; name: string; author: string; downloads: number; likes: number; tags: string[]; pipeline: string | null; library: string | null; url: string; ts: number; }
 export interface MagazineGitHubItem  { id: string; name: string; description: string; url: string; stars: number; forks: number; language: string; topics: string[]; ts: number; owner: string; ownerAvatar: string | null; }
 export interface MagazineMSItem      { id: string; name: string; chineseName: string; author: string; downloads: number; stars: number; tags: string[]; url: string; ts: number; }
 
 export interface MagazineExternal {
   hackernews?:  MagazineHNItem[];
+  news?:        MagazineNewsItem[];
   huggingface?: MagazineHFItem[];
   github?:      MagazineGitHubItem[];
   modelscope?:  MagazineMSItem[];

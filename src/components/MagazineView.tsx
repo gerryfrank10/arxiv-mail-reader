@@ -6,12 +6,13 @@ import { usePapers } from '../contexts/PapersContext';
 import { hasAI, providerLabel, resolveAIConfig } from '../utils/aiProvider';
 import { computeAssessment, ASSESSMENT_BADGE } from '../utils/assessment';
 import { CATEGORY_COLORS_LIGHT } from '../utils/categories';
-import { MagazineGitHubItem, MagazineHFItem, MagazineHNItem, MagazineMSItem, MagazineSource, Paper } from '../types';
+import { MagazineGitHubItem, MagazineHFItem, MagazineHNItem, MagazineMSItem, MagazineNewsItem, MagazineSource, Paper } from '../types';
 import { format, formatDistanceToNow } from 'date-fns';
 import { apiGetMagazineAutoPrefs, apiSetMagazineAutoPrefs, MagazineAutoPrefs } from '../utils/researchApi';
 
 const SOURCE_LABEL: Record<MagazineSource, string> = {
   hackernews:  'Hacker News',
+  news:        'AI News',
   huggingface: 'HuggingFace',
   github:      'GitHub',
   modelscope:  'ModelScope',
@@ -300,6 +301,13 @@ function IssueReader({
           </Section>
         )}
 
+        {/* News */}
+        {c.external?.news && c.external.news.length > 0 && (
+          <Section title="In the headlines" subtitle="AI & ML news from around the web" icon={<Newspaper size={14} className="text-sky-500" />}>
+            <NewsList items={c.external.news} />
+          </Section>
+        )}
+
         {/* HuggingFace */}
         {c.external?.huggingface && c.external.huggingface.length > 0 && (
           <Section title="Trending models" subtitle="from HuggingFace" icon={<Cpu size={14} className="text-violet-500" />}>
@@ -382,6 +390,32 @@ const HNList = memo(function HNList({ items }: { items: MagazineHNItem[] }) {
   );
 });
 
+const NewsList = memo(function NewsList({ items }: { items: MagazineNewsItem[] }) {
+  return (
+    <div className="space-y-1.5">
+      {items.map(n => (
+        <a
+          key={n.id}
+          href={n.url}
+          target="_blank"
+          rel="noreferrer"
+          className="group flex items-start gap-3 px-3 py-2 rounded-lg hover:bg-sky-50 transition-colors"
+        >
+          <div className="shrink-0 w-9 h-9 rounded-md bg-sky-100 text-sky-600 flex items-center justify-center mt-0.5">
+            <Newspaper size={15} />
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-medium text-slate-800 group-hover:text-sky-700 transition-colors line-clamp-2">{n.title}</p>
+            {n.summary && <p className="text-[11px] text-slate-500 mt-0.5 line-clamp-2">{n.summary}</p>}
+            <p className="text-[11px] text-slate-400 mt-0.5">{n.source}{n.ts ? ` · ${formatDistanceToNow(new Date(n.ts), { addSuffix: true })}` : ''}</p>
+          </div>
+          <ExternalLink size={11} className="text-slate-300 group-hover:text-sky-500 shrink-0 mt-1" />
+        </a>
+      ))}
+    </div>
+  );
+});
+
 const HFList = memo(function HFList({ items }: { items: MagazineHFItem[] }) {
   return (
     <div className="grid sm:grid-cols-2 gap-2">
@@ -446,7 +480,7 @@ const MSList = memo(function MSList({ items }: { items: MagazineMSItem[] }) {
 function GeneratePicker({ onClose, onGenerate }: { onClose: () => void; onGenerate: (opts: { sources?: MagazineSource[]; useAi?: boolean }) => Promise<void>; }) {
   const { settings } = usePapers();
   const aiOn = hasAI(settings);
-  const [selected, setSelected] = useState<Set<MagazineSource>>(new Set(['hackernews', 'huggingface', 'github']));
+  const [selected, setSelected] = useState<Set<MagazineSource>>(new Set(['hackernews', 'news', 'huggingface', 'github']));
   const [useAi, setUseAi] = useState(aiOn);
 
   function toggle(s: MagazineSource) {
@@ -465,7 +499,7 @@ function GeneratePicker({ onClose, onGenerate }: { onClose: () => void; onGenera
         <p className="text-sm text-slate-500 mb-5">Pick the sources you want included.</p>
 
         <div className="space-y-2">
-          {(['hackernews', 'huggingface', 'github', 'modelscope'] as MagazineSource[]).map(s => (
+          {(['hackernews', 'news', 'huggingface', 'github', 'modelscope'] as MagazineSource[]).map(s => (
             <label key={s} className="flex items-center gap-3 px-3 py-2.5 rounded-lg border border-slate-200 hover:bg-slate-50 cursor-pointer transition-colors">
               <input type="checkbox" checked={selected.has(s)} onChange={() => toggle(s)} className="w-4 h-4 accent-rose-500" />
               <span className="text-sm font-medium text-slate-700">{SOURCE_LABEL[s]}</span>
