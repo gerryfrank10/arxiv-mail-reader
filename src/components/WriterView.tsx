@@ -1,5 +1,5 @@
 import { useState, useMemo, useRef, useEffect, type ReactNode } from 'react';
-import { Pen, Plus, Quote, BookOpen, Eye, EyeOff, AlertCircle, Loader2, Download, Sparkles, Wand2, Target, Lightbulb, Timer, Check, X, Bold, Italic, Code } from 'lucide-react';
+import { Pen, Plus, Quote, BookOpen, Eye, EyeOff, AlertCircle, Loader2, Download, Sparkles, Wand2, Target, Lightbulb, Timer, Check, X, Bold, Italic, Code, FileText } from 'lucide-react';
 import { useWriter } from '../contexts/WriterContext';
 import { useLibrary } from '../contexts/LibraryContext';
 import { useBooks } from '../contexts/BooksContext';
@@ -121,12 +121,22 @@ function DocumentEditor({ doc }: { doc: ResearchDocument }) {
   const [composing, setComposing]       = useState<string | null>(null);
   const [composeError, setComposeError] = useState<string | null>(null);
   const [popover, setPopover]           = useState<{ x: number; y: number } | null>(null);
+  const [exportOpen, setExportOpen]     = useState(false);
+  // Custom-query state for the selection popover
+  const [customOpen, setCustomOpen]   = useState(false);
+  const [customQuery, setCustomQuery] = useState('');
+  const customSel = useRef<{ start: number; end: number; text: string } | null>(null);
+  // Undo / redo history. The textarea is controlled, so native undo is broken —
+  // we keep our own coalesced snapshot stacks instead.
+  const undoStack = useRef<string[]>([]);
+  const redoStack = useRef<string[]>([]);
+  const lastEditAt = useRef(0);
 
   // Close the selection popover on Escape or an outside click.
   useEffect(() => {
     if (!popover) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setPopover(null); };
-    const onDown = (e: MouseEvent) => { if (popoverRef.current && !popoverRef.current.contains(e.target as Node)) setPopover(null); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { setPopover(null); setCustomOpen(false); setCustomQuery(''); } };
+    const onDown = (e: MouseEvent) => { if (popoverRef.current && !popoverRef.current.contains(e.target as Node)) { setPopover(null); setCustomOpen(false); setCustomQuery(''); } };
     window.addEventListener('keydown', onKey);
     document.addEventListener('mousedown', onDown);
     return () => { window.removeEventListener('keydown', onKey); document.removeEventListener('mousedown', onDown); };
@@ -142,11 +152,45 @@ function DocumentEditor({ doc }: { doc: ResearchDocument }) {
     return { start: ta.selectionStart, end: ta.selectionEnd, text: doc.content.slice(ta.selectionStart, ta.selectionEnd) };
   }
 
+  // Commit a new content value, recording an undo snapshot. Rapid keystrokes are
+  // coalesced into one snapshot (we only snapshot when >500ms elapsed since the
+  // last edit) so a single Cmd+Z reverts a whole typing burst rather than a char.
+  function commitContent(next: string) {
+    const prev = doc.content;
+    if (next === prev) return;
+    const now = Date.now();
+    if (now - lastEditAt.current > 500 || undoStack.current.length === 0) {
+      undoStack.current.push(prev);
+      if (undoStack.current.length > 300) undoStack.current.shift();
+    }
+    lastEditAt.current = now;
+    redoStack.current = [];
+    updateActive({ content: next });
+  }
+
+  function undo() {
+    if (!undoStack.current.length) return;
+    const prev = undoStack.current.pop()!;
+    redoStack.current.push(doc.content);
+    lastEditAt.current = 0;               // force the next edit to snapshot
+    updateActive({ content: prev });
+    requestAnimationFrame(() => { const ta = taRef.current; if (ta) { ta.focus(); const c = Math.min(prev.length, ta.selectionStart); ta.setSelectionRange(c, c); } });
+  }
+
+  function redo() {
+    if (!redoStack.current.length) return;
+    const next = redoStack.current.pop()!;
+    undoStack.current.push(doc.content);
+    lastEditAt.current = 0;
+    updateActive({ content: next });
+    requestAnimationFrame(() => { const ta = taRef.current; if (ta) { ta.focus(); const c = Math.min(next.length, ta.selectionStart); ta.setSelectionRange(c, c); } });
+  }
+
   // Splice `text` into the content, replacing [start,end). Restores the caret
   // just after the inserted text on the next tick.
   function spliceContent(start: number, end: number, text: string) {
     const next = doc.content.slice(0, start) + text + doc.content.slice(end);
-    updateActive({ content: next });
+    commitContent(next);
     const caret = start + text.length;
     requestAnimationFrame(() => {
       const ta = taRef.current;
@@ -154,25 +198,42 @@ function DocumentEditor({ doc }: { doc: ResearchDocument }) {
     });
   }
 
+  function closePopover() { setPopover(null); setCustomOpen(false); setCustomQuery(''); }
+
   // Wrap the current selection in markdown markers (bold/italic/code).
   function wrapSelection(before: string, after: string = before) {
     const sel = getSelection();
     if (!sel.text) return;
     spliceContent(sel.start, sel.end, `${before}${sel.text}${after}`);
-    setPopover(null);
+    closePopover();
   }
 
   // Run a compose action from the popover, then dismiss it.
   function popoverCompose(action: string) {
-    setPopover(null);
+    closePopover();
     compose(action, { needsSelection: true });
+  }
+
+  // Capture the current selection and reveal the custom-query input.
+  function openCustom() {
+    customSel.current = getSelection();
+    setCustomOpen(true);
+  }
+
+  // Run the author's own instruction against the captured selection.
+  function runCustom() {
+    const q = customQuery.trim();
+    const sel = customSel.current;
+    if (!q || !sel || !sel.text.trim()) { closePopover(); return; }
+    closePopover();
+    compose('custom', { needsSelection: true, instruction: q, range: sel });
   }
 
   // Run an AI compose action. `scope` decides what context we send and where
   // the result lands. Returns prose (not JSON), so no parsing needed.
-  async function compose(action: string, opts: { needsSelection?: boolean } = {}) {
+  async function compose(action: string, opts: { needsSelection?: boolean; instruction?: string; range?: { start: number; end: number; text: string } } = {}) {
     if (!aiOn || composing) return;
-    const sel = getSelection();
+    const sel = opts.range ?? getSelection();
     if (opts.needsSelection && !sel.text.trim()) {
       setComposeError('Select some text first.');
       return;
@@ -183,7 +244,15 @@ function DocumentEditor({ doc }: { doc: ResearchDocument }) {
     const before = doc.content.slice(0, sel.start);
     const ctxBefore = before.length > 2000 ? before.slice(-2000) : before;
 
+    // Compact view of the cited library so the model can ground claims and cite
+    // inline (used by the custom-query action to avoid plagiarism).
+    const refsContext = [
+      ...citedPapers.map(p => `[@${p.arxivId}] ${p.title} — ${p.authorList.slice(0, 3).join(', ')} (${new Date(p.digestDate).getFullYear()}). ${(p.abstract || '').slice(0, 280)}`),
+      ...citedBooks.map(b => `[@${b.id}] ${b.title} — ${b.authors.slice(0, 3).join(', ')}${b.year ? ` (${b.year})` : ''}.`),
+    ].join('\n') || '(no references cited yet — add some from the rail to let the model ground & cite)';
+
     const prompts: Record<string, string> = {
+      custom: `You are a research-writing assistant. The author selected the passage below and asked:\n"${opts.instruction || ''}"\n\nApply that request to the selection. Ground every factual claim in the REFERENCES provided and cite them inline using their bracketed marker like [@id]. Do NOT copy any source text verbatim — paraphrase in your own words and attribute. Never fabricate a citation or a marker that isn't in the list; if a point isn't supported, phrase it cautiously without a citation. Output ONLY the resulting Markdown prose.\n\nSELECTION:\n"""\n${sel.text}\n"""\n\nREFERENCES (cite with the bracketed marker, do not plagiarise):\n${refsContext}`,
       continue: `You are a research-writing assistant continuing the author's draft. Write the next 1–2 paragraphs that naturally follow. Match the existing tone and Markdown style. Do not repeat what's already written, do not add a heading, output ONLY the new prose.\n\nDRAFT SO FAR (most recent part):\n"""\n${ctxBefore || '(empty)'}\n"""`,
       expand:   `Turn the following notes/bullets into flowing, precise academic prose. Keep all technical content; do not invent citations or numbers. Output ONLY the rewritten prose.\n\nNOTES:\n"""\n${sel.text}\n"""`,
       tighten:  `Tighten the following passage: remove redundancy and hedging, keep every claim and number, prefer active voice. Output ONLY the revised passage, same language.\n\nPASSAGE:\n"""\n${sel.text}\n"""`,
@@ -200,7 +269,7 @@ function DocumentEditor({ doc }: { doc: ResearchDocument }) {
       )).trim();
       if (!text) throw new Error('Empty response — try again.');
 
-      if (action === 'expand' || action === 'tighten' || action === 'academic') {
+      if (action === 'expand' || action === 'tighten' || action === 'academic' || action === 'custom') {
         spliceContent(sel.start, sel.end, text);          // replace selection
       } else if (action === 'abstract') {
         spliceContent(0, 0, `${text}\n\n`);               // prepend
@@ -319,12 +388,57 @@ Return up to 5 suggestions, ranked by relevance. Penalise generic matches; rewar
       ...citedBooks .map(b => `- ${b.authors.join(', ')} (${b.year ?? 'n.d.'}). *${b.title}*.${b.publisher ? ` ${b.publisher}.` : ''}${b.isbn ? ` ISBN ${b.isbn}.` : ''}`),
     ].join('\n');
     const md = `# ${doc.title || 'Untitled'}\n\n${doc.content || ''}\n\n${refs ? `\n## References\n\n${refs}\n` : ''}`;
-    const blob = new Blob([md], { type: 'text/markdown' });
+    download(new Blob([md], { type: 'text/markdown' }), 'md');
+  }
+
+  function slug() { return (doc.title || 'untitled').replace(/[^\w-]+/g, '-').toLowerCase() || 'untitled'; }
+
+  function download(blob: Blob, ext: string) {
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = `${(doc.title || 'untitled').replace(/[^\w-]+/g, '-').toLowerCase()}.md`;
+    a.download = `${slug()}.${ext}`;
     document.body.appendChild(a); a.click();
     setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(a.href); }, 1000);
+  }
+
+  // Build a full, self-contained HTML document for Word / PDF / print export.
+  function buildExportHtml(): string {
+    const refsHtml = (citedPapers.length || citedBooks.length)
+      ? `<h2>References</h2><ol>${[
+          ...citedPapers.map(p => `<li>${esc(p.authors)} (${new Date(p.digestDate).getFullYear()}). <em>${esc(p.title)}</em>. arXiv:${esc(p.arxivId)}.</li>`),
+          ...citedBooks.map(b => `<li>${esc(b.authors.join(', '))} (${b.year ?? 'n.d.'}). <em>${esc(b.title)}</em>.${b.publisher ? ` ${esc(b.publisher)}.` : ''}${b.isbn ? ` ISBN ${esc(b.isbn)}.` : ''}</li>`),
+        ].join('')}</ol>`
+      : '';
+    return `<!doctype html><html><head><meta charset="utf-8"><title>${esc(doc.title || 'Untitled')}</title>
+<style>
+  body { font-family: 'Times New Roman', Georgia, serif; font-size: 12pt; line-height: 1.5; color: #111; max-width: 7.5in; margin: 1in auto; padding: 0 0.5in; }
+  h1 { font-size: 20pt; } h2 { font-size: 15pt; margin-top: 1.2em; } h3 { font-size: 13pt; }
+  code { font-family: 'Courier New', monospace; background: #f2f2f2; padding: 0 3px; }
+  ul, ol { margin: 0.4em 0 0.8em 1.4em; } li { margin: 0.2em 0; }
+  p { margin: 0.6em 0; }
+</style></head><body>
+<h1>${esc(doc.title || 'Untitled')}</h1>
+${mdToHtml(doc.content || '')}
+${refsHtml}
+</body></html>`;
+  }
+
+  function exportWord() {
+    // Word opens HTML saved with a .doc extension and the msword MIME type.
+    download(new Blob(['﻿' + buildExportHtml()], { type: 'application/msword' }), 'doc');
+    setExportOpen(false);
+  }
+
+  function exportPdf() {
+    // Open the styled HTML in a new window and trigger the browser's print
+    // dialog — the user picks "Save as PDF". No extra dependencies needed.
+    const w = window.open('', '_blank');
+    if (!w) { setComposeError('Allow pop-ups to export PDF.'); return; }
+    w.document.write(buildExportHtml());
+    w.document.close();
+    w.focus();
+    setTimeout(() => { try { w.print(); } catch { /* user can print manually */ } }, 400);
+    setExportOpen(false);
   }
 
   return (
@@ -368,13 +482,25 @@ Return up to 5 suggestions, ranked by relevance. Penalise generic matches; rewar
           >
             <Quote size={14} />
           </button>
-          <button
-            onClick={exportMarkdown}
-            title="Export markdown"
-            className="p-1.5 rounded-md text-slate-500 hover:text-slate-800 hover:bg-slate-100 transition-colors"
-          >
-            <Download size={14} />
-          </button>
+          <div className="relative">
+            <button
+              onClick={() => setExportOpen(o => !o)}
+              title="Export"
+              className={`p-1.5 rounded-md transition-colors ${exportOpen ? 'bg-slate-100 text-slate-800' : 'text-slate-500 hover:text-slate-800 hover:bg-slate-100'}`}
+            >
+              <Download size={14} />
+            </button>
+            {exportOpen && (
+              <>
+                <div className="fixed inset-0 z-20" onClick={() => setExportOpen(false)} />
+                <div className="absolute right-0 mt-1 z-30 w-44 bg-white rounded-lg shadow-lg border border-slate-200 py-1 text-sm">
+                  <button onClick={() => { exportWord(); }}      className="w-full text-left px-3 py-1.5 hover:bg-slate-50 text-slate-700 flex items-center gap-2"><FileText size={13} className="text-blue-600" /> Word (.doc)</button>
+                  <button onClick={() => { exportPdf(); }}       className="w-full text-left px-3 py-1.5 hover:bg-slate-50 text-slate-700 flex items-center gap-2"><FileText size={13} className="text-red-600" /> PDF (print)</button>
+                  <button onClick={() => { exportMarkdown(); setExportOpen(false); }} className="w-full text-left px-3 py-1.5 hover:bg-slate-50 text-slate-700 flex items-center gap-2"><FileText size={13} className="text-slate-400" /> Markdown (.md)</button>
+                </div>
+              </>
+            )}
+          </div>
           <button
             onClick={async () => {
               const ok = await confirm({
@@ -440,7 +566,12 @@ Return up to 5 suggestions, ranked by relevance. Penalise generic matches; rewar
               <textarea
                 ref={taRef}
                 value={doc.content}
-                onChange={e => { updateActive({ content: e.target.value }); setPopover(null); }}
+                onChange={e => { commitContent(e.target.value); if (popover) closePopover(); }}
+                onKeyDown={e => {
+                  const mod = e.metaKey || e.ctrlKey;
+                  if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); if (e.shiftKey) redo(); else undo(); }
+                  else if (mod && e.key.toLowerCase() === 'y') { e.preventDefault(); redo(); }
+                }}
                 onSelect={e => { const t = e.currentTarget; setHasSelection(t.selectionStart !== t.selectionEnd); }}
                 onMouseUp={e => {
                   const { clientX, clientY } = e;
@@ -542,24 +673,50 @@ Return up to 5 suggestions, ranked by relevance. Penalise generic matches; rewar
       {popover && !preview && (
         <div
           ref={popoverRef}
-          onMouseDown={e => e.preventDefault()}  // keep the textarea selection alive
-          className="fixed z-50 flex items-center gap-0.5 px-1 py-1 rounded-lg bg-slate-900 text-white shadow-xl ring-1 ring-black/10"
+          className="fixed z-50 rounded-lg bg-slate-900 text-white shadow-xl ring-1 ring-black/10"
           style={{
-            left: Math.max(8, Math.min(popover.x, window.innerWidth - 280)),
+            left: Math.max(8, Math.min(popover.x, window.innerWidth - 320)),
             top:  Math.max(8, popover.y - 48),
           }}
         >
-          {aiOn && (
-            <>
-              <PopBtn label="Expand"   onClick={() => popoverCompose('expand')}   busy={composing === 'expand'}   icon={<Wand2 size={12} />} />
-              <PopBtn label="Tighten"  onClick={() => popoverCompose('tighten')}  busy={composing === 'tighten'} />
-              <PopBtn label="Academic" onClick={() => popoverCompose('academic')} busy={composing === 'academic'} />
-              <span className="w-px h-4 bg-white/20 mx-0.5" />
-            </>
+          <div className="flex items-center gap-0.5 px-1 py-1">
+            {aiOn && (
+              <>
+                <PopBtn label="Ask AI"   onClick={openCustom}                      icon={<Sparkles size={12} />} active={customOpen} />
+                <PopBtn label="Expand"   onClick={() => popoverCompose('expand')}   busy={composing === 'expand'}   icon={<Wand2 size={12} />} />
+                <PopBtn label="Tighten"  onClick={() => popoverCompose('tighten')}  busy={composing === 'tighten'} />
+                <PopBtn label="Academic" onClick={() => popoverCompose('academic')} busy={composing === 'academic'} />
+                <span className="w-px h-4 bg-white/20 mx-0.5" />
+              </>
+            )}
+            <PopBtn label="" title="Bold"   onClick={() => wrapSelection('**')} icon={<Bold size={13} />} />
+            <PopBtn label="" title="Italic" onClick={() => wrapSelection('*')}  icon={<Italic size={13} />} />
+            <PopBtn label="" title="Code"   onClick={() => wrapSelection('`')}  icon={<Code size={13} />} />
+          </div>
+          {aiOn && customOpen && (
+            <div className="border-t border-white/10 px-1.5 py-1.5">
+              <div className="flex items-center gap-1.5">
+                <input
+                  autoFocus
+                  type="text"
+                  value={customQuery}
+                  onChange={e => setCustomQuery(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); runCustom(); } }}
+                  placeholder="e.g. rewrite with supporting citations…"
+                  className="w-64 bg-slate-800 text-white text-xs rounded-md px-2 py-1.5 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-violet-400"
+                />
+                <button
+                  onClick={runCustom}
+                  disabled={!customQuery.trim() || composing === 'custom'}
+                  className="px-2 py-1.5 rounded-md text-[11px] font-semibold bg-violet-600 hover:bg-violet-500 disabled:opacity-40 flex items-center gap-1"
+                >
+                  {composing === 'custom' ? <Loader2 size={11} className="animate-spin" /> : <Sparkles size={11} />}
+                  Run
+                </button>
+              </div>
+              <p className="text-[10px] text-slate-400 mt-1 px-0.5">Grounds claims in your cited references &amp; cites inline to avoid plagiarism.</p>
+            </div>
           )}
-          <PopBtn label="" title="Bold"   onClick={() => wrapSelection('**')} icon={<Bold size={13} />} />
-          <PopBtn label="" title="Italic" onClick={() => wrapSelection('*')}  icon={<Italic size={13} />} />
-          <PopBtn label="" title="Code"   onClick={() => wrapSelection('`')}  icon={<Code size={13} />} />
         </div>
       )}
     </div>
@@ -567,18 +724,75 @@ Return up to 5 suggestions, ranked by relevance. Penalise generic matches; rewar
 }
 
 // =========================================================================
+// Markdown → HTML for Word / PDF export (small, dependency-free)
+// =========================================================================
+
+function esc(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// Inline formatting: **bold**, *italic*, `code`. Run AFTER escaping HTML.
+function inlineMd(s: string): string {
+  return esc(s)
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*([^*]+)\*/g, '<em>$1</em>');
+}
+
+// Block-level conversion: headings, bullet/numbered lists, paragraphs.
+function mdToHtml(md: string): string {
+  const lines = md.split('\n');
+  const out: string[] = [];
+  let para: string[] = [];
+  let list: { type: 'ul' | 'ol'; items: string[] } | null = null;
+
+  const flushPara = () => { if (para.length) { out.push(`<p>${inlineMd(para.join(' '))}</p>`); para = []; } };
+  const flushList = () => { if (list) { out.push(`<${list.type}>${list.items.map(i => `<li>${inlineMd(i)}</li>`).join('')}</${list.type}>`); list = null; } };
+
+  for (const raw of lines) {
+    const line = raw.replace(/\s+$/, '');
+    const h = line.match(/^(#{1,4})\s+(.*)$/);
+    const ul = line.match(/^\s*[-*]\s+(.*)$/);
+    const ol = line.match(/^\s*\d+[.)]\s+(.*)$/);
+    if (h) {
+      flushPara(); flushList();
+      const level = h[1].length;
+      out.push(`<h${level}>${inlineMd(h[2])}</h${level}>`);
+    } else if (ul) {
+      flushPara();
+      if (!list || list.type !== 'ul') { flushList(); list = { type: 'ul', items: [] }; }
+      list.items.push(ul[1]);
+    } else if (ol) {
+      flushPara();
+      if (!list || list.type !== 'ol') { flushList(); list = { type: 'ol', items: [] }; }
+      list.items.push(ol[1]);
+    } else if (line.trim() === '') {
+      flushPara(); flushList();
+    } else {
+      flushList();
+      para.push(line);
+    }
+  }
+  flushPara(); flushList();
+  return out.join('\n');
+}
+
+// =========================================================================
 // Floating selection popover button
 // =========================================================================
 
-function PopBtn({ label, onClick, busy, icon, title }: {
-  label: string; onClick: () => void; busy?: boolean; icon?: ReactNode; title?: string;
+function PopBtn({ label, onClick, busy, icon, title, active }: {
+  label: string; onClick: () => void; busy?: boolean; icon?: ReactNode; title?: string; active?: boolean;
 }) {
   return (
     <button
+      // preventDefault on mousedown keeps the textarea selection alive when the
+      // button steals focus, so AI/formatting actions still see the highlight.
+      onMouseDown={e => e.preventDefault()}
       onClick={onClick}
       disabled={busy}
       title={title || label}
-      className="px-2 py-1 rounded-md text-[11px] font-medium text-slate-100 hover:bg-white/15 disabled:opacity-50 flex items-center gap-1 transition-colors"
+      className={`px-2 py-1 rounded-md text-[11px] font-medium flex items-center gap-1 transition-colors disabled:opacity-50 ${active ? 'bg-violet-600 text-white' : 'text-slate-100 hover:bg-white/15'}`}
     >
       {busy ? <Loader2 size={11} className="animate-spin" /> : icon}
       {label}

@@ -431,7 +431,7 @@ function BooksPane() {
 // =========================================================================
 
 function WriterPane() {
-  const { documents, active, dbEnabled, setActiveId, newDocument, removeDocument } = useWriter();
+  const { documents, active, dbEnabled, setActiveId, removeDocument } = useWriter();
   const confirm = useConfirm();
   const pager = usePagination(documents, 30);
 
@@ -451,7 +451,7 @@ function WriterPane() {
         title="Writer"
         subtitle={dbEnabled ? `${documents.length} draft${documents.length !== 1 ? 's' : ''}` : 'requires server DB'}
         right={dbEnabled ? (
-          <button onClick={() => newDocument()} title="New document" className="p-1 rounded text-slate-400 hover:text-white hover:bg-slate-800">
+          <button onClick={() => setActiveId(null)} title="New document — choose a template" className="p-1 rounded text-slate-400 hover:text-white hover:bg-slate-800">
             <Plus size={13} />
           </button>
         ) : null}
@@ -463,7 +463,7 @@ function WriterPane() {
           <div className="text-center py-8 px-3">
             <Pen size={24} className="mx-auto text-violet-400/40 mb-2" />
             <p className="text-slate-400 text-xs">No drafts yet.</p>
-            <button onClick={() => newDocument()} className="mt-3 text-xs text-violet-400 hover:text-violet-300">Start your first document →</button>
+            <button onClick={() => setActiveId(null)} className="mt-3 text-xs text-violet-400 hover:text-violet-300">Start your first document →</button>
           </div>
         ) : pager.slice.map(d => {
           const isActive = active?.id === d.id;
