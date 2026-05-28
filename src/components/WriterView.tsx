@@ -1,5 +1,5 @@
-import { useState, useMemo, useRef, useEffect } from 'react';
-import { Pen, Plus, Quote, BookOpen, Eye, EyeOff, AlertCircle, Loader2, Download, Sparkles, Wand2, Target, Lightbulb, Timer, Check, X } from 'lucide-react';
+import { useState, useMemo, useRef, useEffect, type ReactNode } from 'react';
+import { Pen, Plus, Quote, BookOpen, Eye, EyeOff, AlertCircle, Loader2, Download, Sparkles, Wand2, Target, Lightbulb, Timer, Check, X, Bold, Italic, Code } from 'lucide-react';
 import { useWriter } from '../contexts/WriterContext';
 import { useLibrary } from '../contexts/LibraryContext';
 import { useBooks } from '../contexts/BooksContext';
@@ -116,9 +116,21 @@ function DocumentEditor({ doc }: { doc: ResearchDocument }) {
   const aiName = providerLabel(resolveAIConfig(settings));
 
   const taRef = useRef<HTMLTextAreaElement>(null);
+  const popoverRef = useRef<HTMLDivElement>(null);
   const [hasSelection, setHasSelection] = useState(false);
   const [composing, setComposing]       = useState<string | null>(null);
   const [composeError, setComposeError] = useState<string | null>(null);
+  const [popover, setPopover]           = useState<{ x: number; y: number } | null>(null);
+
+  // Close the selection popover on Escape or an outside click.
+  useEffect(() => {
+    if (!popover) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setPopover(null); };
+    const onDown = (e: MouseEvent) => { if (popoverRef.current && !popoverRef.current.contains(e.target as Node)) setPopover(null); };
+    window.addEventListener('keydown', onKey);
+    document.addEventListener('mousedown', onDown);
+    return () => { window.removeEventListener('keydown', onKey); document.removeEventListener('mousedown', onDown); };
+  }, [popover]);
 
   const wordCount = doc.wordCount ?? (doc.content.trim() === '' ? 0 : doc.content.trim().split(/\s+/).length);
   const pace = useWriterPace(wordCount);
@@ -140,6 +152,20 @@ function DocumentEditor({ doc }: { doc: ResearchDocument }) {
       const ta = taRef.current;
       if (ta) { ta.focus(); ta.setSelectionRange(caret, caret); }
     });
+  }
+
+  // Wrap the current selection in markdown markers (bold/italic/code).
+  function wrapSelection(before: string, after: string = before) {
+    const sel = getSelection();
+    if (!sel.text) return;
+    spliceContent(sel.start, sel.end, `${before}${sel.text}${after}`);
+    setPopover(null);
+  }
+
+  // Run a compose action from the popover, then dismiss it.
+  function popoverCompose(action: string) {
+    setPopover(null);
+    compose(action, { needsSelection: true });
   }
 
   // Run an AI compose action. `scope` decides what context we send and where
@@ -367,7 +393,7 @@ Return up to 5 suggestions, ranked by relevance. Penalise generic matches; rewar
         </div>
 
         {/* Body */}
-        <div className="flex-1 overflow-y-auto main-scroll">
+        <div className="flex-1 overflow-y-auto main-scroll" onScroll={() => { if (popover) setPopover(null); }}>
           {preview ? (
             <article className="max-w-3xl mx-auto px-8 py-8 prose prose-slate prose-sm">
               <h1 className="text-2xl font-bold text-slate-900 mb-4">{doc.title || 'Untitled'}</h1>
@@ -414,8 +440,20 @@ Return up to 5 suggestions, ranked by relevance. Penalise generic matches; rewar
               <textarea
                 ref={taRef}
                 value={doc.content}
-                onChange={e => updateActive({ content: e.target.value })}
+                onChange={e => { updateActive({ content: e.target.value }); setPopover(null); }}
                 onSelect={e => { const t = e.currentTarget; setHasSelection(t.selectionStart !== t.selectionEnd); }}
+                onMouseUp={e => {
+                  const { clientX, clientY } = e;
+                  requestAnimationFrame(() => {
+                    const ta = taRef.current;
+                    if (ta && ta.selectionStart !== ta.selectionEnd) {
+                      setHasSelection(true);
+                      setPopover({ x: clientX, y: clientY });
+                    } else {
+                      setPopover(null);
+                    }
+                  });
+                }}
                 placeholder="# Introduction&#10;&#10;Start writing in Markdown… Select text and use the toolbar above, or insert citations from the right panel."
                 className="flex-1 w-full px-8 py-8 bg-transparent border-none focus:outline-none resize-none text-[15px] leading-relaxed text-slate-800 font-mono"
                 style={{ minHeight: 'calc(100vh - 160px)' }}
@@ -499,7 +537,52 @@ Return up to 5 suggestions, ranked by relevance. Penalise generic matches; rewar
           </div>
         </aside>
       )}
+
+      {/* Floating selection popover — actions on highlighted text */}
+      {popover && !preview && (
+        <div
+          ref={popoverRef}
+          onMouseDown={e => e.preventDefault()}  // keep the textarea selection alive
+          className="fixed z-50 flex items-center gap-0.5 px-1 py-1 rounded-lg bg-slate-900 text-white shadow-xl ring-1 ring-black/10"
+          style={{
+            left: Math.max(8, Math.min(popover.x, window.innerWidth - 280)),
+            top:  Math.max(8, popover.y - 48),
+          }}
+        >
+          {aiOn && (
+            <>
+              <PopBtn label="Expand"   onClick={() => popoverCompose('expand')}   busy={composing === 'expand'}   icon={<Wand2 size={12} />} />
+              <PopBtn label="Tighten"  onClick={() => popoverCompose('tighten')}  busy={composing === 'tighten'} />
+              <PopBtn label="Academic" onClick={() => popoverCompose('academic')} busy={composing === 'academic'} />
+              <span className="w-px h-4 bg-white/20 mx-0.5" />
+            </>
+          )}
+          <PopBtn label="" title="Bold"   onClick={() => wrapSelection('**')} icon={<Bold size={13} />} />
+          <PopBtn label="" title="Italic" onClick={() => wrapSelection('*')}  icon={<Italic size={13} />} />
+          <PopBtn label="" title="Code"   onClick={() => wrapSelection('`')}  icon={<Code size={13} />} />
+        </div>
+      )}
     </div>
+  );
+}
+
+// =========================================================================
+// Floating selection popover button
+// =========================================================================
+
+function PopBtn({ label, onClick, busy, icon, title }: {
+  label: string; onClick: () => void; busy?: boolean; icon?: ReactNode; title?: string;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={busy}
+      title={title || label}
+      className="px-2 py-1 rounded-md text-[11px] font-medium text-slate-100 hover:bg-white/15 disabled:opacity-50 flex items-center gap-1 transition-colors"
+    >
+      {busy ? <Loader2 size={11} className="animate-spin" /> : icon}
+      {label}
+    </button>
   );
 }
 

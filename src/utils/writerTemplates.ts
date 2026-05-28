@@ -60,6 +60,63 @@ _Restate the contribution and one concrete next step._
 `,
   },
   {
+    id:    'ieee',
+    label: 'IEEE / ACM conference paper',
+    description: 'CS/engineering conference layout: Abstract, Index Terms, numbered sections, Evaluation, Acknowledgements, References.',
+    title: 'Untitled conference paper',
+    content: `# Abstract
+
+_150–250 words: context, the problem, your approach, key quantitative results, and why they matter._
+
+**Index Terms —** keyword, keyword, keyword
+
+# I. Introduction
+
+- Motivation and context.
+- Problem statement — what's hard and why.
+- Limitations of prior approaches (the gap).
+- **Contributions:**
+  - …
+  - …
+- Roadmap: the rest of the paper is organised as follows…
+
+# II. Related Work
+
+_Group prior work; end each group by stating how you differ._
+
+# III. Method / System Design
+
+_Notation, architecture, algorithms. State assumptions explicitly._
+
+# IV. Evaluation
+
+## A. Experimental Setup
+
+- Datasets / workloads:
+- Baselines:
+- Metrics:
+- Hardware / implementation:
+
+## B. Results
+
+_Lead with the headline number. One claim per paragraph, each backed by a figure or table._
+
+## C. Ablations
+
+# V. Discussion
+
+_Threats to validity, limitations, when the approach fails._
+
+# VI. Conclusion
+
+_Restate the contribution and one concrete direction for future work._
+
+# Acknowledgements
+
+# References
+`,
+  },
+  {
     id:    'litreview',
     label: 'Literature review',
     description: 'Survey a topic: scope, themes, comparison, open problems.',
