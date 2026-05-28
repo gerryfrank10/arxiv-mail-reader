@@ -477,16 +477,29 @@ const MSList = memo(function MSList({ items }: { items: MagazineMSItem[] }) {
 // Generate picker (modal) — pick sources + AI toggle
 // =========================================================================
 
-function GeneratePicker({ onClose, onGenerate }: { onClose: () => void; onGenerate: (opts: { sources?: MagazineSource[]; useAi?: boolean }) => Promise<void>; }) {
+const NEWS_TOPICS_KEY = 'magazine.newsTopics';
+
+function GeneratePicker({ onClose, onGenerate }: { onClose: () => void; onGenerate: (opts: { sources?: MagazineSource[]; useAi?: boolean; newsTopics?: string }) => Promise<void>; }) {
   const { settings } = usePapers();
   const aiOn = hasAI(settings);
   const [selected, setSelected] = useState<Set<MagazineSource>>(new Set(['hackernews', 'news', 'huggingface', 'github']));
   const [useAi, setUseAi] = useState(aiOn);
+  // Optional override for news topics. Remembered across sessions; when blank
+  // the server auto-derives the query from the week's inbox categories.
+  const [newsTopics, setNewsTopics] = useState(() => {
+    try { return localStorage.getItem(NEWS_TOPICS_KEY) ?? ''; } catch { return ''; }
+  });
 
   function toggle(s: MagazineSource) {
     const next = new Set(selected);
     if (next.has(s)) next.delete(s); else next.add(s);
     setSelected(next);
+  }
+
+  function submit() {
+    const topics = newsTopics.trim();
+    try { localStorage.setItem(NEWS_TOPICS_KEY, topics); } catch { /* ignore */ }
+    onGenerate({ sources: [...selected], useAi, newsTopics: topics || undefined });
   }
 
   return (
@@ -507,6 +520,24 @@ function GeneratePicker({ onClose, onGenerate }: { onClose: () => void; onGenera
           ))}
         </div>
 
+        {selected.has('news') && (
+          <div className="mt-3 px-3 py-2.5 rounded-lg border border-slate-200 bg-slate-50/60">
+            <label className="block text-xs font-medium text-slate-600 mb-1.5">
+              News topics <span className="text-slate-400 font-normal">(optional)</span>
+            </label>
+            <input
+              type="text"
+              value={newsTopics}
+              onChange={e => setNewsTopics(e.target.value)}
+              placeholder="e.g. cybersecurity, biotech, robotics"
+              className="w-full px-2.5 py-1.5 text-sm rounded-md border border-slate-200 focus:outline-none focus:ring-2 focus:ring-sky-300"
+            />
+            <p className="text-[11px] text-slate-400 mt-1">
+              Comma-separated. Leave blank to auto-match your inbox's research areas.
+            </p>
+          </div>
+        )}
+
         <label className="flex items-center gap-3 px-3 py-2.5 rounded-lg border border-slate-200 hover:bg-slate-50 cursor-pointer transition-colors mt-3">
           <input type="checkbox" checked={useAi} onChange={e => setUseAi(e.target.checked)} disabled={!aiOn} className="w-4 h-4 accent-violet-500" />
           <span className="text-sm font-medium text-slate-700 flex items-center gap-1.5">
@@ -522,7 +553,7 @@ function GeneratePicker({ onClose, onGenerate }: { onClose: () => void; onGenera
             Cancel
           </button>
           <button
-            onClick={() => onGenerate({ sources: [...selected], useAi })}
+            onClick={submit}
             disabled={selected.size === 0}
             className="px-5 py-2 bg-gradient-to-r from-rose-500 to-orange-500 text-white text-sm font-medium rounded-lg hover:opacity-95 disabled:opacity-40 flex items-center gap-2"
           >

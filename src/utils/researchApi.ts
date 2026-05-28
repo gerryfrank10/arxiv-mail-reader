@@ -295,7 +295,7 @@ export async function apiDeleteMagazineIssue(id: string): Promise<void> {
   await call(`/api/db/magazine/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
-export async function apiDraftMagazine(opts: { sources?: MagazineSource[]; weekStart?: string } = {}): Promise<MagazineDraft> {
+export async function apiDraftMagazine(opts: { sources?: MagazineSource[]; weekStart?: string; newsTopics?: string } = {}): Promise<MagazineDraft> {
   return call('/api/db/magazine/draft', {
     method: 'POST',
     body: JSON.stringify(opts),

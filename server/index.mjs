@@ -8,7 +8,7 @@ import { mkdirSync, unlinkSync, existsSync, statSync } from 'fs';
 import multer from 'multer';
 import 'dotenv/config';
 import { db } from './db.mjs';
-import { fetchSources } from './sources.mjs';
+import { fetchSources, buildNewsQuery } from './sources.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -1048,7 +1048,7 @@ app.delete('/api/db/magazine/:id', (req, res) => withUser(req, res, async (uid) 
 // /api/db/magazine/:id PUT route. This way we don't need API keys on the
 // server side.
 app.post('/api/db/magazine/draft', (req, res) => withUser(req, res, async (uid) => {
-  const { sources = ['hackernews', 'huggingface', 'github', 'modelscope'], weekStart } = req.body ?? {};
+  const { sources = ['hackernews', 'huggingface', 'github', 'modelscope'], weekStart, newsTopics } = req.body ?? {};
 
   // Compute the week window: the 7 days ending today (or ending weekStart+7).
   const end = new Date();
@@ -1062,8 +1062,12 @@ app.post('/api/db/magazine/draft', (req, res) => withUser(req, res, async (uid) 
   //    assessment score before saving.
   const inboxResult = await db.papersForWeek(uid, weekStartIso, weekEndIso, 200);
 
-  // 2) external sources (parallel, fault-tolerant)
-  const { results: sourceResults, errors: sourceErrors } = await fetchSources(sources);
+  // 2) external sources (parallel, fault-tolerant). Tailor the news query to
+  //    the user's inbox categories (or an explicit override) so headlines
+  //    match their field, not a hardcoded AI topic.
+  const inboxCats = inboxResult.papers.flatMap(p => p.categories ?? []);
+  const newsOpts = { news: buildNewsQuery(inboxCats, newsTopics) };
+  const { results: sourceResults, errors: sourceErrors } = await fetchSources(sources, newsOpts);
 
   // 3) bump edition number
   const editionNumber = await db.nextMagazineEdition(uid);
@@ -1130,7 +1134,8 @@ async function tickMagazineScheduler() {
       // Cap at 50 for auto-issues — there's no editorial that needs more,
       // and small JSONB payloads keep the reader snappy.
       const inboxResult   = await db.papersForWeek(u.id, weekStartIso, weekEndIso, 50);
-      const { results, errors } = await fetchSources(sources);
+      const inboxCats     = inboxResult.papers.flatMap(p => p.categories ?? []);
+      const { results, errors } = await fetchSources(sources, { news: buildNewsQuery(inboxCats) });
       const editionNumber = await db.nextMagazineEdition(u.id);
       const id = `mag-auto-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
       await db.insertMagazineIssue(u.id, {

@@ -247,36 +247,104 @@ function parseFeed(xml, fallbackSource) {
   return items;
 }
 
-const NEWS_FEEDS = [
-  // Google News aggregates AI coverage across many reputable outlets and is
-  // very reliable; the when:7d operator keeps it to the past week.
-  {
-    name: 'Google News',
-    url:  'https://news.google.com/rss/search?q=' +
-          encodeURIComponent('(artificial intelligence OR LLM OR "machine learning" OR OpenAI OR Anthropic) when:7d') +
-          '&hl=en-US&gl=US&ceid=US:en',
-  },
-  // VentureBeat's AI section as a secondary, direct feed.
-  { name: 'VentureBeat', url: 'https://venturebeat.com/category/ai/feed/' },
+// arXiv category prefix → natural-language news search terms. The news query
+// is built from whichever buckets the week's inbox falls into, so a security
+// researcher (cs.CR) gets security headlines and a biologist (q-bio) gets
+// biology headlines — no hardcoded AI assumption. First match wins, so list
+// specific prefixes before the catch-all `cs.`.
+const CATEGORY_NEWS_TOPICS = [
+  { re: /^cs\.CR/i,                       terms: ['cybersecurity', 'data breach', 'hacking'] },
+  { re: /^(cs\.(AI|LG|CL|NE)|stat\.ML)/i, terms: ['artificial intelligence', 'machine learning', 'large language models'] },
+  { re: /^cs\.CV/i,                       terms: ['computer vision', 'image generation'] },
+  { re: /^cs\.RO/i,                       terms: ['robotics'] },
+  { re: /^cs\.(DC|OS|NI|DB)/i,            terms: ['cloud computing', 'data infrastructure'] },
+  { re: /^cs\.HC/i,                       terms: ['human-computer interaction'] },
+  { re: /^cs\./i,                         terms: ['computer science', 'software engineering'] },
+  { re: /^q-bio/i,                        terms: ['biology', 'genomics', 'biotech'] },
+  { re: /^q-fin/i,                        terms: ['quantitative finance', 'markets'] },
+  { re: /^econ/i,                         terms: ['economics'] },
+  { re: /^astro-ph/i,                     terms: ['astronomy', 'astrophysics', 'space'] },
+  { re: /^(hep-|gr-qc|nucl-|quant-ph)/i,  terms: ['physics', 'quantum'] },
+  { re: /^(cond-mat|physics)/i,           terms: ['physics', 'materials science'] },
+  { re: /^math/i,                         terms: ['mathematics'] },
+  { re: /^eess/i,                         terms: ['signal processing', 'electrical engineering'] },
+  { re: /^stat/i,                         terms: ['statistics', 'data science'] },
 ];
 
-export const fetchAINews = memoize('news:ai', async () => {
-  const perFeed = await Promise.all(NEWS_FEEDS.map(async (f) => {
-    try {
-      const r = await fetch(f.url, {
-        headers: { 'User-Agent': 'arxiv-mail-reader/1.0', Accept: 'application/rss+xml, application/xml, text/xml' },
-        signal:  AbortSignal.timeout(12_000),
-      });
-      if (!r.ok) return [];
-      return parseFeed(await r.text(), f.name);
-    } catch { return []; }
-  }));
+const DEFAULT_NEWS_TERMS = ['artificial intelligence', 'machine learning', 'technology', 'science'];
 
-  // Merge, drop items older than ~8 days, dedupe by normalised title, sort by recency.
+// Build a Google-News query + a flat term list from the week's inbox
+// categories, or from an explicit user override ("ai, security, biology").
+// Override wins; then inbox categories; then a broad tech/science fallback.
+export function buildNewsQuery(categories = [], override = '') {
+  let terms = [];
+  const ov = String(override || '').trim();
+  if (ov) {
+    terms = ov.split(/[,\n;]+/).map(s => s.trim()).filter(Boolean);
+  } else if (categories.length) {
+    const counts = new Map(); // bucket index → how many inbox papers hit it
+    for (const cat of categories) {
+      const idx = CATEGORY_NEWS_TOPICS.findIndex(t => t.re.test(cat));
+      if (idx >= 0) counts.set(idx, (counts.get(idx) || 0) + 1);
+    }
+    const top = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3);
+    for (const [idx] of top) for (const t of CATEGORY_NEWS_TOPICS[idx].terms) terms.push(t);
+  }
+  if (terms.length === 0) terms = [...DEFAULT_NEWS_TERMS];
+
+  terms = [...new Set(terms.map(t => t.toLowerCase()))].slice(0, 8);
+  const quoted = terms.map(t => (/\s/.test(t) ? `"${t}"` : t));
+  const googleQuery = `(${quoted.join(' OR ')}) when:7d`;
+  return { googleQuery, terms };
+}
+
+// Field-agnostic wires that work for any discipline. Their items are filtered
+// down to the active topic terms so a biologist doesn't get AI-only headlines.
+const GENERAL_NEWS_FEEDS = [
+  { name: 'ScienceDaily', url: 'https://www.sciencedaily.com/rss/top/science.xml' },
+  { name: 'Ars Technica', url: 'https://feeds.arstechnica.com/arstechnica/index' },
+];
+
+const newsCache = new Map(); // googleQuery → { data, ts }
+
+async function fetchFeedItems(url, name) {
+  try {
+    const r = await fetch(url, {
+      headers: { 'User-Agent': 'arxiv-mail-reader/1.0', Accept: 'application/rss+xml, application/xml, text/xml' },
+      signal:  AbortSignal.timeout(12_000),
+    });
+    if (!r.ok) return [];
+    return parseFeed(await r.text(), name);
+  } catch { return []; }
+}
+
+// Aggregate AI/research news. `opts` = { googleQuery, terms } from
+// buildNewsQuery; called with no args it falls back to the broad default.
+export async function fetchAINews(opts = {}) {
+  const { googleQuery, terms } = (opts && opts.googleQuery) ? opts : buildNewsQuery();
+  const hit = newsCache.get(googleQuery);
+  if (hit && Date.now() - hit.ts < CACHE_TTL_MS) return hit.data;
+
+  const googleUrl = 'https://news.google.com/rss/search?q=' +
+    encodeURIComponent(googleQuery) + '&hl=en-US&gl=US&ceid=US:en';
+
+  const [googleItems, ...generalLists] = await Promise.all([
+    fetchFeedItems(googleUrl, 'Google News'),
+    ...GENERAL_NEWS_FEEDS.map(f => fetchFeedItems(f.url, f.name)),
+  ]);
+
+  // Google News is already query-targeted, so keep all of it. The broad wires
+  // are kept only where a topic term appears in the title/summary.
+  const termRe = terms.length ? new RegExp(terms.map(escapeRegExp).join('|'), 'i') : null;
+  const generalItems = generalLists.flat().filter(it =>
+    !termRe || termRe.test(it.title) || termRe.test(it.summary || ''));
+
+  // Merge (Google first), drop items older than ~8 days, dedupe by normalised
+  // title, sort by recency.
   const cutoff = Date.now() - 8 * 24 * 60 * 60 * 1000;
   const seen = new Set();
   const merged = [];
-  for (const item of perFeed.flat()) {
+  for (const item of [...googleItems, ...generalItems]) {
     if (item.ts && item.ts < cutoff) continue;
     const key = item.title.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().slice(0, 80);
     if (!key || seen.has(key)) continue;
@@ -287,7 +355,7 @@ export const fetchAINews = memoize('news:ai', async () => {
 
   if (merged.length === 0) throw new Error('No news items returned from any feed');
 
-  return merged.slice(0, 12).map((it, i) => ({
+  const data = merged.slice(0, 12).map((it, i) => ({
     id:      `news-${i}-${it.ts || Date.now()}`,
     title:   it.title,
     url:     it.url,
@@ -295,17 +363,19 @@ export const fetchAINews = memoize('news:ai', async () => {
     summary: it.summary,
     ts:      it.ts,
   }));
-});
+  newsCache.set(googleQuery, { data, ts: Date.now() });
+  return data;
+}
 
 // =========================================================================
 // Unified fetcher with per-source toggle
 // =========================================================================
 
-export async function fetchSources(enabledSources) {
+export async function fetchSources(enabledSources, opts = {}) {
   // Run all selected sources in parallel, tolerating individual failures.
   const tasks = [];
   if (enabledSources.includes('hackernews'))   tasks.push(['hackernews',   fetchHackerNewsTop().catch(e => ({ __error: e.message }))]);
-  if (enabledSources.includes('news'))         tasks.push(['news',         fetchAINews().catch(e => ({ __error: e.message }))]);
+  if (enabledSources.includes('news'))         tasks.push(['news',         fetchAINews(opts.news).catch(e => ({ __error: e.message }))]);
   if (enabledSources.includes('huggingface'))  tasks.push(['huggingface',  fetchHuggingFaceTrending().catch(e => ({ __error: e.message }))]);
   if (enabledSources.includes('github'))       tasks.push(['github',       fetchGitHubTrending().catch(e => ({ __error: e.message }))]);
   if (enabledSources.includes('modelscope'))   tasks.push(['modelscope',   fetchModelScopeTrending().catch(e => ({ __error: e.message }))]);

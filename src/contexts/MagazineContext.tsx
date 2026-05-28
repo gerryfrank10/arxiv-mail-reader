@@ -153,7 +153,7 @@ Do not return empty strings or empty arrays. Do not rename the keys.`;
     return editorial;
   }
 
-  const generateThisWeek = useCallback(async (opts: { sources?: MagazineSource[]; weekStart?: string; useAi?: boolean } = {}) => {
+  const generateThisWeek = useCallback(async (opts: { sources?: MagazineSource[]; weekStart?: string; useAi?: boolean; newsTopics?: string } = {}) => {
     if (!dbEnabled) { setError('Server DB not enabled'); return null; }
     setGenerating(true);
     setError(null);
@@ -161,6 +161,7 @@ Do not return empty strings or empty arrays. Do not rename the keys.`;
       const draft = await apiDraftMagazine({
         sources: opts.sources ?? DEFAULT_SOURCES,
         weekStart: opts.weekStart,
+        newsTopics: opts.newsTopics,
       });
 
       let editorial: MagazineEditorial | undefined;
