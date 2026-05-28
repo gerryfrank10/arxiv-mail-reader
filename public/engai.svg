@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <!-- Engai — red mountain mark -->
+  <path fill="#E01E26" d="M256 92
+    l44 96 22-20 30 64 28-26 64 152H56
+    l64-150 24 22 30-66 22 22 36-78z" />
+  <!-- snow-cap notches (negative-space zig-zag near the peaks) -->
+  <path fill="#0f2236" d="M256 150l-14 30 14 14 14-14-14-30z" />
+  <path fill="#0f2236" d="M340 196l-10 22 10 10 10-10-10-22z" />
+  <path fill="#0f2236" d="M172 196l-10 22 10 10 10-10-10-22z" />
+</svg>
