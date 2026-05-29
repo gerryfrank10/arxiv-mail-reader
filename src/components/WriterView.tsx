@@ -10,6 +10,7 @@ import { aiChat, hasAI, providerLabel, resolveAIConfig } from '../utils/aiProvid
 import { extractJson, describeJsonError } from '../utils/aiJson';
 import { WRITER_TEMPLATES, docFromTopic, WriterTemplate } from '../utils/writerTemplates';
 import CrossRefsPanel from './CrossRefsPanel';
+import MarkdownEditor, { MarkdownEditorHandle } from './MarkdownEditor';
 import { useConfirm } from '../contexts/ConfirmContext';
 
 export default function WriterView() {
@@ -115,7 +116,7 @@ function DocumentEditor({ doc }: { doc: ResearchDocument }) {
   const aiOn   = hasAI(settings);
   const aiName = providerLabel(resolveAIConfig(settings));
 
-  const taRef = useRef<HTMLTextAreaElement>(null);
+  const editorRef = useRef<MarkdownEditorHandle>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
   const [hasSelection, setHasSelection] = useState(false);
   const [composing, setComposing]       = useState<string | null>(null);
@@ -126,11 +127,6 @@ function DocumentEditor({ doc }: { doc: ResearchDocument }) {
   const [customOpen, setCustomOpen]   = useState(false);
   const [customQuery, setCustomQuery] = useState('');
   const customSel = useRef<{ start: number; end: number; text: string } | null>(null);
-  // Undo / redo history. The textarea is controlled, so native undo is broken —
-  // we keep our own coalesced snapshot stacks instead.
-  const undoStack = useRef<string[]>([]);
-  const redoStack = useRef<string[]>([]);
-  const lastEditAt = useRef(0);
 
   // Close the selection popover on Escape or an outside click.
   useEffect(() => {
@@ -145,60 +141,32 @@ function DocumentEditor({ doc }: { doc: ResearchDocument }) {
   const wordCount = doc.wordCount ?? (doc.content.trim() === '' ? 0 : doc.content.trim().split(/\s+/).length);
   const pace = useWriterPace(wordCount);
 
-  // Read the current textarea selection (falls back to whole document).
+  // Read the current editor selection (falls back to whole document).
   function getSelection() {
-    const ta = taRef.current;
-    if (!ta) return { start: doc.content.length, end: doc.content.length, text: '' };
-    return { start: ta.selectionStart, end: ta.selectionEnd, text: doc.content.slice(ta.selectionStart, ta.selectionEnd) };
+    return editorRef.current?.getSelection() ?? { start: doc.content.length, end: doc.content.length, text: '' };
   }
 
-  // Commit a new content value, recording an undo snapshot. Rapid keystrokes are
-  // coalesced into one snapshot (we only snapshot when >500ms elapsed since the
-  // last edit) so a single Cmd+Z reverts a whole typing burst rather than a char.
-  function commitContent(next: string) {
-    const prev = doc.content;
-    if (next === prev) return;
-    const now = Date.now();
-    if (now - lastEditAt.current > 500 || undoStack.current.length === 0) {
-      undoStack.current.push(prev);
-      if (undoStack.current.length > 300) undoStack.current.shift();
-    }
-    lastEditAt.current = now;
-    redoStack.current = [];
-    updateActive({ content: next });
-  }
-
-  function undo() {
-    if (!undoStack.current.length) return;
-    const prev = undoStack.current.pop()!;
-    redoStack.current.push(doc.content);
-    lastEditAt.current = 0;               // force the next edit to snapshot
-    updateActive({ content: prev });
-    requestAnimationFrame(() => { const ta = taRef.current; if (ta) { ta.focus(); const c = Math.min(prev.length, ta.selectionStart); ta.setSelectionRange(c, c); } });
-  }
-
-  function redo() {
-    if (!redoStack.current.length) return;
-    const next = redoStack.current.pop()!;
-    undoStack.current.push(doc.content);
-    lastEditAt.current = 0;
-    updateActive({ content: next });
-    requestAnimationFrame(() => { const ta = taRef.current; if (ta) { ta.focus(); const c = Math.min(next.length, ta.selectionStart); ta.setSelectionRange(c, c); } });
-  }
-
-  // Splice `text` into the content, replacing [start,end). Restores the caret
-  // just after the inserted text on the next tick.
+  // Splice `text` into the content, replacing [start,end). The editor handles
+  // the change as a CodeMirror transaction, so undo/redo (Cmd/Ctrl+Z) covers it
+  // and the caret lands just after the inserted text.
   function spliceContent(start: number, end: number, text: string) {
-    const next = doc.content.slice(0, start) + text + doc.content.slice(end);
-    commitContent(next);
-    const caret = start + text.length;
-    requestAnimationFrame(() => {
-      const ta = taRef.current;
-      if (ta) { ta.focus(); ta.setSelectionRange(caret, caret); }
-    });
+    editorRef.current?.splice(start, end, text);
   }
 
   function closePopover() { setPopover(null); setCustomOpen(false); setCustomQuery(''); }
+
+  // After a mouse-up in the editor, show the selection popover if a non-empty
+  // range is selected (positioned just above the selection start).
+  function handleEditorMouseUp() {
+    requestAnimationFrame(() => {
+      const sel = editorRef.current?.getSelection();
+      if (sel && sel.text.trim()) {
+        const c = editorRef.current?.coordsAtSelection();
+        if (c) { setHasSelection(true); setPopover({ x: c.x, y: c.y }); return; }
+      }
+      setPopover(null);
+    });
+  }
 
   // Wrap the current selection in markdown markers (bold/italic/code).
   function wrapSelection(before: string, after: string = before) {
@@ -307,17 +275,12 @@ function DocumentEditor({ doc }: { doc: ResearchDocument }) {
   }
 
   function insertCitation(label: string) {
-    // Insert [@label] at the caret (or replace the selection). Falls back to
-    // appending at the end when the textarea isn't focused.
-    const ta = taRef.current;
+    // Insert [@label] at the caret (or replace the selection). getSelection()
+    // falls back to the end of the document when the editor isn't focused.
     const marker = `[@${label}]`;
-    if (!ta || ta.selectionStart == null) {
-      updateActive({ content: (doc.content || '').trimEnd() + ` ${marker}` });
-      return;
-    }
-    const { selectionStart: s, selectionEnd: e } = ta;
-    const needsLeadingSpace = s > 0 && !/\s/.test(doc.content[s - 1]);
-    spliceContent(s, e, `${needsLeadingSpace ? ' ' : ''}${marker}`);
+    const { start, end } = getSelection();
+    const needsLeadingSpace = start > 0 && !/\s/.test(doc.content[start - 1]);
+    spliceContent(start, end, `${needsLeadingSpace ? ' ' : ''}${marker}`);
   }
 
   async function suggestCitations() {
@@ -563,31 +526,15 @@ ${refsHtml}
                 {!aiOn && <span className="text-[10px] text-slate-400 ml-1">configure AI in Settings</span>}
                 {composeError && <span className="text-[10px] text-amber-700 ml-auto">{composeError}</span>}
               </div>
-              <textarea
-                ref={taRef}
+              <MarkdownEditor
+                key={doc.id}
+                ref={editorRef}
                 value={doc.content}
-                onChange={e => { commitContent(e.target.value); if (popover) closePopover(); }}
-                onKeyDown={e => {
-                  const mod = e.metaKey || e.ctrlKey;
-                  if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); if (e.shiftKey) redo(); else undo(); }
-                  else if (mod && e.key.toLowerCase() === 'y') { e.preventDefault(); redo(); }
-                }}
-                onSelect={e => { const t = e.currentTarget; setHasSelection(t.selectionStart !== t.selectionEnd); }}
-                onMouseUp={e => {
-                  const { clientX, clientY } = e;
-                  requestAnimationFrame(() => {
-                    const ta = taRef.current;
-                    if (ta && ta.selectionStart !== ta.selectionEnd) {
-                      setHasSelection(true);
-                      setPopover({ x: clientX, y: clientY });
-                    } else {
-                      setPopover(null);
-                    }
-                  });
-                }}
-                placeholder="# Introduction&#10;&#10;Start writing in Markdown… Select text and use the toolbar above, or insert citations from the right panel."
-                className="flex-1 w-full px-8 py-8 bg-transparent border-none focus:outline-none resize-none text-[15px] leading-relaxed text-slate-800 font-mono"
-                style={{ minHeight: 'calc(100vh - 160px)' }}
+                onChange={c => updateActive({ content: c })}
+                onSelectionChange={setHasSelection}
+                onMouseUp={handleEditorMouseUp}
+                onScroll={() => { if (popover) closePopover(); }}
+                placeholder="# Introduction&#10;&#10;Start writing in Markdown… Headings, bold and lists render as you type. Select text for AI actions, or insert citations from the right panel."
               />
             </div>
           )}
