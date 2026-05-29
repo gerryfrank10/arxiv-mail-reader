@@ -135,21 +135,31 @@ function extractAllArxivMetadata(xml) {
 // arxivQueue so concurrent callers can't burst past the rate limit.
 async function arxivFetchText(idList) {
   return arxivQueue = arxivQueue.then(async () => {
-    const BACKOFFS = [3000, 8000, 20000]; // retries on 429
+    const BACKOFFS = [3000, 8000, 20000]; // retries on transient failures
+    // arXiv intermittently returns 429 (rate limit) and 503 (service busy);
+    // both are transient and worth retrying. Other 5xx are also retried.
+    const isRetryable = (status) => status === 429 || status >= 500;
     let lastErr;
     for (let attempt = 0; attempt <= BACKOFFS.length; attempt++) {
       if (attempt > 0) {
-        console.warn(`[arxiv] 429 — backing off ${BACKOFFS[attempt - 1]}ms (retry ${attempt}/${BACKOFFS.length})`);
+        console.warn(`[arxiv] ${lastErr?.message ?? 'transient error'} — backing off ${BACKOFFS[attempt - 1]}ms (retry ${attempt}/${BACKOFFS.length})`);
         await new Promise(r => setTimeout(r, BACKOFFS[attempt - 1]));
       }
       const wait = Math.max(0, ARXIV_MIN_GAP_MS - (Date.now() - lastArxivCall));
       if (wait > 0) await new Promise(r => setTimeout(r, wait));
       lastArxivCall = Date.now();
-      const r = await fetch(`https://export.arxiv.org/api/query?id_list=${encodeURIComponent(idList)}&max_results=100`);
+      let r;
+      try {
+        r = await fetch(`https://export.arxiv.org/api/query?id_list=${encodeURIComponent(idList)}&max_results=100`);
+      } catch (netErr) {
+        // Network-level failure (DNS, connection reset) — also transient.
+        lastErr = new Error(`arXiv request failed: ${netErr.message}`);
+        continue;
+      }
       const text = await r.text();
       if (r.status === 200) return text;
       lastErr = new Error(`arXiv ${r.status}`);
-      if (r.status !== 429) break; // only 429 is worth retrying
+      if (!isRetryable(r.status)) break;
     }
     throw lastErr ?? new Error('arXiv request failed');
   }).catch(err => { throw err; });
