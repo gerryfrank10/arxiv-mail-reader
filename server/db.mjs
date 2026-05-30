@@ -72,10 +72,15 @@ export const db = {
     let skipped  = 0;
     try {
       for (const p of papers) {
+        // Every text column is NOT NULL with a '' default, but a column default
+        // only kicks in when the column is OMITTED from the INSERT — passing an
+        // explicit NULL still violates the constraint. Imported arXiv papers
+        // routinely lack a comment (and sometimes pdf url / date), so coalesce
+        // the optional fields to '' here or the row gets rejected and skipped.
         const params = [
-          p.id, userId, p.arxivId, p.title, p.authors, p.authorList, p.categories,
-          p.abstract, p.comments, p.url, p.pdfUrl, p.size, p.date, p.emailId,
-          p.digestSubject, p.digestDate, p.source ?? 'email',
+          p.id, userId, p.arxivId, p.title ?? '', p.authors ?? '', p.authorList ?? [], p.categories ?? [],
+          p.abstract ?? '', p.comments ?? '', p.url ?? '', p.pdfUrl ?? '', p.size ?? '', p.date ?? '', p.emailId ?? '',
+          p.digestSubject ?? '', p.digestDate ?? new Date().toISOString(), p.source ?? 'email',
         ];
         try {
           await client.query(
@@ -107,9 +112,9 @@ export const db = {
                  email_id=$13, digest_subject=$14, digest_date=$15, source=$16
                WHERE user_id=$1 AND arxiv_id=$2`,
               [
-                userId, p.arxivId, p.title, p.authors, p.authorList, p.categories,
-                p.abstract, p.comments, p.url, p.pdfUrl, p.size, p.date, p.emailId,
-                p.digestSubject, p.digestDate, p.source ?? 'email',
+                userId, p.arxivId, p.title ?? '', p.authors ?? '', p.authorList ?? [], p.categories ?? [],
+                p.abstract ?? '', p.comments ?? '', p.url ?? '', p.pdfUrl ?? '', p.size ?? '', p.date ?? '', p.emailId ?? '',
+                p.digestSubject ?? '', p.digestDate ?? new Date().toISOString(), p.source ?? 'email',
               ],
             );
             skipped++;
