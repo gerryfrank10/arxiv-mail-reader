@@ -1,14 +1,22 @@
-# Local development database for arxiv-mail-reader.
+# arxiv-mail-reader — services.
 #
-#   docker compose up -d
-#   docker compose down          # stop, keep data
-#   docker compose down -v       # stop + wipe data
+# Two ways to use this file:
 #
-# Connection (already in server/.env.example):
-#   postgres://arxiv:arxiv@localhost:5433/arxiv_reader
+#   1. Database only (for local dev with `npm run dev:all`):
+#        npm run db:up            # docker compose up -d   (db service only)
+#        npm run db:down
 #
-# Port 5433 is used (not 5432) to avoid colliding with any local Postgres
-# you may already have running.
+#   2. Full app + database (one command, prod-style — same locally or remote):
+#        npm run app:up           # builds the image, starts db + app
+#        npm run app:logs
+#        npm run app:down
+#      Then open http://localhost:3001
+#
+# The `app` service is gated behind the "app" compose profile, so a plain
+# `docker compose up -d` (i.e. `npm run db:up`) still starts ONLY the database.
+#
+# Port 5433 is mapped to Postgres (not 5432) to avoid colliding with any local
+# Postgres you may already have running.
 
 services:
   db:
@@ -23,12 +31,41 @@ services:
       - "5433:5432"
     volumes:
       - arxiv_db_data:/var/lib/postgresql/data
+      # *.sql here run once, in order, when the data volume is first created —
+      # this provisions the schema on a fresh deploy.
       - ./server/migrations:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test:     ["CMD-SHELL", "pg_isready -U arxiv -d arxiv_reader"]
       interval: 5s
       timeout:  3s
       retries:  10
+
+  app:
+    profiles: ["app"]
+    build:
+      context: .
+      args:
+        # Read from your .env (compose auto-loads it). Only needed for Google login.
+        VITE_GOOGLE_CLIENT_ID: ${VITE_GOOGLE_CLIENT_ID:-}
+    container_name: arxiv-reader-app
+    restart: unless-stopped
+    # Brings in SEMANTIC_SCHOLAR_API_KEY, OPENALEX_MAILTO, DISABLE_MAGAZINE_SCHEDULER, etc.
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      # Talk to the db service over the compose network (overrides .env's localhost value).
+      DATABASE_URL: postgres://arxiv:arxiv@db:5432/arxiv_reader
+      UPLOAD_ROOT: /app/uploads
+    ports:
+      - "3001:3001"
+    volumes:
+      # Persist uploaded book files on the host (survives `db:reset`).
+      - ./uploads:/app/uploads
+    depends_on:
+      db:
+        condition: service_healthy
 
 volumes:
   arxiv_db_data:
