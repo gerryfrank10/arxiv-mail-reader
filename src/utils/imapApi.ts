@@ -21,10 +21,11 @@ export async function fetchArxivPapersImap(
     if (!health.ok) throw new Error();
   } catch {
     throw new Error(
-      'Cannot reach the IMAP backend server.\n\n' +
-      'If you are using the hosted version (GitHub Pages), IMAP is not available there — only Gmail works. ' +
-      'Run the app locally with `npm run dev:all` to use iCloud, Outlook, or Yahoo.\n\n' +
-      'If running locally, start the backend with: npm run dev:server'
+      'Cannot reach the backend server.\n\n' +
+      'IMAP (iCloud, Outlook, Yahoo) needs the backend running and reachable from the page you have open:\n\n' +
+      '• Docker (everything in one place): run `npm run app:up`, then open http://localhost:3001 — NOT :5173.\n' +
+      '• Local dev: run `npm run dev:all`, then open http://localhost:5173.\n\n' +
+      'If you are on the hosted version (GitHub Pages), IMAP is not available there — only Gmail works.'
     );
   }
 
