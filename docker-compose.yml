@@ -74,5 +74,36 @@ services:
       db:
         condition: service_healthy
 
+  # Optional self-contained Ollama (for a remote box with no host Ollama).
+  # Opt-in only:  npm run ollama:up   (or add --profile ollama to compose).
+  #
+  # It publishes 11434 on the host, so the app's localhost->host.docker.internal
+  # rewrite reaches it with no config change — keep the base URL in Settings as
+  # http://localhost:11434/v1 everywhere.
+  #
+  # On your Mac, DON'T enable this — keep using host Ollama (Metal GPU). Running
+  # this here would also collide with host Ollama on port 11434.
+  #
+  # After it's up, pull a model once:  npm run ollama:pull
+  ollama:
+    profiles: ["ollama"]
+    image: ollama/ollama:latest
+    container_name: arxiv-reader-ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_models:/root/.ollama
+    # For an NVIDIA GPU host, uncomment to enable acceleration (needs the
+    # nvidia-container-toolkit installed on the host):
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
 volumes:
   arxiv_db_data:
+  ollama_models:

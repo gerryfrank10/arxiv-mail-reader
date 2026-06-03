@@ -97,6 +97,37 @@ server deploy:
 `DATABASE_URL`, `PORT`, `NODE_ENV`, and `UPLOAD_ROOT` are set automatically for
 the container by `docker-compose.yml` — you don't need to touch them.
 
+## AI provider (Ollama)
+
+The app proxies AI calls through the server, so a `localhost` AI URL must be
+reachable *from the server*:
+
+- **Local (Mac/Windows):** keep Ollama running on your host. The container
+  rewrites `localhost` → `host.docker.internal` automatically, so leave the
+  base URL in **Settings → AI provider** as `http://localhost:11434/v1`.
+- **Remote server with no host Ollama:** run the bundled Ollama container
+  (opt-in, separate profile), then pull a model:
+
+  ```bash
+  npm run ollama:up         # start the ollama container
+  npm run ollama:pull       # pull llama3.2 (or: docker exec arxiv-reader-ollama ollama pull <model>)
+  ```
+
+  It publishes port 11434 on the host, so the same `http://localhost:11434/v1`
+  base URL keeps working — no settings change. To run the whole stack at once:
+
+  ```bash
+  docker compose --profile app --profile ollama up -d --build
+  ```
+
+  For a GPU host, uncomment the `deploy.resources` block on the `ollama`
+  service in `docker-compose.yml` (needs the nvidia-container-toolkit).
+
+> Don't enable the Ollama container on your Mac — it would clash with host
+> Ollama on port 11434, and the container build has no Metal GPU access.
+> A cloud provider (OpenAI / Groq / Claude) configured in Settings also works
+> on the remote with no Docker networking at all (those are public URLs).
+
 ## Data & backups
 
 - **Database** lives in the `arxiv_db_data` Docker volume (persists across
