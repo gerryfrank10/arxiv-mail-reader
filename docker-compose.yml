@@ -58,11 +58,18 @@ services:
       # Talk to the db service over the compose network (overrides .env's localhost value).
       DATABASE_URL: postgres://arxiv:arxiv@db:5432/arxiv_reader
       UPLOAD_ROOT: /app/uploads
+      # A localhost AI base URL (e.g. Ollama) configured in the browser points at
+      # the CONTAINER otherwise; this makes the server reach the host instead.
+      LOCALHOST_PROXY_HOST: host.docker.internal
     ports:
       - "3001:3001"
     volumes:
       # Persist uploaded book files on the host (survives `db:reset`).
       - ./uploads:/app/uploads
+    # Lets the container resolve the host machine (for host-run Ollama, etc.).
+    # Built in on Docker Desktop (Mac/Windows); this line adds it on Linux too.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       db:
         condition: service_healthy

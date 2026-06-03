@@ -630,6 +630,18 @@ function normalizePaperId(raw) {
 }
 
 // ---------- Generic AI proxy (OpenAI-compatible providers + Ollama) ----------
+// When the server runs inside a container, a user-configured AI base URL like
+// http://localhost:11434 points at the CONTAINER, not the host where Ollama
+// runs. Setting LOCALHOST_PROXY_HOST (compose sets it to host.docker.internal)
+// transparently rewrites localhost/127.0.0.1 so the browser config still works
+// in both dev (no env → unchanged) and Docker. Public URLs are untouched.
+function resolveUpstreamBase(baseUrl) {
+  const clean = String(baseUrl).replace(/\/+$/, '');
+  const proxyHost = process.env.LOCALHOST_PROXY_HOST;
+  if (!proxyHost) return clean;
+  return clean.replace(/^(https?:\/\/)(localhost|127\.0\.0\.1)(?=[:/]|$)/i, `$1${proxyHost}`);
+}
+
 // Browser → /api/ai/chat → upstream. Lets us avoid CORS on localhost (Ollama)
 // and on any OpenAI-compatible endpoint the user configures.
 app.post('/api/ai/chat', async (req, res) => {
@@ -640,7 +652,7 @@ app.post('/api/ai/chat', async (req, res) => {
   if (!['openai', 'groq', 'ollama', 'custom'].includes(provider)) {
     return res.status(400).json({ error: `Unsupported provider: ${provider}` });
   }
-  const url = `${String(baseUrl).replace(/\/+$/, '')}/chat/completions`;
+  const url = `${resolveUpstreamBase(baseUrl)}/chat/completions`;
   const headers = { 'Content-Type': 'application/json' };
   if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
   try {
