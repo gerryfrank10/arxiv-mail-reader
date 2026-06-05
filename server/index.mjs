@@ -57,6 +57,21 @@ let lastS2Call    = 0;
 let arxivQueue = Promise.resolve();
 let s2Queue    = Promise.resolve();
 
+// arXiv's API politeness policy asks for a descriptive User-Agent with a
+// contact — anonymous requests (esp. from cloud/container IPs) get 429'd much
+// more aggressively. Send one on every arXiv call.
+const ARXIV_HEADERS = {
+  'User-Agent': `arxiv-mail-reader/1.0 (${process.env.OPENALEX_MAILTO ? `mailto:${process.env.OPENALEX_MAILTO}` : '+https://github.com/gerryfrank10/arxiv-mail-reader'})`,
+};
+
+// If a 429/503 response carries a Retry-After header, honour it (capped).
+function retryAfterMs(r) {
+  const ra = r.headers?.get?.('retry-after');
+  if (!ra) return 0;
+  const secs = Number(ra);
+  return Number.isFinite(secs) ? Math.min(Math.max(secs, 0) * 1000, 60_000) : 0;
+}
+
 function decodeXmlText(s) {
   return s
     .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
@@ -135,59 +150,55 @@ function extractAllArxivMetadata(xml) {
 // arxivQueue so concurrent callers can't burst past the rate limit.
 async function arxivFetchText(idList) {
   return arxivQueue = arxivQueue.then(async () => {
-    const BACKOFFS = [3000, 8000, 20000]; // retries on transient failures
-    // arXiv intermittently returns 429 (rate limit) and 503 (service busy);
-    // both are transient and worth retrying. Other 5xx are also retried.
-    const isRetryable = (status) => status === 429 || status >= 500;
-    let lastErr;
-    for (let attempt = 0; attempt <= BACKOFFS.length; attempt++) {
-      if (attempt > 0) {
-        console.warn(`[arxiv] ${lastErr?.message ?? 'transient error'} — backing off ${BACKOFFS[attempt - 1]}ms (retry ${attempt}/${BACKOFFS.length})`);
-        await new Promise(r => setTimeout(r, BACKOFFS[attempt - 1]));
-      }
-      const wait = Math.max(0, ARXIV_MIN_GAP_MS - (Date.now() - lastArxivCall));
-      if (wait > 0) await new Promise(r => setTimeout(r, wait));
-      lastArxivCall = Date.now();
-      let r;
-      try {
-        r = await fetch(`https://export.arxiv.org/api/query?id_list=${encodeURIComponent(idList)}&max_results=100`);
-      } catch (netErr) {
-        // Network-level failure (DNS, connection reset) — also transient.
-        lastErr = new Error(`arXiv request failed: ${netErr.message}`);
-        continue;
-      }
-      const text = await r.text();
-      if (r.status === 200) return text;
-      lastErr = new Error(`arXiv ${r.status}`);
-      if (!isRetryable(r.status)) break;
-    }
-    throw lastErr ?? new Error('arXiv request failed');
+    const url = `https://export.arxiv.org/api/query?id_list=${encodeURIComponent(idList)}&max_results=100`;
+    return arxivGetWithRetry(url);
   }).catch(err => { throw err; });
 }
 
+// Shared throttled+retrying arXiv GET. arXiv intermittently returns 429 (rate
+// limit) and 503 (busy); both are transient. We respect a Retry-After header
+// when present, otherwise use an escalating backoff, and always send the
+// politeness User-Agent.
+async function arxivGetWithRetry(url) {
+  const BACKOFFS = [4000, 10000, 25000, 45000];
+  const isRetryable = (status) => status === 429 || status >= 500;
+  let lastErr;
+  let pendingBackoff = 0;
+  for (let attempt = 0; attempt <= BACKOFFS.length; attempt++) {
+    if (attempt > 0) {
+      const backoff = pendingBackoff || BACKOFFS[attempt - 1];
+      console.warn(`[arxiv] ${lastErr?.message ?? 'transient error'} — backing off ${backoff}ms (retry ${attempt}/${BACKOFFS.length})`);
+      await new Promise(r => setTimeout(r, backoff));
+      pendingBackoff = 0;
+    }
+    const wait = Math.max(0, ARXIV_MIN_GAP_MS - (Date.now() - lastArxivCall));
+    if (wait > 0) await new Promise(r => setTimeout(r, wait));
+    lastArxivCall = Date.now();
+    let r;
+    try {
+      r = await fetch(url, { headers: ARXIV_HEADERS });
+    } catch (netErr) {
+      // Network-level failure (DNS, connection reset) — also transient.
+      lastErr = new Error(`arXiv request failed: ${netErr.message}`);
+      continue;
+    }
+    const text = await r.text();
+    if (r.status === 200) return text;
+    lastErr = new Error(`arXiv ${r.status}`);
+    if (!isRetryable(r.status)) break;
+    // Prefer the server's Retry-After when it tells us how long to wait.
+    pendingBackoff = retryAfterMs(r);
+  }
+  throw lastErr ?? new Error('arXiv request failed');
+}
+
 // Throttled arXiv *search* query (the search_query API, not id_list). Same
-// 429/5xx retry/backoff as arxivFetchText. Returns one page of Atom XML.
+// retry/backoff + User-Agent as arxivFetchText. Returns one page of Atom XML.
 async function arxivSearchFetch(searchQuery, start, perPage) {
   return arxivQueue = arxivQueue.then(async () => {
-    const BACKOFFS = [3000, 8000, 20000];
-    const isRetryable = (s) => s === 429 || s >= 500;
     const url = `https://export.arxiv.org/api/query?search_query=${encodeURIComponent(searchQuery)}`
       + `&start=${start}&max_results=${perPage}&sortBy=submittedDate&sortOrder=descending`;
-    let lastErr;
-    for (let attempt = 0; attempt <= BACKOFFS.length; attempt++) {
-      if (attempt > 0) await new Promise(r => setTimeout(r, BACKOFFS[attempt - 1]));
-      const wait = Math.max(0, ARXIV_MIN_GAP_MS - (Date.now() - lastArxivCall));
-      if (wait > 0) await new Promise(r => setTimeout(r, wait));
-      lastArxivCall = Date.now();
-      let r;
-      try { r = await fetch(url); }
-      catch (netErr) { lastErr = new Error(`arXiv request failed: ${netErr.message}`); continue; }
-      const text = await r.text();
-      if (r.status === 200) return text;
-      lastErr = new Error(`arXiv ${r.status}`);
-      if (!isRetryable(r.status)) break;
-    }
-    throw lastErr ?? new Error('arXiv search failed');
+    return arxivGetWithRetry(url);
   }).catch(err => { throw err; });
 }
 
@@ -197,7 +208,7 @@ async function fetchFromArxiv(id) {
     const wait = Math.max(0, ARXIV_MIN_GAP_MS - (Date.now() - lastArxivCall));
     if (wait > 0) await new Promise(r => setTimeout(r, wait));
     lastArxivCall = Date.now();
-    const r = await fetch(`https://export.arxiv.org/api/query?id_list=${encodeURIComponent(id)}`);
+    const r = await fetch(`https://export.arxiv.org/api/query?id_list=${encodeURIComponent(id)}`, { headers: ARXIV_HEADERS });
     const body = await r.text();
     if (r.status !== 200) throw new Error(`arXiv ${r.status}`);
     const abstract = extractArxivAbstract(body);
@@ -361,7 +372,13 @@ app.get('/api/arxiv-search', async (req, res) => {
       if (metas.length < want) break;                 // reached the end
     }
   } catch (err) {
-    if (all.length === 0) return res.status(502).json({ error: `arXiv search failed: ${err.message}` });
+    if (all.length === 0) {
+      // 429 = arXiv is rate-limiting us; give the user an actionable message.
+      if (/\b429\b/.test(err.message)) {
+        return res.status(429).json({ error: 'arXiv is rate-limiting requests right now. Wait ~30 seconds and try again — and consider importing one category at a time.' });
+      }
+      return res.status(502).json({ error: `arXiv search failed: ${err.message}` });
+    }
     // Otherwise fall through and return whatever we managed to collect.
   }
 
