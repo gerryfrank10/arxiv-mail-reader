@@ -1,12 +1,14 @@
 import { useState, useRef } from 'react';
-import { X, Upload, FileText, Plus, Loader2, AlertCircle, CheckCircle2, FileUp } from 'lucide-react';
+import { X, Upload, FileText, Plus, Loader2, AlertCircle, CheckCircle2, FileUp, Search } from 'lucide-react';
 import { usePapers } from '../contexts/PapersContext';
 import {
   extractArxivIds,
   fetchArxivMetadataBatch,
+  fetchArxivBySearch,
   metadataToPaper,
   parseBibtex,
   bibEntryToPaper,
+  type ArxivSearchMode,
 } from '../utils/paperImport';
 import { Paper } from '../types';
 
@@ -14,7 +16,14 @@ interface Props {
   onClose: () => void;
 }
 
-type Tab = 'single' | 'bulk' | 'bibtex';
+type Tab = 'single' | 'bulk' | 'bibtex' | 'arxiv';
+
+// A few common arXiv categories offered as autocomplete suggestions.
+const COMMON_CATEGORIES = [
+  'cs.LG', 'cs.AI', 'cs.CL', 'cs.CV', 'cs.CR', 'cs.RO', 'cs.DC', 'cs.HC', 'cs.SE',
+  'stat.ML', 'math.OC', 'math.AP', 'eess.SP', 'eess.IV',
+  'q-bio.NC', 'q-fin.TR', 'econ.EM', 'astro-ph.GA', 'hep-th', 'cond-mat.stat-mech',
+];
 
 interface ProgressState {
   done: number;
@@ -37,6 +46,12 @@ export default function ImportModal({ onClose }: Props) {
   // bibtex
   const [bibText, setBibText]         = useState('');
   const fileInput = useRef<HTMLInputElement>(null);
+  // from arXiv (bulk discover)
+  const [arxivMode,  setArxivMode]  = useState<ArxivSearchMode>('category');
+  const [arxivValue, setArxivValue] = useState('');
+  const [arxivFrom,  setArxivFrom]  = useState('');
+  const [arxivTo,    setArxivTo]    = useState('');
+  const [arxivMax,   setArxivMax]   = useState(100);
 
   function reset() {
     setBusy(false);
@@ -159,6 +174,42 @@ export default function ImportModal({ onClose }: Props) {
     setBusy(false);
   }
 
+  async function handleArxiv() {
+    const value = arxivValue.trim();
+    if (!value) {
+      setError(`Enter a ${arxivMode === 'category' ? 'category' : arxivMode === 'author' ? 'author name' : 'keyword'} to search.`);
+      return;
+    }
+    if (arxivFrom && arxivTo && arxivFrom > arxivTo) {
+      setError('The "from" date is after the "to" date.');
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    setResult(null);
+    setProgress(null);
+    try {
+      const { results } = await fetchArxivBySearch({
+        mode: arxivMode,
+        value,
+        from: arxivFrom || undefined,
+        to:   arxivTo || undefined,
+        max:  arxivMax,
+      });
+      if (results.length === 0) {
+        setError('No papers matched that query. Check the category/spelling or widen the date range.');
+        setBusy(false);
+        return;
+      }
+      const { added, duplicates } = await addImportedPapers(results.map(metadataToPaper));
+      setResult({ added, duplicates, failed: 0 });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'arXiv search failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0];
     if (!f) return;
@@ -171,6 +222,7 @@ export default function ImportModal({ onClose }: Props) {
     { id: 'single', label: 'Single paper',   icon: <Plus size={13} /> },
     { id: 'bulk',   label: 'Bulk paste',     icon: <FileText size={13} /> },
     { id: 'bibtex', label: 'BibTeX (.bib)',  icon: <FileUp size={13} /> },
+    { id: 'arxiv',  label: 'From arXiv',     icon: <Search size={13} /> },
   ];
 
   return (
@@ -268,6 +320,82 @@ export default function ImportModal({ onClose }: Props) {
           </div>
         )}
 
+        {tab === 'arxiv' && (
+          <div className="space-y-3">
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1.5">Search arXiv by</label>
+              <div className="flex gap-1 bg-slate-100 rounded-lg p-1 w-fit">
+                {(['category', 'author', 'keyword'] as const).map(m => (
+                  <button
+                    key={m}
+                    onClick={() => { setArxivMode(m); setError(null); }}
+                    className={`px-3 py-1 rounded-md text-xs font-medium capitalize transition-all ${
+                      arxivMode === m ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+                    }`}
+                  >
+                    {m}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <input
+                type="text"
+                autoFocus
+                value={arxivValue}
+                onChange={e => setArxivValue(e.target.value)}
+                list={arxivMode === 'category' ? 'arxiv-cats' : undefined}
+                placeholder={
+                  arxivMode === 'category' ? 'e.g. cs.LG, cs.CR, math.AP, hep-th'
+                  : arxivMode === 'author' ? 'e.g. Yoshua Bengio'
+                  : 'e.g. diffusion models, retrieval augmented generation'
+                }
+                className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-400 transition-all"
+                onKeyDown={e => { if (e.key === 'Enter' && !busy) handleArxiv(); }}
+              />
+              {arxivMode === 'category' && (
+                <datalist id="arxiv-cats">
+                  {COMMON_CATEGORIES.map(c => <option key={c} value={c} />)}
+                </datalist>
+              )}
+              <p className="mt-1.5 text-xs text-slate-500">
+                {arxivMode === 'category' ? 'Browse all categories at arxiv.org/category_taxonomy.'
+                  : arxivMode === 'author' ? 'Matches the author field; quote-exact, so use the full name.'
+                  : 'Searches title, abstract, and full text.'}
+              </p>
+            </div>
+
+            <div className="grid grid-cols-3 gap-2">
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">From (optional)</label>
+                <input type="date" value={arxivFrom} onChange={e => setArxivFrom(e.target.value)}
+                  className="w-full px-2 py-2 border border-slate-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-blue-500/40" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">To (optional)</label>
+                <input type="date" value={arxivTo} onChange={e => setArxivTo(e.target.value)}
+                  className="w-full px-2 py-2 border border-slate-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-blue-500/40" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">Max papers</label>
+                <input type="number" min={1} max={1000} value={arxivMax}
+                  onChange={e => setArxivMax(Math.max(1, Math.min(1000, Number(e.target.value) || 1)))}
+                  className="w-full px-2 py-2 border border-slate-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-blue-500/40" />
+              </div>
+            </div>
+            <p className="text-xs text-slate-400">
+              Pulls matching papers straight from the arXiv API (newest first) and adds them to your inbox.
+              Large pulls take longer — arXiv is rate-limited, so 1000 papers can take ~30s.
+            </p>
+            {busy && (
+              <p className="text-xs text-blue-600 flex items-center gap-1.5">
+                <Loader2 size={12} className="animate-spin" /> Searching arXiv…
+              </p>
+            )}
+          </div>
+        )}
+
         {/* Progress */}
         {progress && (
           <div className="mt-5 p-3 rounded-lg bg-blue-50 border border-blue-200 text-sm text-blue-800">
@@ -320,7 +448,7 @@ export default function ImportModal({ onClose }: Props) {
             {result ? 'Done' : 'Cancel'}
           </button>
           <button
-            onClick={tab === 'single' ? handleSingle : tab === 'bulk' ? handleBulk : handleBibtex}
+            onClick={tab === 'single' ? handleSingle : tab === 'bulk' ? handleBulk : tab === 'bibtex' ? handleBibtex : handleArxiv}
             disabled={busy}
             className="px-5 py-2.5 bg-blue-600 rounded-lg text-sm font-medium text-white hover:bg-blue-700 transition-colors disabled:opacity-50 flex items-center gap-2"
           >

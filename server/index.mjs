@@ -165,6 +165,32 @@ async function arxivFetchText(idList) {
   }).catch(err => { throw err; });
 }
 
+// Throttled arXiv *search* query (the search_query API, not id_list). Same
+// 429/5xx retry/backoff as arxivFetchText. Returns one page of Atom XML.
+async function arxivSearchFetch(searchQuery, start, perPage) {
+  return arxivQueue = arxivQueue.then(async () => {
+    const BACKOFFS = [3000, 8000, 20000];
+    const isRetryable = (s) => s === 429 || s >= 500;
+    const url = `https://export.arxiv.org/api/query?search_query=${encodeURIComponent(searchQuery)}`
+      + `&start=${start}&max_results=${perPage}&sortBy=submittedDate&sortOrder=descending`;
+    let lastErr;
+    for (let attempt = 0; attempt <= BACKOFFS.length; attempt++) {
+      if (attempt > 0) await new Promise(r => setTimeout(r, BACKOFFS[attempt - 1]));
+      const wait = Math.max(0, ARXIV_MIN_GAP_MS - (Date.now() - lastArxivCall));
+      if (wait > 0) await new Promise(r => setTimeout(r, wait));
+      lastArxivCall = Date.now();
+      let r;
+      try { r = await fetch(url); }
+      catch (netErr) { lastErr = new Error(`arXiv request failed: ${netErr.message}`); continue; }
+      const text = await r.text();
+      if (r.status === 200) return text;
+      lastErr = new Error(`arXiv ${r.status}`);
+      if (!isRetryable(r.status)) break;
+    }
+    throw lastErr ?? new Error('arXiv search failed');
+  }).catch(err => { throw err; });
+}
+
 async function fetchFromArxiv(id) {
   // Single throttled call (no retry — we'd rather fall back to S2 quickly)
   return arxivQueue = arxivQueue.then(async () => {
@@ -272,6 +298,74 @@ app.get('/api/arxiv-metadata-batch', async (req, res) => {
   }
 
   res.json({ results, errors });
+});
+
+// Build an arXiv search_query from a mode + value (+ optional date window).
+const ARXIV_CAT_RE = /^[a-z][a-z-]*(\.[A-Za-z-]+)?$/; // cs.LG, math.AP, hep-th
+function buildArxivSearchQuery({ mode, value, from, to }) {
+  const v = String(value).trim();
+  const field = mode === 'category' ? `cat:${v}`
+              : mode === 'author'   ? `au:"${v.replace(/"/g, '')}"`
+              :                       `all:"${v.replace(/"/g, '')}"`; // keyword
+  const parts = [field];
+  const fmt = (d, end) => {
+    const dt = new Date(`${d}T00:00:00Z`);
+    if (isNaN(dt.getTime())) return null;
+    const y = dt.getUTCFullYear();
+    const m = String(dt.getUTCMonth() + 1).padStart(2, '0');
+    const day = String(dt.getUTCDate()).padStart(2, '0');
+    return `${y}${m}${day}${end ? '2359' : '0000'}`;
+  };
+  if (from || to) {
+    const lo = (from && fmt(from, false)) || '199101010000';
+    const hi = (to && fmt(to, true))     || fmt(new Date().toISOString().slice(0, 10), true);
+    if (lo && hi) parts.push(`submittedDate:[${lo} TO ${hi}]`);
+  }
+  return parts.join(' AND ');
+}
+
+// Bulk-discover papers straight from the arXiv API so users don't have to
+// assemble id lists by hand. Modes: category (cat:cs.LG), author (au:"…"),
+// keyword (all:"…"), each optionally constrained to a submittedDate window.
+//   /api/arxiv-search?mode=category&value=cs.LG&from=2024-01-01&to=2024-12-31&max=200
+app.get('/api/arxiv-search', async (req, res) => {
+  const mode  = String(req.query.mode ?? 'category');
+  const value = String(req.query.value ?? '').trim();
+  const from  = req.query.from ? String(req.query.from) : '';
+  const to    = req.query.to ? String(req.query.to) : '';
+  let max     = parseInt(String(req.query.max ?? '100'), 10);
+
+  if (!['category', 'author', 'keyword'].includes(mode)) {
+    return res.status(400).json({ error: 'mode must be category, author, or keyword' });
+  }
+  if (!value) return res.status(400).json({ error: 'value is required' });
+  if (mode === 'category' && !ARXIV_CAT_RE.test(value)) {
+    return res.status(400).json({ error: `"${value}" is not a valid arXiv category (e.g. cs.LG, math.AP, hep-th)` });
+  }
+  if (!Number.isFinite(max) || max < 1) max = 100;
+  max = Math.min(max, 1000);
+
+  const searchQuery = buildArxivSearchQuery({ mode, value, from, to });
+  const perPage = 100;
+  const all = [];
+  const seen = new Set();
+  try {
+    for (let start = 0; start < max; start += perPage) {
+      const want = Math.min(perPage, max - start);
+      const xml  = await arxivSearchFetch(searchQuery, start, want);
+      const metas = extractAllArxivMetadata(xml);
+      if (metas.length === 0) break;                  // no more results
+      for (const m of metas) {
+        if (!seen.has(m.arxivId)) { seen.add(m.arxivId); all.push(m); }
+      }
+      if (metas.length < want) break;                 // reached the end
+    }
+  } catch (err) {
+    if (all.length === 0) return res.status(502).json({ error: `arXiv search failed: ${err.message}` });
+    // Otherwise fall through and return whatever we managed to collect.
+  }
+
+  res.json({ results: all.slice(0, max), total: all.length, truncated: all.length >= max });
 });
 
 app.get('/api/arxiv-abstract', async (req, res) => {

@@ -118,6 +118,41 @@ export async function fetchArxivMetadataBatch(arxivIds: string[], signal?: Abort
   return { results, errors: data.errors ?? {} };
 }
 
+export type ArxivSearchMode = 'category' | 'author' | 'keyword';
+
+export interface ArxivSearchParams {
+  mode:  ArxivSearchMode;
+  value: string;
+  from?: string;   // YYYY-MM-DD (optional submittedDate lower bound)
+  to?:   string;   // YYYY-MM-DD (optional upper bound)
+  max?:  number;   // cap (server clamps to 1000)
+}
+
+/**
+ * Discover papers directly from the arXiv API by category, author, or keyword
+ * (optionally within a date window) — so the user never has to assemble a list
+ * of ids by hand. The server pages through results and returns raw metadata.
+ */
+export async function fetchArxivBySearch(
+  p: ArxivSearchParams,
+  signal?: AbortSignal,
+): Promise<{ results: ArxivMetadata[]; total: number; truncated: boolean }> {
+  const params = new URLSearchParams({ mode: p.mode, value: p.value, max: String(p.max ?? 100) });
+  if (p.from) params.set('from', p.from);
+  if (p.to)   params.set('to', p.to);
+  const resp = await fetch(`/api/arxiv-search?${params.toString()}`, { signal });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({})) as { error?: string };
+    throw new Error(err.error ?? `arXiv search failed (HTTP ${resp.status})`);
+  }
+  const data = await resp.json() as { results: ArxivMetadataRaw[]; total: number; truncated: boolean };
+  return {
+    results:   (data.results ?? []).map(rawToMetadata),
+    total:     data.total ?? 0,
+    truncated: !!data.truncated,
+  };
+}
+
 // =========================================================================
 // Convert metadata to a Paper for the store
 // =========================================================================
