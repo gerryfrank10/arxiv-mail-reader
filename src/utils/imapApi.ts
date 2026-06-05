@@ -25,7 +25,7 @@ export async function fetchArxivPapersImap(
       'IMAP (iCloud, Outlook, Yahoo) needs the backend running and reachable from the page you have open:\n\n' +
       '• Docker (everything in one place): run `npm run app:up`, then open http://localhost:3001 — NOT :5173.\n' +
       '• Local dev: run `npm run dev:all`, then open http://localhost:5173.\n\n' +
-      'If you are on the hosted version (GitHub Pages), IMAP is not available there — only Gmail works.'
+      'If the app is served as a static build with no backend, IMAP is not available — only Gmail works.'
     );
   }
 

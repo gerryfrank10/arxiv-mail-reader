@@ -55,7 +55,7 @@ everything else is built on top.
 - **Database** — PostgreSQL (optional)
 
 Storage has two modes:
-- **IndexedDB (default, local-only)** — works with no backend; the Library/Reader run entirely in the browser. This is what the GitHub Pages build uses (Gmail only).
+- **IndexedDB (default, local-only)** — works with no backend; the Library/Reader run entirely in the browser (Gmail login only).
 - **Server mode (Postgres)** — set `DATABASE_URL` and the `/api/db/*` routes light up, enabling Books, Writer, Magazine, Collections, Cross-refs, trackers, and cross-device sync.
 
 ---
