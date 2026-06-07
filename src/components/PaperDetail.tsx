@@ -14,6 +14,7 @@ import PaperDiscoveryPanel from './PaperDiscoveryPanel';
 import CrossRefsPanel from './CrossRefsPanel';
 import SimilarPapersPanel from './SimilarPapersPanel';
 import { aiChat, hasAI, resolveAIConfig, providerLabel } from '../utils/aiProvider';
+import { paperFileUrl } from '../utils/researchApi';
 import { ArrowLeft } from 'lucide-react';
 
 interface Props {
@@ -22,6 +23,9 @@ interface Props {
 
 export default function PaperDetail({ paper }: Props) {
   const { papers, setSelectedPaper, updatePaperAbstract } = usePapers();
+  // Locally-uploaded PDF papers have a synthetic `local:` id and a server-stored file.
+  const isLocal = paper.arxivId.startsWith('local:');
+  const hasFile = !!paper.originalFilename || !!paper.filePath;
   const [citationCount, setCitationCount] = useState<number | null>(null);
   const [fetchedAbstract, setFetchedAbstract] = useState<string | null>(null);
   const [abstractLoading, setAbstractLoading] = useState(false);
@@ -30,6 +34,7 @@ export default function PaperDetail({ paper }: Props) {
 
   useEffect(() => {
     setCitationCount(null);
+    if (paper.arxivId.startsWith('local:')) return;   // not an arXiv paper
     fetchCitationCounts([paper.arxivId]).then(data => {
       const c = data[paper.arxivId];
       if (c !== undefined) setCitationCount(c);
@@ -40,7 +45,7 @@ export default function PaperDetail({ paper }: Props) {
   useEffect(() => {
     setFetchedAbstract(null);
     setAbstractError(null);
-    if (paper.abstract) return;
+    if (paper.abstract || paper.arxivId.startsWith('local:')) return;  // no arXiv abstract for uploads
     setAbstractLoading(true);
     let cancelled = false;
     const ctrl = new AbortController();
@@ -193,7 +198,9 @@ Return exactly this JSON structure (no other text):
             <ArrowLeft size={15} />
             Back
           </button>
-          <span className="text-xs text-slate-400 font-mono truncate hidden sm:inline">arXiv:{paper.arxivId}</span>
+          <span className="text-xs text-slate-400 font-mono truncate hidden sm:inline">
+            {isLocal ? (paper.originalFilename ?? 'Uploaded PDF') : `arXiv:${paper.arxivId}`}
+          </span>
         </div>
       </div>
 
@@ -241,7 +248,7 @@ Return exactly this JSON structure (no other text):
           </span>
           <span className="flex items-center gap-1.5">
             <HardDrive size={14} />
-            arXiv:{paper.arxivId}
+            {isLocal ? (paper.originalFilename ?? 'Uploaded PDF') : `arXiv:${paper.arxivId}`}
             {paper.size && ` · ${paper.size}`}
           </span>
           <span className="flex items-center gap-1.5">
@@ -317,7 +324,39 @@ Return exactly this JSON structure (no other text):
           )}
         </div>
 
+        {/* In-app PDF reader (uploaded papers) */}
+        {hasFile && (
+          <div className="mb-8">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-400">PDF</h2>
+              <div className="flex gap-2">
+                <a
+                  href={paperFileUrl(paper.id)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-slate-200 text-slate-600 rounded-lg hover:bg-slate-50"
+                >
+                  <ExternalLink size={13} /> Open in new tab
+                </a>
+                <a
+                  href={paperFileUrl(paper.id, { download: true })}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-slate-200 text-slate-600 rounded-lg hover:bg-slate-50"
+                >
+                  <FileText size={13} /> Download
+                </a>
+              </div>
+            </div>
+            <iframe
+              src={paperFileUrl(paper.id)}
+              title={paper.title}
+              className="w-full rounded-xl border border-slate-200 bg-slate-50"
+              style={{ height: '80vh' }}
+            />
+          </div>
+        )}
+
         {/* Abstract */}
+        {!(isLocal && !displayAbstract) && (
         <div className="mb-8">
           <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-400 mb-3">Abstract</h2>
           {abstractLoading ? (
@@ -345,9 +384,11 @@ Return exactly this JSON structure (no other text):
             />
           )}
         </div>
+        )}
 
         {/* Action buttons */}
         <div className="flex flex-wrap gap-3 mb-10 pb-8 border-b border-slate-200">
+          {!isLocal && (
           <a
             href={paper.url}
             target="_blank"
@@ -357,8 +398,9 @@ Return exactly this JSON structure (no other text):
             <ExternalLink size={15} />
             View on arXiv
           </a>
+          )}
           <a
-            href={paper.pdfUrl}
+            href={isLocal ? paperFileUrl(paper.id, { download: true }) : paper.pdfUrl}
             target="_blank"
             rel="noopener noreferrer"
             className="flex items-center gap-2 px-5 py-2.5 bg-slate-800 text-white text-sm font-medium rounded-lg hover:bg-slate-700 transition-colors"
@@ -366,6 +408,7 @@ Return exactly this JSON structure (no other text):
             <FileText size={15} />
             Download PDF
           </a>
+          {!isLocal && (
           <a
             href={`https://arxiv.org/html/${paper.arxivId}`}
             target="_blank"
@@ -375,6 +418,7 @@ Return exactly this JSON structure (no other text):
             <Code2 size={15} />
             HTML Version
           </a>
+          )}
           <a
             href={`https://scholar.google.com/scholar?q=${encodeURIComponent(paper.title)}`}
             target="_blank"

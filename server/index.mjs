@@ -1023,6 +1023,67 @@ app.delete('/api/db/books/:id/file', (req, res) => withUser(req, res, async (uid
   res.json({ ok: true });
 }));
 
+// ---------- Paper file uploads (locally-uploaded PDFs you read in-app) ----------
+// Stored under ./uploads/papers/<user>/<paperId>.<ext>. 50MB cap.
+mkdirSync(join(UPLOAD_ROOT, 'papers'), { recursive: true });
+
+const paperUpload = multer({
+  storage: multer.diskStorage({
+    destination: (req, _file, cb) => {
+      const email = req.get('x-user-email');
+      if (!email) return cb(new Error('X-User-Email header required'), '');
+      const dir = join(UPLOAD_ROOT, 'papers', email.replace(/[^a-z0-9_.@-]/gi, '_'));
+      mkdirSync(dir, { recursive: true });
+      cb(null, dir);
+    },
+    filename: (req, file, cb) => {
+      const ext = extname(file.originalname).toLowerCase() || '.pdf';
+      cb(null, `${req.params.id}${ext}`);
+    },
+  }),
+  limits: { fileSize: 50 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const ok = file.mimetype === 'application/pdf' || /\.pdf$/i.test(file.originalname);
+    if (ok) cb(null, true);
+    else cb(new Error(`Only PDF files are supported here (got ${file.mimetype || file.originalname})`));
+  },
+});
+
+app.post('/api/db/papers/:id/upload', (req, res) => withUser(req, res, async (uid) => {
+  const existing = await db.getPaper(uid, req.params.id);
+  if (!existing) return res.status(404).json({ error: 'paper not found — save it first' });
+  if (existing.filePath && existsSync(existing.filePath)) {
+    try { unlinkSync(existing.filePath); } catch { /* ignore */ }
+  }
+  paperUpload.single('file')(req, res, async (err) => {
+    if (err) return res.status(400).json({ error: err.message });
+    if (!req.file) return res.status(400).json({ error: 'no file in request (expected field "file")' });
+    await db.attachFileToPaper(uid, req.params.id, req.file);
+    const updated = await db.getPaper(uid, req.params.id);
+    res.json({ ok: true, paper: updated });
+  });
+}));
+
+app.get('/api/db/papers/:id/file', (req, res) => withUser(req, res, async (uid) => {
+  const p = await db.getPaper(uid, req.params.id);
+  if (!p?.filePath || !existsSync(p.filePath)) return res.status(404).json({ error: 'no file attached' });
+  res.setHeader('Content-Type', p.mimeType || 'application/pdf');
+  res.setHeader('Content-Length', String(statSync(p.filePath).size));
+  const disposition = req.query.download ? 'attachment' : 'inline';
+  res.setHeader('Content-Disposition',
+    `${disposition}; filename="${(p.originalFilename ?? 'paper.pdf').replace(/"/g, '')}"`);
+  res.sendFile(p.filePath);
+}));
+
+app.delete('/api/db/papers/:id/file', (req, res) => withUser(req, res, async (uid) => {
+  const p = await db.getPaper(uid, req.params.id);
+  if (p?.filePath && existsSync(p.filePath)) {
+    try { unlinkSync(p.filePath); } catch { /* ignore */ }
+  }
+  await db.clearPaperFile(uid, req.params.id);
+  res.json({ ok: true });
+}));
+
 // documents (Writer drafts)
 app.get('/api/db/documents', (req, res) => withUser(req, res, async (uid) => {
   res.json({ documents: await db.getDocuments(uid) });

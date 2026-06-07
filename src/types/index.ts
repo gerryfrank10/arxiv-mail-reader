@@ -14,6 +14,12 @@ export interface Paper {
   emailId: string;
   digestSubject: string;
   digestDate: Date;
+  // Locally-uploaded PDF (server-stored). Null/absent for normal arXiv papers.
+  filePath?: string | null;
+  fileSize?: number | null;
+  mimeType?: string | null;
+  originalFilename?: string | null;
+  uploadedAt?: number | null;
 }
 
 // AI providers supported. Anthropic uses its own protocol; everything else

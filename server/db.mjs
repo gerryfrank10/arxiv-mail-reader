@@ -26,6 +26,17 @@ export const db = {
       const r = await pool.query('SELECT 1');
       if (r.rows.length === 1) {
         console.log('[db] connected to Postgres');
+        // Ensure columns for locally-uploaded paper PDFs exist. Idempotent, so
+        // it works on a fresh DB and on an existing one without a manual
+        // `npm run db:migrate` (initdb migrations only run on a fresh volume).
+        await pool.query(`
+          ALTER TABLE papers
+            ADD COLUMN IF NOT EXISTS file_path         text,
+            ADD COLUMN IF NOT EXISTS file_size         bigint,
+            ADD COLUMN IF NOT EXISTS mime_type         text,
+            ADD COLUMN IF NOT EXISTS original_filename text,
+            ADD COLUMN IF NOT EXISTS uploaded_at       timestamptz
+        `);
         return true;
       }
     } catch (e) {
@@ -135,6 +146,32 @@ export const db = {
     await pool.query(
       `UPDATE papers SET abstract=$3 WHERE user_id=$1 AND id=$2`,
       [userId, paperId, abstract],
+    );
+  },
+
+  async getPaper(userId, id) {
+    const { rows } = await pool.query(
+      `SELECT * FROM papers WHERE user_id=$1 AND id=$2`,
+      [userId, id],
+    );
+    return rows[0] ? rowToPaper(rows[0]) : null;
+  },
+
+  async attachFileToPaper(userId, id, file) {
+    await pool.query(
+      `UPDATE papers
+       SET file_path=$3, file_size=$4, mime_type=$5, original_filename=$6, uploaded_at=now()
+       WHERE user_id=$1 AND id=$2`,
+      [userId, id, file.path, file.size, file.mimetype, file.originalname],
+    );
+  },
+
+  async clearPaperFile(userId, id) {
+    await pool.query(
+      `UPDATE papers
+       SET file_path=NULL, file_size=NULL, mime_type=NULL, original_filename=NULL, uploaded_at=NULL
+       WHERE user_id=$1 AND id=$2`,
+      [userId, id],
     );
   },
 
@@ -876,6 +913,12 @@ function rowToPaper(r) {
     digestSubject: r.digest_subject ?? '',
     digestDate:    r.digest_date,
     source:        r.source ?? 'email',
+    // Locally-uploaded PDF (null for normal arXiv papers)
+    filePath:         r.file_path ?? null,
+    fileSize:         r.file_size != null ? Number(r.file_size) : null,
+    mimeType:         r.mime_type ?? null,
+    originalFilename: r.original_filename ?? null,
+    uploadedAt:       r.uploaded_at ? new Date(r.uploaded_at).getTime() : null,
   };
 }
 

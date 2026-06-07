@@ -43,6 +43,7 @@ interface PapersContextValue {
   markAllRead:    () => void;
   markAllUnread:  () => void;
   addImportedPapers: (papers: Paper[]) => Promise<{ added: number; duplicates: number }>;
+  reloadPapers: () => Promise<void>;
   setSearchQuery: (q: string) => void;
   setSelectedCategory: (c: string) => void;
   setAuthorFilter: (a: string) => void;
@@ -309,6 +310,7 @@ export function PapersProvider({ children }: { children: React.ReactNode }) {
       sync, setSelectedPaper: setSelectedPaperFn,
       markRead, markUnread, markManyRead, markManyUnread, markAllRead, markAllUnread,
       addImportedPapers,
+      reloadPapers: loadAll,
       setSearchQuery, setSelectedCategory,
       setAuthorFilter, setAssessmentFilter, setSortBy, setSortDir,
       updateSettings, updatePaperAbstract,

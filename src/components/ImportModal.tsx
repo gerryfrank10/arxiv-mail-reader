@@ -1,5 +1,5 @@
 import { useState, useRef } from 'react';
-import { X, Upload, FileText, Plus, Loader2, AlertCircle, CheckCircle2, FileUp, Search } from 'lucide-react';
+import { X, Upload, FileText, Plus, Loader2, AlertCircle, CheckCircle2, FileUp, Search, File as FileIcon } from 'lucide-react';
 import { usePapers } from '../contexts/PapersContext';
 import {
   extractArxivIds,
@@ -10,13 +10,14 @@ import {
   bibEntryToPaper,
   type ArxivSearchMode,
 } from '../utils/paperImport';
+import { uploadPaperFile } from '../utils/researchApi';
 import { Paper } from '../types';
 
 interface Props {
   onClose: () => void;
 }
 
-type Tab = 'single' | 'bulk' | 'bibtex' | 'arxiv';
+type Tab = 'single' | 'bulk' | 'bibtex' | 'arxiv' | 'upload';
 
 // A few common arXiv categories offered as autocomplete suggestions.
 const COMMON_CATEGORIES = [
@@ -32,7 +33,7 @@ interface ProgressState {
 }
 
 export default function ImportModal({ onClose }: Props) {
-  const { addImportedPapers } = usePapers();
+  const { addImportedPapers, reloadPapers, storageMode } = usePapers();
   const [tab, setTab]       = useState<Tab>('single');
   const [busy, setBusy]     = useState(false);
   const [progress, setProgress] = useState<ProgressState | null>(null);
@@ -46,6 +47,9 @@ export default function ImportModal({ onClose }: Props) {
   // bibtex
   const [bibText, setBibText]         = useState('');
   const fileInput = useRef<HTMLInputElement>(null);
+  // upload local PDFs
+  const [uploadFiles, setUploadFiles] = useState<File[]>([]);
+  const pdfInput = useRef<HTMLInputElement>(null);
   // from arXiv (bulk discover)
   const [arxivMode,  setArxivMode]  = useState<ArxivSearchMode>('category');
   const [arxivValue, setArxivValue] = useState('');
@@ -58,6 +62,7 @@ export default function ImportModal({ onClose }: Props) {
     setProgress(null);
     setError(null);
     setResult(null);
+    setUploadFiles([]);
   }
 
   async function importFromArxivIds(ids: string[]) {
@@ -210,6 +215,69 @@ export default function ImportModal({ onClose }: Props) {
     }
   }
 
+  function makeLocalPaper(file: File): Paper {
+    const uuid = (crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    const now = new Date();
+    const title = file.name.replace(/\.pdf$/i, '').replace(/[._]+/g, ' ').trim() || 'Untitled PDF';
+    return {
+      id: `local-${uuid}`,
+      arxivId: `local:${uuid}`,
+      date: now.toDateString(),
+      size: '',
+      title,
+      authors: '',
+      authorList: [],
+      categories: [],
+      comments: '',
+      abstract: '',
+      url: '',
+      pdfUrl: '',
+      emailId: 'upload',
+      digestSubject: 'Uploaded PDF',
+      digestDate: now,
+    };
+  }
+
+  async function handleUpload() {
+    if (storageMode !== 'server') {
+      setError('Uploading PDFs needs server storage. Open Settings → Storage and switch to "Server (Postgres)", then try again.');
+      return;
+    }
+    if (uploadFiles.length === 0) {
+      setError('Choose one or more PDF files to upload.');
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    setResult(null);
+    setProgress({ done: 0, total: uploadFiles.length, failures: [] });
+
+    // Create the paper rows first (server-side), then attach each file.
+    const pairs = uploadFiles.map(file => ({ file, paper: makeLocalPaper(file) }));
+    const failures: Array<{ id: string; reason: string }> = [];
+    try {
+      await addImportedPapers(pairs.map(p => p.paper));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not create the paper records.');
+      setBusy(false);
+      return;
+    }
+    let added = 0;
+    for (let i = 0; i < pairs.length; i++) {
+      try {
+        await uploadPaperFile(pairs[i].paper.id, pairs[i].file);
+        added++;
+      } catch (e) {
+        failures.push({ id: pairs[i].file.name, reason: e instanceof Error ? e.message : 'upload failed' });
+      }
+      setProgress({ done: i + 1, total: pairs.length, failures: [...failures] });
+    }
+    await reloadPapers();
+    setResult({ added, duplicates: 0, failed: failures.length });
+    setUploadFiles([]);
+    setBusy(false);
+  }
+
   async function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0];
     if (!f) return;
@@ -223,6 +291,7 @@ export default function ImportModal({ onClose }: Props) {
     { id: 'bulk',   label: 'Bulk paste',     icon: <FileText size={13} /> },
     { id: 'bibtex', label: 'BibTeX (.bib)',  icon: <FileUp size={13} /> },
     { id: 'arxiv',  label: 'From arXiv',     icon: <Search size={13} /> },
+    { id: 'upload', label: 'Upload PDF',     icon: <Upload size={13} /> },
   ];
 
   return (
@@ -396,6 +465,72 @@ export default function ImportModal({ onClose }: Props) {
           </div>
         )}
 
+        {tab === 'upload' && (
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-2">
+              Upload PDFs from your computer
+            </label>
+            {storageMode !== 'server' ? (
+              <div className="px-3 py-2.5 rounded-lg bg-amber-50 border border-amber-200 text-sm text-amber-800 flex items-start gap-2">
+                <AlertCircle size={15} className="shrink-0 mt-0.5" />
+                <span>Uploading PDFs needs server storage. Open <strong>Settings → Storage</strong> and switch to “Server (Postgres)”, then come back.</span>
+              </div>
+            ) : (
+              <>
+                <div
+                  onClick={() => pdfInput.current?.click()}
+                  onDragOver={e => { e.preventDefault(); }}
+                  onDrop={e => {
+                    e.preventDefault();
+                    const dropped = Array.from(e.dataTransfer.files).filter(f => /\.pdf$/i.test(f.name) || f.type === 'application/pdf');
+                    if (dropped.length) setUploadFiles(prev => [...prev, ...dropped]);
+                  }}
+                  className="cursor-pointer border-2 border-dashed border-slate-200 rounded-xl px-6 py-8 text-center hover:border-blue-300 hover:bg-blue-50/40 transition-colors"
+                >
+                  <Upload size={22} className="mx-auto text-slate-400 mb-2" />
+                  <p className="text-sm text-slate-600 font-medium">Drop PDF files here, or click to browse</p>
+                  <p className="text-xs text-slate-400 mt-1">PDF only · up to 50 MB each · read them in-app after upload</p>
+                </div>
+                <input
+                  ref={pdfInput}
+                  type="file"
+                  accept="application/pdf,.pdf"
+                  multiple
+                  onChange={e => {
+                    const chosen = Array.from(e.target.files ?? []);
+                    if (chosen.length) setUploadFiles(prev => [...prev, ...chosen]);
+                    e.target.value = '';
+                  }}
+                  className="hidden"
+                />
+                {uploadFiles.length > 0 && (
+                  <ul className="mt-3 space-y-1.5">
+                    {uploadFiles.map((f, i) => (
+                      <li key={`${f.name}-${i}`} className="flex items-center gap-2 px-3 py-2 rounded-lg bg-slate-50 border border-slate-200 text-sm">
+                        <FileIcon size={14} className="text-blue-500 shrink-0" />
+                        <span className="flex-1 truncate text-slate-700">{f.name}</span>
+                        <span className="text-xs text-slate-400">{(f.size / 1024 / 1024).toFixed(1)} MB</span>
+                        {!busy && (
+                          <button
+                            onClick={() => setUploadFiles(prev => prev.filter((_, j) => j !== i))}
+                            className="text-slate-400 hover:text-red-500"
+                            title="Remove"
+                          >
+                            <X size={13} />
+                          </button>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                <p className="mt-2 text-xs text-slate-400">
+                  Each PDF becomes a paper in your library (titled from the filename) that you can open and read in-app.
+                </p>
+              </>
+            )}
+          </div>
+        )}
+
         {/* Progress */}
         {progress && (
           <div className="mt-5 p-3 rounded-lg bg-blue-50 border border-blue-200 text-sm text-blue-800">
@@ -448,7 +583,7 @@ export default function ImportModal({ onClose }: Props) {
             {result ? 'Done' : 'Cancel'}
           </button>
           <button
-            onClick={tab === 'single' ? handleSingle : tab === 'bulk' ? handleBulk : tab === 'bibtex' ? handleBibtex : handleArxiv}
+            onClick={tab === 'single' ? handleSingle : tab === 'bulk' ? handleBulk : tab === 'bibtex' ? handleBibtex : tab === 'arxiv' ? handleArxiv : handleUpload}
             disabled={busy}
             className="px-5 py-2.5 bg-blue-600 rounded-lg text-sm font-medium text-white hover:bg-blue-700 transition-colors disabled:opacity-50 flex items-center gap-2"
           >

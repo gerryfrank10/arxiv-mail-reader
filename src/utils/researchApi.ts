@@ -116,6 +116,44 @@ export function bookFileUrl(bookId: string, opts: { download?: boolean } = {}): 
   return `/api/db/books/${encodeURIComponent(bookId)}/file?${params}`;
 }
 
+// ---------- Paper PDF uploads (read in-app) ----------
+
+export async function uploadPaperFile(paperId: string, file: File): Promise<void> {
+  const form = new FormData();
+  form.append('file', file);
+  const email = userEmailFromLocalStorage();
+  const headers: Record<string, string> = {};
+  if (email) headers['x-user-email'] = email;
+  const r = await fetch(`/api/db/papers/${encodeURIComponent(paperId)}/upload`, {
+    method: 'POST',
+    headers,
+    body: form,
+  });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({})) as { error?: string };
+    throw new Error(err.error ?? `Upload failed (HTTP ${r.status})`);
+  }
+}
+
+export async function deletePaperFile(paperId: string): Promise<void> {
+  await call(`/api/db/papers/${encodeURIComponent(paperId)}/file`, { method: 'DELETE' });
+}
+
+// URL the browser can open directly (<iframe src>, <a href>) — email goes in
+// the query since those can't set headers; the server route accepts either.
+export function paperFileUrl(paperId: string, opts: { download?: boolean } = {}): string {
+  const email = (() => {
+    try {
+      const raw = localStorage.getItem('arxiv_auth_session');
+      return raw ? (JSON.parse(raw) as { email?: string }).email ?? '' : '';
+    } catch { return ''; }
+  })();
+  const params = new URLSearchParams();
+  if (opts.download) params.set('download', '1');
+  if (email)         params.set('email', email);
+  return `/api/db/papers/${encodeURIComponent(paperId)}/file?${params}`;
+}
+
 // ---------- Documents (Writer) ----------
 
 export async function listDocuments(): Promise<ResearchDocument[]> {
