@@ -535,11 +535,17 @@ Return exactly this JSON structure (no other text):
         {/* Your own cross-references (books, other papers, your docs) */}
         <CrossRefsPanel sourceKind="paper" sourceId={paper.arxivId} title="My cross-references" />
 
-        {/* Local TF-IDF similarity against library + inbox */}
-        <SimilarPapersPanel paper={paper} />
+        {/* Discovery features below rely on the paper being known to arXiv /
+            Semantic Scholar — skip them for locally-uploaded PDFs. */}
+        {!isLocal && (
+          <>
+            {/* Local TF-IDF similarity against library + inbox */}
+            <SimilarPapersPanel paper={paper} />
 
-        {/* Citation-graph exploration via Semantic Scholar */}
-        <PaperDiscoveryPanel paper={paper} />
+            {/* Citation-graph exploration via Semantic Scholar */}
+            <PaperDiscoveryPanel paper={paper} />
+          </>
+        )}
 
         {/* Related papers (from your inbox) */}
         {related.length > 0 && (
