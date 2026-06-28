@@ -1,4 +1,5 @@
 import express from 'express';
+import compression from 'compression';
 import cors from 'cors';
 import { ImapFlow } from 'imapflow';
 import { simpleParser } from 'mailparser';
@@ -18,6 +19,9 @@ const isProd = process.env.NODE_ENV === 'production';
 // Bumped to handle large migration payloads (hundreds of papers with
 // full abstracts). The actual ceiling for a 1000-paper migration is
 // around 8-10MB; 100mb gives us comfortable headroom for any direction.
+// gzip responses — the paper-list payload is mostly text (abstracts) and
+// compresses ~7x, which sharply cuts transfer time for large libraries.
+app.use(compression());
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ extended: true, limit: '100mb' }));
 if (!isProd) {

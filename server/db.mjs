@@ -73,67 +73,50 @@ export const db = {
 
   async upsertPapers(userId, papers) {
     if (papers.length === 0) return { inserted: 0, skipped: 0 };
-    // Each row gets its own savepoint-style attempt so duplicates or bad
-    // rows don't poison the whole batch. We try the id-keyed upsert first;
-    // if that hits the (user_id, arxiv_id) UNIQUE constraint (i.e. two
-    // distinct internal ids pointing at the same arxiv id) we fall back to
-    // an arxiv_id-keyed UPDATE that touches everything except the id.
     const client = await pool.connect();
     let inserted = 0;
     let skipped  = 0;
     try {
-      for (const p of papers) {
-        // Every text column is NOT NULL with a '' default, but a column default
-        // only kicks in when the column is OMITTED from the INSERT — passing an
-        // explicit NULL still violates the constraint. Imported arXiv papers
-        // routinely lack a comment (and sometimes pdf url / date), so coalesce
-        // the optional fields to '' here or the row gets rejected and skipped.
-        const params = [
-          p.id, userId, p.arxivId, p.title ?? '', p.authors ?? '', p.authorList ?? [], p.categories ?? [],
-          p.abstract ?? '', p.comments ?? '', p.url ?? '', p.pdfUrl ?? '', p.size ?? '', p.date ?? '', p.emailId ?? '',
-          p.digestSubject ?? '', p.digestDate ?? new Date().toISOString(), p.source ?? 'email',
-        ];
+      // Fast path: one multi-row upsert per chunk (keyed on the (user_id, id)
+      // PK). This turns "N papers = N round-trips" into N/CHUNK — the fix for
+      // slow syncs / bulk imports, especially on a remote DB. If a chunk fails
+      // (a bad row, or a different id colliding on the (user_id, arxiv_id)
+      // unique constraint, which can't be handled by ON CONFLICT (id)), we fall
+      // back to the per-row path for just that chunk so one row can't poison it.
+      const CHUNK = 400;
+      for (let i = 0; i < papers.length; i += CHUNK) {
+        const chunk = papers.slice(i, i + CHUNK);
         try {
+          const values = [];
+          const params = [];
+          for (const p of chunk) {
+            const b = params.length;
+            values.push(`($${b+1},$${b+2},$${b+3},$${b+4},$${b+5},$${b+6},$${b+7},$${b+8},$${b+9},$${b+10},$${b+11},$${b+12},$${b+13},$${b+14},$${b+15},$${b+16},$${b+17})`);
+            params.push(
+              p.id, userId, p.arxivId, p.title ?? '', p.authors ?? '', p.authorList ?? [], p.categories ?? [],
+              p.abstract ?? '', p.comments ?? '', p.url ?? '', p.pdfUrl ?? '', p.size ?? '', p.date ?? '', p.emailId ?? '',
+              p.digestSubject ?? '', p.digestDate ?? new Date().toISOString(), p.source ?? 'email',
+            );
+          }
           await client.query(
             `INSERT INTO papers (
                id, user_id, arxiv_id, title, authors, author_list, categories,
                abstract, comments, url, pdf_url, size, date, email_id,
                digest_subject, digest_date, source
-             ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+             ) VALUES ${values.join(',')}
              ON CONFLICT (user_id, id) DO UPDATE SET
-               arxiv_id=$3, title=$4, authors=$5, author_list=$6, categories=$7,
-               abstract=$8, comments=$9, url=$10, pdf_url=$11, size=$12, date=$13,
-               email_id=$14, digest_subject=$15, digest_date=$16, source=$17`,
+               arxiv_id=EXCLUDED.arxiv_id, title=EXCLUDED.title, authors=EXCLUDED.authors,
+               author_list=EXCLUDED.author_list, categories=EXCLUDED.categories, abstract=EXCLUDED.abstract,
+               comments=EXCLUDED.comments, url=EXCLUDED.url, pdf_url=EXCLUDED.pdf_url, size=EXCLUDED.size,
+               date=EXCLUDED.date, email_id=EXCLUDED.email_id, digest_subject=EXCLUDED.digest_subject,
+               digest_date=EXCLUDED.digest_date, source=EXCLUDED.source`,
             params,
           );
-          inserted++;
-        } catch (e) {
-          // 23505 = unique_violation. The only one we care about here is
-          // (user_id, arxiv_id) — a different internal id pointing at an
-          // arxiv id we already have. Update by arxiv_id and move on.
-          if (e.code === '23505' && /arxiv_id/.test(e.constraint ?? '')) {
-            // Update by arxiv_id. Note we DON'T pass p.id here — PostgreSQL
-            // can't infer the type of an unused $1, and we want to leave
-            // the existing row's primary key alone anyway.
-            await client.query(
-              `UPDATE papers SET
-                 title=$3, authors=$4, author_list=$5, categories=$6,
-                 abstract=COALESCE(NULLIF($7, ''), abstract),
-                 comments=$8, url=$9, pdf_url=$10, size=$11, date=$12,
-                 email_id=$13, digest_subject=$14, digest_date=$15, source=$16
-               WHERE user_id=$1 AND arxiv_id=$2`,
-              [
-                userId, p.arxivId, p.title ?? '', p.authors ?? '', p.authorList ?? [], p.categories ?? [],
-                p.abstract ?? '', p.comments ?? '', p.url ?? '', p.pdfUrl ?? '', p.size ?? '', p.date ?? '', p.emailId ?? '',
-                p.digestSubject ?? '', p.digestDate ?? new Date().toISOString(), p.source ?? 'email',
-              ],
-            );
-            skipped++;
-            continue;
-          }
-          // Anything else: log + skip, don't kill the whole batch
-          console.warn(`[db] paper ${p.id} (arxiv:${p.arxivId}) skipped: ${e.message}`);
-          skipped++;
+          inserted += chunk.length;
+        } catch {
+          const r = await upsertPapersPerRow(client, userId, chunk);
+          inserted += r.inserted;
+          skipped  += r.skipped;
         }
       }
       return { inserted, skipped };
@@ -894,6 +877,57 @@ function rowToDocument(r) {
 }
 
 // ----- row → typed object mappers -----
+
+// Per-row upsert fallback for upsertPapers: tolerant of a single bad row and
+// of (user_id, arxiv_id) collisions (a different id pointing at an arxiv id we
+// already store), which the fast multi-row path can't resolve via ON CONFLICT.
+async function upsertPapersPerRow(client, userId, papers) {
+  let inserted = 0;
+  let skipped  = 0;
+  for (const p of papers) {
+    const params = [
+      p.id, userId, p.arxivId, p.title ?? '', p.authors ?? '', p.authorList ?? [], p.categories ?? [],
+      p.abstract ?? '', p.comments ?? '', p.url ?? '', p.pdfUrl ?? '', p.size ?? '', p.date ?? '', p.emailId ?? '',
+      p.digestSubject ?? '', p.digestDate ?? new Date().toISOString(), p.source ?? 'email',
+    ];
+    try {
+      await client.query(
+        `INSERT INTO papers (
+           id, user_id, arxiv_id, title, authors, author_list, categories,
+           abstract, comments, url, pdf_url, size, date, email_id,
+           digest_subject, digest_date, source
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+         ON CONFLICT (user_id, id) DO UPDATE SET
+           arxiv_id=$3, title=$4, authors=$5, author_list=$6, categories=$7,
+           abstract=$8, comments=$9, url=$10, pdf_url=$11, size=$12, date=$13,
+           email_id=$14, digest_subject=$15, digest_date=$16, source=$17`,
+        params,
+      );
+      inserted++;
+    } catch (e) {
+      if (e.code === '23505' && /arxiv_id/.test(e.constraint ?? '')) {
+        await client.query(
+          `UPDATE papers SET
+             title=$3, authors=$4, author_list=$5, categories=$6,
+             abstract=COALESCE(NULLIF($7, ''), abstract),
+             comments=$8, url=$9, pdf_url=$10, size=$11, date=$12,
+             email_id=$13, digest_subject=$14, digest_date=$15, source=$16
+           WHERE user_id=$1 AND arxiv_id=$2`,
+          [
+            userId, p.arxivId, p.title ?? '', p.authors ?? '', p.authorList ?? [], p.categories ?? [],
+            p.abstract ?? '', p.comments ?? '', p.url ?? '', p.pdfUrl ?? '', p.size ?? '', p.date ?? '', p.emailId ?? '',
+            p.digestSubject ?? '', p.digestDate ?? new Date().toISOString(), p.source ?? 'email',
+          ],
+        );
+        skipped++;
+        continue;
+      }
+      console.warn(`[db] paper ${p.id} (arxiv:${p.arxivId}) skipped: ${e.message}`);
+      skipped++;
+    }
+  }
+  return { inserted, skipped };
+}
 
 function rowToPaper(r) {
   return {

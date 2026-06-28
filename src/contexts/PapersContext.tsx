@@ -138,12 +138,18 @@ export function PapersProvider({ children }: { children: React.ReactNode }) {
         throw new Error('No valid credentials.');
       }
 
-      // Merge new papers into the active store (idempotent upsert)
+      // Persist the freshly-fetched papers (idempotent upsert).
       await papersStore.upsert(newPapers);
 
-      // Reload full set so old papers are preserved
-      const all = await papersStore.getAll();
-      setPapers(all);
+      // Merge them into in-memory state instead of re-downloading the whole
+      // library — getAll() can be tens of MB once you have many thousands of
+      // papers, which made every sync slow. The full set is already in `papers`
+      // from the initial load; we only need to fold in what's new.
+      setPapers(prev => {
+        const byId = new Map(prev.map(p => [p.id, p]));
+        for (const p of newPapers) byId.set(p.id, p);
+        return [...byId.values()];
+      });
 
       const now = new Date();
       await metaStore.setLastSynced(now);
