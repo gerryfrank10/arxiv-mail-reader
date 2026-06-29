@@ -1,4 +1,4 @@
-import { Search, ChevronDown, SortAsc, SortDesc, X, User, Compass, Target, MailCheck, Upload, MoreHorizontal, Library, Pen, Plus, FileText, Trash2, Mail, RefreshCw } from 'lucide-react';
+import { Search, ChevronDown, SortAsc, SortDesc, X, User, Compass, Target, MailCheck, Upload, MoreHorizontal, Library, Pen, Plus, FileText, Trash2, Mail, RefreshCw, Heart } from 'lucide-react';
 import { useState, useRef, useEffect, useMemo } from 'react';
 import { usePapers } from '../contexts/PapersContext';
 import { useLibrary } from '../contexts/LibraryContext';
@@ -72,6 +72,7 @@ function InboxPane() {
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [showAuthorInput, setShowAuthorInput] = useState(!!authorFilter);
   const [showImport,  setShowImport]  = useState(false);
+  const [likedOnly,   setLikedOnly]   = useState(false);
   const searchRef    = useRef<HTMLDivElement>(null);
   const moreMenuRef  = useRef<HTMLDivElement>(null);
 
@@ -237,7 +238,7 @@ function InboxPane() {
           </button>
         )}
 
-        <div className="flex gap-1 flex-wrap">
+        <div className="flex gap-1 flex-wrap items-center">
           {ASSESSMENT_LEVELS.map(level => (
             <button key={level} onClick={() => setAssessmentFilter(assessmentFilter === level ? '' : level)}
               className={`text-[10px] font-semibold px-2 py-1 rounded-full border transition-all ${
@@ -246,6 +247,16 @@ function InboxPane() {
                   : 'bg-slate-800 text-slate-500 border-slate-700 hover:border-slate-500'
               }`}>{level}</button>
           ))}
+          <button
+            onClick={() => setLikedOnly(v => !v)}
+            title="Show only liked papers"
+            className={`flex items-center gap-1 text-[10px] font-semibold px-2 py-1 rounded-full border transition-all ${
+              likedOnly
+                ? 'bg-rose-500/20 text-rose-300 border-rose-500/50 ring-1 ring-offset-1 ring-offset-slate-900 ring-rose-400'
+                : 'bg-slate-800 text-slate-500 border-slate-700 hover:border-slate-500'
+            }`}>
+            <Heart size={9} className={likedOnly ? 'fill-current' : ''} /> Liked
+          </button>
         </div>
 
         {activeFilterCount > 0 && (
@@ -282,24 +293,28 @@ function InboxPane() {
       </div>
 
       {/* Paper list */}
-      <InboxList loading={loading} />
+      <InboxList loading={loading} likedOnly={likedOnly} />
 
       {showImport && <ImportModal onClose={() => setShowImport(false)} />}
     </>
   );
 }
 
-function InboxList({ loading }: { loading: boolean }) {
+function InboxList({ loading, likedOnly = false }: { loading: boolean; likedOnly?: boolean }) {
   const { filteredPapers, papers, selectedPaper, setSelectedPaper, readIds } = usePapers();
-  const { isSaved } = useLibrary();
-  const pager = usePagination(filteredPapers, 50);
+  const { isSaved, isLiked } = useLibrary();
+  const visible = useMemo(
+    () => likedOnly ? filteredPapers.filter(p => isLiked(p.id)) : filteredPapers,
+    [filteredPapers, likedOnly, isLiked],
+  );
+  const pager = usePagination(visible, 50);
 
   return (
     <>
       <div className="flex-1 overflow-y-auto custom-scroll">
-        {loading && filteredPapers.length === 0 && <div className="px-4 py-8 text-center text-slate-500 text-xs">Loading papers…</div>}
-        {!loading && filteredPapers.length === 0 && papers.length > 0 && (
-          <div className="px-4 py-8 text-center text-slate-500 text-xs">No papers match your filters.</div>
+        {loading && visible.length === 0 && <div className="px-4 py-8 text-center text-slate-500 text-xs">Loading papers…</div>}
+        {!loading && visible.length === 0 && papers.length > 0 && (
+          <div className="px-4 py-8 text-center text-slate-500 text-xs">{likedOnly ? 'No liked papers match your filters.' : 'No papers match your filters.'}</div>
         )}
         {pager.slice.map(paper => (
           <PaperCard

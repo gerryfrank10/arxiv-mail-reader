@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { BookMarked, Search, Trash2, ExternalLink, BarChart2, Download } from 'lucide-react';
+import { BookMarked, Search, Trash2, ExternalLink, BarChart2, Download, Heart } from 'lucide-react';
 import { useLibrary } from '../contexts/LibraryContext';
 import { usePapers } from '../contexts/PapersContext';
 import { computeAssessment, ASSESSMENT_BADGE, ASSESSMENT_BAR } from '../utils/assessment';
@@ -8,11 +8,16 @@ import { downloadBibFile } from '../utils/citationFormats';
 import { format } from 'date-fns';
 
 export default function LibraryView() {
-  const { savedPapers, unsavePaper } = useLibrary();
+  const { savedPapers, unsavePaper, likedPapers, unlikePaper } = useLibrary();
   const { setSelectedPaper } = usePapers();
   const [query, setQuery] = useState('');
+  const [tab, setTab] = useState<'saved' | 'liked'>('saved');
 
-  const displayed = savedPapers.filter(p => {
+  const isLikedTab = tab === 'liked';
+  const source = isLikedTab ? likedPapers : savedPapers;
+  const remove = isLikedTab ? unlikePaper : unsavePaper;
+
+  const displayed = source.filter(p => {
     if (!query) return true;
     const q = query.toLowerCase();
     return (
@@ -23,13 +28,14 @@ export default function LibraryView() {
     );
   });
 
-  const totalSaved = savedPapers.length;
-  const inDepth  = savedPapers.filter(p => computeAssessment(p).label === 'In Depth').length;
-  const avgScore = totalSaved
-    ? Math.round(savedPapers.reduce((sum, p) => sum + computeAssessment(p).score, 0) / totalSaved)
+  const total    = source.length;
+  const inDepth  = source.filter(p => computeAssessment(p).label === 'In Depth').length;
+  const avgScore = total
+    ? Math.round(source.reduce((sum, p) => sum + computeAssessment(p).score, 0) / total)
     : 0;
 
-  if (totalSaved === 0) {
+  // Only show the full empty state when BOTH collections are empty.
+  if (savedPapers.length === 0 && likedPapers.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center h-full text-center px-8">
         <div className="w-16 h-16 rounded-2xl bg-slate-100 flex items-center justify-center mb-4">
@@ -37,7 +43,7 @@ export default function LibraryView() {
         </div>
         <h2 className="text-xl font-semibold text-slate-700 mb-2">Your library is empty</h2>
         <p className="text-slate-400 text-sm max-w-sm">
-          Click the bookmark icon on any paper to save it here permanently — no expiry, always available.
+          Bookmark a paper to save it here, or tap the heart to like one — both live in this view.
         </p>
       </div>
     );
@@ -47,19 +53,19 @@ export default function LibraryView() {
     <div className="h-full overflow-y-auto main-scroll">
       <div className="max-w-5xl mx-auto px-8 py-8 fade-in">
         {/* Header */}
-        <div className="flex items-center justify-between mb-6 gap-3">
+        <div className="flex items-center justify-between mb-4 gap-3">
           <div>
             <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
               <BookMarked size={22} className="text-amber-500" />
               Your Library
             </h1>
             <p className="text-slate-500 text-sm mt-1">
-              {totalSaved} saved paper{totalSaved !== 1 ? 's' : ''} — stored permanently
+              {savedPapers.length} saved · {likedPapers.length} liked
             </p>
           </div>
           <button
-            onClick={() => downloadBibFile(savedPapers, `arxiv-library-${format(new Date(), 'yyyy-MM-dd')}.bib`)}
-            title="Export all saved papers as a BibTeX file"
+            onClick={() => downloadBibFile(source, `arxiv-${tab}-${format(new Date(), 'yyyy-MM-dd')}.bib`)}
+            title={`Export ${tab} papers as a BibTeX file`}
             className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 text-slate-700 text-sm font-medium rounded-lg hover:bg-slate-50 hover:border-slate-300 transition-all shadow-sm"
           >
             <Download size={14} />
@@ -67,11 +73,29 @@ export default function LibraryView() {
           </button>
         </div>
 
+        {/* Saved / Liked tabs */}
+        <div className="flex gap-1 bg-slate-100 rounded-lg p-1 w-fit mb-6">
+          <button
+            onClick={() => setTab('saved')}
+            className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-md text-sm font-medium transition-all ${tab === 'saved' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+          >
+            <BookMarked size={13} className={tab === 'saved' ? 'text-amber-500' : ''} /> Saved
+            <span className="text-[11px] text-slate-400">{savedPapers.length}</span>
+          </button>
+          <button
+            onClick={() => setTab('liked')}
+            className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-md text-sm font-medium transition-all ${tab === 'liked' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+          >
+            <Heart size={13} className={tab === 'liked' ? 'text-rose-500 fill-current' : ''} /> Liked
+            <span className="text-[11px] text-slate-400">{likedPapers.length}</span>
+          </button>
+        </div>
+
         {/* Quick stats */}
         <div className="grid grid-cols-3 gap-4 mb-6">
           <div className="bg-white rounded-xl border border-slate-100 p-4 shadow-sm text-center">
-            <p className="text-2xl font-bold text-slate-800">{totalSaved}</p>
-            <p className="text-xs text-slate-500 mt-0.5">Total saved</p>
+            <p className="text-2xl font-bold text-slate-800">{total}</p>
+            <p className="text-xs text-slate-500 mt-0.5">{isLikedTab ? 'Total liked' : 'Total saved'}</p>
           </div>
           <div className="bg-white rounded-xl border border-slate-100 p-4 shadow-sm text-center">
             <p className="text-2xl font-bold text-emerald-600">{inDepth}</p>
@@ -90,14 +114,18 @@ export default function LibraryView() {
             type="text"
             value={query}
             onChange={e => setQuery(e.target.value)}
-            placeholder="Search saved papers…"
+            placeholder={`Search ${isLikedTab ? 'liked' : 'saved'} papers…`}
             className="w-full pl-9 pr-4 py-2.5 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-400 transition-all"
           />
         </div>
 
         {/* Paper grid */}
         {displayed.length === 0 && (
-          <p className="text-center text-slate-400 text-sm py-8">No papers match your search.</p>
+          <p className="text-center text-slate-400 text-sm py-8">
+            {source.length === 0
+              ? (isLikedTab ? 'No liked papers yet — tap the heart on any paper.' : 'No saved papers yet — bookmark papers from your inbox.')
+              : 'No papers match your search.'}
+          </p>
         )}
 
         <div className="space-y-4">
@@ -125,8 +153,8 @@ export default function LibraryView() {
                       {assessment.label}
                     </span>
                     <button
-                      onClick={() => unsavePaper(paper.id)}
-                      title="Remove from library"
+                      onClick={() => remove(paper.id)}
+                      title={isLikedTab ? 'Unlike' : 'Remove from library'}
                       className="p-1.5 rounded-lg text-slate-300 hover:text-red-400 hover:bg-red-50 transition-all opacity-0 group-hover:opacity-100"
                     >
                       <Trash2 size={14} />
