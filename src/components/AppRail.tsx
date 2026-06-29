@@ -50,18 +50,20 @@ export default function AppRail({ activeView, setActiveView, onAISuggest, onSett
   const { inFlight, paused } = useAIActivity();
   const { unreadCount, loading, sync, setSelectedPaper } = usePapers();
   const { savedPapers } = useLibrary();
-  const { trackers, matchesByTracker, scoring } = useTracking();
+  const { trackers, newMatchesByTracker, scoring } = useTracking();
   const { user, logout } = useAuth();
 
-  const trackingMatchCount = useMemo(
-    () => trackers.reduce((sum, t) => sum + matchesByTracker(t.id).length, 0),
-    [trackers, matchesByTracker],
+  // Badge shows NEW (unseen) tracked papers — an actionable "you have N new
+  // matches" alert — rather than the ever-growing total match count.
+  const trackingNewCount = useMemo(
+    () => trackers.reduce((sum, t) => sum + (t.enabled ? newMatchesByTracker(t.id).length : 0), 0),
+    [trackers, newMatchesByTracker],
   );
 
   const items: RailItem[] = [
     { id: 'inbox',       icon: <Inbox      size={18} />, label: 'Inbox',       badge: unreadCount || null,        accent: 'blue' },
     { id: 'discover',    icon: <Compass    size={18} />, label: 'Discover',    badge: null,                       accent: 'indigo' },
-    { id: 'tracking',    icon: <Target     size={18} className={scoring ? 'animate-pulse' : ''} />, label: 'Tracking', badge: trackingMatchCount || null, accent: 'emerald' },
+    { id: 'tracking',    icon: <Target     size={18} className={scoring ? 'animate-pulse' : ''} />, label: 'Tracking', badge: trackingNewCount || null, accent: 'emerald' },
     { id: 'library',     icon: <BookMarked size={18} />, label: 'Library',     badge: savedPapers.length || null, accent: 'amber' },
     { id: 'books',       icon: <Library    size={18} />, label: 'Books',       badge: null,                       accent: 'cyan' },
     { id: 'collections', icon: <FolderOpen size={18} />, label: 'Collections', badge: null,                       accent: 'fuchsia' },

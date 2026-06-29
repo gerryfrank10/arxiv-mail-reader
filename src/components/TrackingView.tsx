@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react';
-import { Target, Plus, Edit2, RefreshCw, Loader2, Sparkles, Hash, TrendingUp, Clock } from 'lucide-react';
+import { Target, Plus, Edit2, RefreshCw, Loader2, Sparkles, Hash, TrendingUp, Clock, Check, Bell } from 'lucide-react';
 import { Tracker } from '../types';
 import { useTracking } from '../contexts/TrackingContext';
 import { usePapers } from '../contexts/PapersContext';
@@ -14,7 +14,7 @@ import Pager from './Pager';
 type SortMode = 'score' | 'date';
 
 export default function TrackingView() {
-  const { trackers, scores, scoring, rescoreTracker, scoreTrackerNow, matchesByTracker } = useTracking();
+  const { trackers, scores, scoring, rescoreTracker, scoreTrackerNow, matchesByTracker, newMatchesByTracker, markTrackerSeen } = useTracking();
   const { setSelectedPaper, settings, papers } = usePapers();
   const [activeId,    setActiveId]    = useState<string | null>(null);
   const [editing,     setEditing]     = useState<Tracker | null>(null);
@@ -44,6 +44,18 @@ export default function TrackingView() {
     for (const t of trackers) m.set(t.id, matchesByTracker(t.id).length);
     return m;
   }, [trackers, matchesByTracker]);
+
+  // Per-tracker NEW (unseen) count + the set of new paper ids for the active tracker
+  const newCountByTracker = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const t of trackers) m.set(t.id, newMatchesByTracker(t.id).length);
+    return m;
+  }, [trackers, newMatchesByTracker]);
+
+  const newIdsForActive = useMemo(
+    () => new Set(active ? newMatchesByTracker(active.id).map(m => m.paper.id) : []),
+    [active, newMatchesByTracker],
+  );
 
   // ----- Empty states -----
   if (trackers.length === 0) {
@@ -145,6 +157,7 @@ export default function TrackingView() {
           {trackers.map(t => {
             const cls = TRACKER_COLOR_CLASSES[t.color] ?? TRACKER_COLOR_CLASSES.blue;
             const count = countByTracker.get(t.id) ?? 0;
+            const newCount = newCountByTracker.get(t.id) ?? 0;
             const isActive = active?.id === t.id;
             return (
               <button
@@ -162,6 +175,11 @@ export default function TrackingView() {
                 <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${isActive ? 'bg-white/70' : 'bg-slate-100 text-slate-500'}`}>
                   {count}
                 </span>
+                {newCount > 0 && (
+                  <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-blue-600 text-white" title={`${newCount} new since you last looked`}>
+                    +{newCount}
+                  </span>
+                )}
               </button>
             );
           })}
@@ -171,6 +189,9 @@ export default function TrackingView() {
           <ActiveTrackerView
             tracker={active}
             matches={sortedMatches}
+            newIds={newIdsForActive}
+            newCount={newCountByTracker.get(active.id) ?? 0}
+            onMarkSeen={() => markTrackerSeen(active.id)}
             sortMode={sortMode}
             setSortMode={setSortMode}
             scoredCount={scores.filter(s => s.trackerId === active.id).length}
@@ -194,11 +215,14 @@ export default function TrackingView() {
 // ---------- Inner: tracker detail panel ----------
 
 function ActiveTrackerView({
-  tracker, matches, sortMode, setSortMode, scoredCount, totalPapers, aiAvailable,
+  tracker, matches, newIds, newCount, onMarkSeen, sortMode, setSortMode, scoredCount, totalPapers, aiAvailable,
   onEdit, onRescore, onScoreNow, onOpenPaper, isScoring,
 }: {
   tracker: Tracker;
   matches: ReturnType<ReturnType<typeof useTracking>['matchesByTracker']>;
+  newIds: Set<string>;
+  newCount: number;
+  onMarkSeen: () => void;
   sortMode: SortMode;
   setSortMode: (m: SortMode) => void;
   scoredCount: number;
@@ -211,7 +235,14 @@ function ActiveTrackerView({
   isScoring: boolean;
 }) {
   const cls = TRACKER_COLOR_CLASSES[tracker.color] ?? TRACKER_COLOR_CLASSES.blue;
-  const pager = usePagination(matches, 25);
+  // Surface new (unseen) matches first so they can't get buried under the backlog.
+  const ordered = useMemo(() => {
+    if (newIds.size === 0) return matches;
+    const fresh = matches.filter(m => newIds.has(m.paper.id));
+    const rest  = matches.filter(m => !newIds.has(m.paper.id));
+    return [...fresh, ...rest];
+  }, [matches, newIds]);
+  const pager = usePagination(ordered, 25);
 
   return (
     <div>
@@ -278,6 +309,22 @@ function ActiveTrackerView({
         />
       </div>
 
+      {/* New-since-last-seen banner — the "don't lose a paper as 100s arrive" cue */}
+      {newCount > 0 && (
+        <div className="mb-3 flex items-center gap-3 px-4 py-2.5 rounded-xl bg-blue-50 border border-blue-200">
+          <Bell size={15} className="text-blue-600 shrink-0" />
+          <span className="text-sm text-blue-800 flex-1">
+            <span className="font-bold">{newCount}</span> new match{newCount !== 1 ? 'es' : ''} since you last looked — shown first below.
+          </span>
+          <button
+            onClick={onMarkSeen}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-white border border-blue-300 text-blue-700 rounded-lg hover:bg-blue-100 transition-colors"
+          >
+            <Check size={13} /> Mark all seen
+          </button>
+        </div>
+      )}
+
       {/* Matches header + sort */}
       <div className="flex items-center justify-between mb-3">
         <h3 className="text-sm font-bold text-slate-700 flex items-center gap-1.5">
@@ -331,7 +378,10 @@ function ActiveTrackerView({
 
                 <div className="flex-1 min-w-0">
                   {/* Categories */}
-                  <div className="flex flex-wrap gap-1 mb-1">
+                  <div className="flex flex-wrap items-center gap-1 mb-1">
+                    {newIds.has(paper.id) && (
+                      <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-blue-600 text-white tracking-wide">NEW</span>
+                    )}
                     {paper.categories.slice(0, 3).map(cat => {
                       const color = CATEGORY_COLORS_LIGHT[cat] ?? CATEGORY_COLORS_LIGHT.default;
                       return (

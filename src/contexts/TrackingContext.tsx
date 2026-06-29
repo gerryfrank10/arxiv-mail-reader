@@ -27,7 +27,18 @@ interface TrackingValue {
   scoreNewPapers: (papers: Paper[]) => Promise<void>;
   // Derived
   matchesByTracker: (trackerId: string) => Array<{ paper: Paper; score: PaperScore }>;
+  /** Matches that arrived since the user last marked this tracker seen. */
+  newMatchesByTracker: (trackerId: string) => Array<{ paper: Paper; score: PaperScore }>;
   scoresForPaper:   (paperId: string)   => PaperScore[];
+  // "New since last seen" watermarks
+  lastSeen: Record<string, number>;
+  markTrackerSeen: (trackerId: string) => void;
+}
+
+const LASTSEEN_KEY = 'tracker.lastSeen.v1';
+function loadLastSeen(): Record<string, number> {
+  try { return JSON.parse(localStorage.getItem(LASTSEEN_KEY) || '{}') as Record<string, number>; }
+  catch { return {}; }
 }
 
 const TrackingContext = createContext<TrackingValue | null>(null);
@@ -43,6 +54,17 @@ export function TrackingProvider({ children }: { children: React.ReactNode }) {
   const [scores,   setScores]   = useState<PaperScore[]>([]);
   const [ready,    setReady]    = useState(false);
   const [scoring,  setScoring]  = useState<ScoringState | null>(null);
+  const [lastSeen, setLastSeen] = useState<Record<string, number>>(() => loadLastSeen());
+
+  // Mark a tracker's current matches as seen — clears its "new" badge. Stored
+  // per-device in localStorage so "new to me" is independent of cross-device sync.
+  const markTrackerSeen = useCallback((trackerId: string) => {
+    setLastSeen(prev => {
+      const next = { ...prev, [trackerId]: Date.now() };
+      try { localStorage.setItem(LASTSEEN_KEY, JSON.stringify(next)); } catch { /* ignore */ }
+      return next;
+    });
+  }, []);
 
   // Load from the active storage adapter
   const loadAll = useCallback(async () => {
@@ -57,6 +79,23 @@ export function TrackingProvider({ children }: { children: React.ReactNode }) {
   }, []);
   useEffect(() => { loadAll(); }, [loadAll]);
   useEffect(() => onStorageModeChange(() => { setReady(false); loadAll(); }), [loadAll]);
+
+  // Establish a "seen" baseline for any tracker that doesn't have one yet (e.g.
+  // trackers created before this feature) so their existing backlog isn't all
+  // flagged "new" — only papers scored after this point count as new arrivals.
+  useEffect(() => {
+    if (!ready || trackers.length === 0) return;
+    setLastSeen(prev => {
+      const now = Date.now();
+      let changed = false;
+      const next = { ...prev };
+      for (const t of trackers) {
+        if (next[t.id] === undefined) { next[t.id] = now; changed = true; }
+      }
+      if (changed) { try { localStorage.setItem(LASTSEEN_KEY, JSON.stringify(next)); } catch { /* ignore */ } }
+      return changed ? next : prev;
+    });
+  }, [ready, trackers]);
 
   // ----- Helper -----
   const papersById = useMemo(() => {
@@ -73,27 +112,7 @@ export function TrackingProvider({ children }: { children: React.ReactNode }) {
   }, [papers]);
 
   // ----- Scoring -----
-  const scoreSubset = useCallback(async (subset: Paper[], tracker: Tracker) => {
-    if (!tracker.enabled || subset.length === 0) return;
-    setScoring({ trackerId: tracker.id, done: 0, total: subset.length });
-    try {
-      const seeds = seedsFor(tracker);
-      const newScores = await scorePapersAgainstTracker(subset, tracker, seeds, {
-        settings,
-        onProgress: (done, total) => setScoring({ trackerId: tracker.id, done, total }),
-      });
-      await scoresStore.upsert(newScores);
-      setScores(prev => {
-        const byId = new Map(prev.map(s => [s.id, s]));
-        for (const s of newScores) byId.set(s.id, s);
-        return [...byId.values()];
-      });
-    } finally {
-      setScoring(null);
-    }
-  }, [seedsFor, settings]);
-
-  // Same as scoreSubset but forces a specific mode:
+  // Score a subset of papers, forcing a specific mode:
   //   'keyword' → strips AI config so the keyword fallback runs (fast, free)
   //   'ai'      → uses the user's actual settings (real AI provider)
   const scoreSubsetWithMode = useCallback(async (subset: Paper[], tracker: Tracker, mode: 'keyword' | 'ai') => {
@@ -122,11 +141,16 @@ export function TrackingProvider({ children }: { children: React.ReactNode }) {
   const rescoreTracker = useCallback(async (id: string) => {
     const tracker = trackers.find(t => t.id === id);
     if (!tracker) return;
-    // Drop existing scores for this tracker and re-score from scratch
+    // Drop existing scores for this tracker and re-score from scratch. We use
+    // the free keyword pass for the whole-library sweep — AI-scoring thousands
+    // of papers here would be ruinously slow/expensive; the "Score with AI"
+    // button handles AI on demand for the unscored subset.
     await scoresStore.deleteForTracker(id);
     setScores(prev => prev.filter(s => s.trackerId !== id));
-    await scoreSubset(papers, tracker);
-  }, [trackers, papers, scoreSubset]);
+    await scoreSubsetWithMode(papers, tracker, 'keyword');
+    // A manual re-score isn't a "new arrival" — don't flood the new badge.
+    markTrackerSeen(id);
+  }, [trackers, papers, scoreSubsetWithMode, markTrackerSeen]);
 
   // Score only the papers that don't yet have a score for this tracker.
   // Called from the 'Score with AI now' / 'Score with keywords now' buttons.
@@ -183,10 +207,15 @@ export function TrackingProvider({ children }: { children: React.ReactNode }) {
     const full: Tracker = { ...t, id: uuid(), createdAt: now, updatedAt: now };
     await trackersStore.upsert(full);
     setTrackers(prev => [...prev, full]);
-    // Score against all existing papers
-    scoreSubset(papers, full).catch(e => console.warn('[tracking] initial score failed', e));
+    // Backfill against the existing library with the free keyword pass (never
+    // AI — that could be thousands of calls on a big library). Once done, mark
+    // it seen so the existing backlog isn't all flagged "new"; only papers that
+    // arrive AFTER creation light up the new badge.
+    scoreSubsetWithMode(papers, full, 'keyword')
+      .then(() => markTrackerSeen(full.id))
+      .catch(e => console.warn('[tracking] initial score failed', e));
     return full;
-  }, [papers, scoreSubset]);
+  }, [papers, scoreSubsetWithMode, markTrackerSeen]);
 
   const updateTracker = useCallback(async (id: string, patch: Partial<Tracker>) => {
     const existing = trackers.find(t => t.id === id);
@@ -219,6 +248,14 @@ export function TrackingProvider({ children }: { children: React.ReactNode }) {
       .sort((a, b) => b.score.score - a.score.score);
   }, [scores, papersById, trackers]);
 
+  // Matches scored since the user last marked this tracker seen — i.e. papers
+  // that arrived in recent syncs/imports. This is what stops a tracked paper
+  // getting lost when hundreds land at once.
+  const newMatchesByTracker = useCallback((trackerId: string) => {
+    const since = lastSeen[trackerId] ?? 0;
+    return matchesByTracker(trackerId).filter(m => m.score.ts > since);
+  }, [matchesByTracker, lastSeen]);
+
   const scoresForPaper = useCallback((paperId: string) => {
     return scores
       .filter(s => s.paperId === paperId)
@@ -230,7 +267,8 @@ export function TrackingProvider({ children }: { children: React.ReactNode }) {
       trackers, scores, ready, scoring,
       createTracker, updateTracker, deleteTracker,
       rescoreTracker, scoreTrackerNow, scoreNewPapers,
-      matchesByTracker, scoresForPaper,
+      matchesByTracker, newMatchesByTracker, scoresForPaper,
+      lastSeen, markTrackerSeen,
     }}>
       {children}
     </TrackingContext.Provider>

@@ -250,11 +250,18 @@ export async function scorePapersAgainstTracker(
   if (hasAI(opts.settings)) {
     return scoreWithAI(papers, tracker, opts.settings, opts.onProgress);
   }
-  // Local keyword scoring is synchronous, just iterate
+  // Local keyword scoring is synchronous and CPU-bound. On a big library
+  // (tens of thousands of papers) iterating in one go would freeze the UI, so
+  // we yield to the event loop periodically — keeps the progress bar live.
   const out: PaperScore[] = [];
   for (let i = 0; i < papers.length; i++) {
     out.push(scoreKeyword(papers[i], tracker, seedPapers));
-    if ((i + 1) % 20 === 0) opts.onProgress?.(i + 1, papers.length);
+    if ((i + 1) % 500 === 0) {
+      opts.onProgress?.(i + 1, papers.length);
+      await new Promise(r => setTimeout(r, 0));
+    } else if ((i + 1) % 20 === 0) {
+      opts.onProgress?.(i + 1, papers.length);
+    }
   }
   opts.onProgress?.(papers.length, papers.length);
   return out;

@@ -23,9 +23,10 @@ export default function TrackerForm({ tracker, onClose }: Props) {
   const [color,       setColor]       = useState(tracker?.color ?? 'blue');
   const [minScore,    setMinScore]    = useState(tracker?.minScore ?? 60);
   const [enabled,     setEnabled]     = useState(tracker?.enabled ?? true);
-  // Auto-score mode defaults to 'manual' so the user doesn't get surprised
-  // by background AI calls. They can flip per-tracker to keyword or AI.
-  const [autoScoreMode, setAutoScoreMode] = useState<TrackerAutoScoreMode>(tracker?.autoScoreMode ?? 'manual');
+  // Defaults to 'keyword': new papers from every sync are matched automatically
+  // and for free (no AI calls), so a tracker never silently misses arrivals.
+  // Switch to 'ai' for sharper relevance, or 'manual' to score only on demand.
+  const [autoScoreMode, setAutoScoreMode] = useState<TrackerAutoScoreMode>(tracker?.autoScoreMode ?? 'keyword');
   const [confirmDelete, setConfirmDelete] = useState(false);
 
   useEffect(() => {

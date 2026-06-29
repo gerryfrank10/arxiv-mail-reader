@@ -115,9 +115,10 @@ export interface Tracker {
   enabled: boolean;
   color: string;             // tailwind color name e.g. 'blue', 'rose'
   minScore: number;          // 0..100 threshold for surfacing matches
-  /** How new papers from sync are scored. Defaults to 'manual' — no surprise
-   *  AI calls. Manual scoring is always available via the 'Score with AI'
-   *  button or the scripts/score-papers.mjs CLI. */
+  /** How new papers from sync are scored. Defaults to 'keyword' — every new
+   *  paper is matched automatically and for free, so a tracker never silently
+   *  misses arrivals. 'ai' uses the configured provider; 'manual' scores only
+   *  on demand (the 'Score with AI' button or scripts/score-papers.mjs CLI). */
   autoScoreMode: TrackerAutoScoreMode;
   createdAt: number;
   updatedAt: number;
