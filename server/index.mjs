@@ -905,6 +905,17 @@ app.delete('/api/db/library/:id', (req, res) => withUser(req, res, async (uid) =
   await db.unsavePaper(uid, req.params.id); res.json({ ok: true });
 }));
 
+// Likes — a lightweight signal distinct from the library (bookmark).
+app.get('/api/db/likes', (req, res) => withUser(req, res, async (uid) => {
+  res.json({ items: await db.getLikes(uid) });
+}));
+app.put('/api/db/likes/:id', (req, res) => withUser(req, res, async (uid) => {
+  await db.likePaper(uid, req.params.id); res.json({ ok: true });
+}));
+app.delete('/api/db/likes/:id', (req, res) => withUser(req, res, async (uid) => {
+  await db.unlikePaper(uid, req.params.id); res.json({ ok: true });
+}));
+
 // read states
 app.get('/api/db/read', (req, res) => withUser(req, res, async (uid) => {
   res.json({ ids: await db.getReadIds(uid) });

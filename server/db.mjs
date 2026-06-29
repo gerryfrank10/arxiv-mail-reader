@@ -37,6 +37,18 @@ export const db = {
             ADD COLUMN IF NOT EXISTS original_filename text,
             ADD COLUMN IF NOT EXISTS uploaded_at       timestamptz
         `);
+        // "Liked" papers — a lightweight signal distinct from the library
+        // (bookmark). Mirrors the library table. Idempotent so existing DBs
+        // get it without a manual migration.
+        await pool.query(`
+          CREATE TABLE IF NOT EXISTS likes (
+            user_id   UUID         NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            paper_id  TEXT         NOT NULL,
+            liked_at  TIMESTAMPTZ  NOT NULL DEFAULT now(),
+            PRIMARY KEY (user_id, paper_id),
+            FOREIGN KEY (user_id, paper_id) REFERENCES papers (user_id, id) ON DELETE CASCADE
+          )
+        `);
         return true;
       }
     } catch (e) {
@@ -192,6 +204,38 @@ export const db = {
 
   async unsavePaper(userId, paperId) {
     await pool.query(`DELETE FROM library WHERE user_id=$1 AND paper_id=$2`, [userId, paperId]);
+  },
+
+  // ----- likes (distinct from library) -----
+
+  async getLikes(userId) {
+    const { rows } = await pool.query(
+      `SELECT paper_id, liked_at FROM likes WHERE user_id=$1`,
+      [userId],
+    );
+    return rows.map(r => ({ paperId: r.paper_id, likedAt: r.liked_at }));
+  },
+
+  async likePaper(userId, paperId) {
+    try {
+      const r = await pool.query(
+        `INSERT INTO likes (user_id, paper_id) VALUES ($1, $2)
+         ON CONFLICT DO NOTHING
+         RETURNING paper_id`,
+        [userId, paperId],
+      );
+      return { liked: r.rowCount > 0, reason: r.rowCount > 0 ? 'inserted' : 'already_liked' };
+    } catch (e) {
+      if (e.code === '23503') {
+        console.warn(`[db] like skipped: no paper row for id=${paperId}`);
+        return { liked: false, reason: 'no_paper' };
+      }
+      throw e;
+    }
+  },
+
+  async unlikePaper(userId, paperId) {
+    await pool.query(`DELETE FROM likes WHERE user_id=$1 AND paper_id=$2`, [userId, paperId]);
   },
 
   // ----- read states -----

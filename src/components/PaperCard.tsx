@@ -1,4 +1,4 @@
-import { Bookmark, BookmarkCheck, Target } from 'lucide-react';
+import { Bookmark, BookmarkCheck, Target, Heart } from 'lucide-react';
 import { Paper } from '../types';
 import { CATEGORY_COLORS, getCategoryLabel } from '../utils/categories';
 import { computeAssessment, ASSESSMENT_BADGE } from '../utils/assessment';
@@ -16,7 +16,8 @@ interface Props {
 }
 
 export default function PaperCard({ paper, isSelected, isSaved, isRead = true, onClick }: Props) {
-  const { savePaper, unsavePaper } = useLibrary();
+  const { savePaper, unsavePaper, isLiked, likePaper, unlikePaper } = useLibrary();
+  const liked = isLiked(paper.id);
   const { scoresForPaper, trackers } = useTracking();
   const firstAuthor = paper.authorList[0] ?? paper.authors;
   const coauthors   = paper.authorList.length > 1;
@@ -31,6 +32,12 @@ export default function PaperCard({ paper, isSelected, isSaved, isRead = true, o
     e.stopPropagation();
     if (isSaved) unsavePaper(paper.id);
     else savePaper(paper);
+  }
+
+  function handleLike(e: React.MouseEvent) {
+    e.stopPropagation();
+    if (liked) unlikePaper(paper.id);
+    else likePaper(paper);
   }
 
   return (
@@ -60,13 +67,22 @@ export default function PaperCard({ paper, isSelected, isSaved, isRead = true, o
             <span className="text-[10px] text-slate-500">+{paper.categories.length - 3}</span>
           )}
         </div>
-        <button
-          onClick={handleBookmark}
-          title={isSaved ? 'Remove from library' : 'Save to library'}
-          className={`shrink-0 p-0.5 rounded transition-all opacity-0 group-hover:opacity-100 ${isSaved ? 'opacity-100 text-amber-400 hover:text-amber-300' : 'text-slate-500 hover:text-amber-400'}`}
-        >
-          {isSaved ? <BookmarkCheck size={13} /> : <Bookmark size={13} />}
-        </button>
+        <div className="shrink-0 flex items-center gap-0.5">
+          <button
+            onClick={handleLike}
+            title={liked ? 'Unlike' : 'Like'}
+            className={`p-0.5 rounded transition-all opacity-0 group-hover:opacity-100 ${liked ? 'opacity-100 text-rose-400 hover:text-rose-300' : 'text-slate-500 hover:text-rose-400'}`}
+          >
+            <Heart size={13} className={liked ? 'fill-current' : ''} />
+          </button>
+          <button
+            onClick={handleBookmark}
+            title={isSaved ? 'Remove from library' : 'Save to library'}
+            className={`p-0.5 rounded transition-all opacity-0 group-hover:opacity-100 ${isSaved ? 'opacity-100 text-amber-400 hover:text-amber-300' : 'text-slate-500 hover:text-amber-400'}`}
+          >
+            {isSaved ? <BookmarkCheck size={13} /> : <Bookmark size={13} />}
+          </button>
+        </div>
       </div>
 
       {/* Title */}

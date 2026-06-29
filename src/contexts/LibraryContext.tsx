@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useCallback, useEffect, useMemo } from 'react';
 import { Paper } from '../types';
-import { libraryStore, onStorageModeChange } from '../utils/storage';
+import { libraryStore, likesStore, onStorageModeChange } from '../utils/storage';
 import { usePapers } from './PapersContext';
 
 interface LibraryContextValue {
@@ -8,6 +8,11 @@ interface LibraryContextValue {
   savePaper:   (p: Paper) => void;
   unsavePaper: (id: string) => void;
   isSaved:     (id: string) => boolean;
+  // Likes — a separate signal from bookmarks
+  likedPapers: Paper[];
+  likePaper:   (p: Paper) => void;
+  unlikePaper: (id: string) => void;
+  isLiked:     (id: string) => boolean;
 }
 
 const LibraryContext = createContext<LibraryContextValue | null>(null);
@@ -15,11 +20,13 @@ const LibraryContext = createContext<LibraryContextValue | null>(null);
 export function LibraryProvider({ children }: { children: React.ReactNode }) {
   const { papers } = usePapers();
   const [savedIds, setSavedIds] = useState<Set<string>>(new Set());
+  const [likedIds, setLikedIds] = useState<Set<string>>(new Set());
 
   const reload = useCallback(async () => {
     try {
-      const ids = await libraryStore.getIds();
-      setSavedIds(new Set(ids));
+      const [saved, liked] = await Promise.all([libraryStore.getIds(), likesStore.getIds()]);
+      setSavedIds(new Set(saved));
+      setLikedIds(new Set(liked));
     } catch (e) {
       console.warn('[library] failed to load', e);
     }
@@ -66,8 +73,44 @@ export function LibraryProvider({ children }: { children: React.ReactNode }) {
 
   const isSaved = useCallback((id: string) => savedIds.has(id), [savedIds]);
 
+  const likedPapers = useMemo(() => {
+    if (likedIds.size === 0) return [];
+    const byId = new Map(papers.map(p => [p.id, p]));
+    const out: Paper[] = [];
+    for (const id of likedIds) {
+      const p = byId.get(id);
+      if (p) out.push(p);
+    }
+    return out;
+  }, [papers, likedIds]);
+
+  const likePaper = useCallback((p: Paper) => {
+    setLikedIds(prev => {
+      if (prev.has(p.id)) return prev;
+      const next = new Set(prev);
+      next.add(p.id);
+      likesStore.like(p.id).catch(e => console.warn('[likes] like failed', e));
+      return next;
+    });
+  }, []);
+
+  const unlikePaper = useCallback((id: string) => {
+    setLikedIds(prev => {
+      if (!prev.has(id)) return prev;
+      const next = new Set(prev);
+      next.delete(id);
+      likesStore.unlike(id).catch(e => console.warn('[likes] unlike failed', e));
+      return next;
+    });
+  }, []);
+
+  const isLiked = useCallback((id: string) => likedIds.has(id), [likedIds]);
+
   return (
-    <LibraryContext.Provider value={{ savedPapers, savePaper, unsavePaper, isSaved }}>
+    <LibraryContext.Provider value={{
+      savedPapers, savePaper, unsavePaper, isSaved,
+      likedPapers, likePaper, unlikePaper, isLiked,
+    }}>
       {children}
     </LibraryContext.Provider>
   );

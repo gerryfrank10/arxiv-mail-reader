@@ -275,6 +275,21 @@ export async function apiUnsavePaper(paperId: string): Promise<void> {
   await call(`/api/db/library/${encodeURIComponent(paperId)}`, { method: 'DELETE' });
 }
 
+// ---------- Likes (distinct from library) ----------
+
+export async function apiGetLikedIds(): Promise<string[]> {
+  const { items } = await call<{ items: Array<{ paperId: string; likedAt: string }> }>('/api/db/likes');
+  return items.map(i => i.paperId);
+}
+
+export async function apiLikePaper(paperId: string): Promise<void> {
+  await call(`/api/db/likes/${encodeURIComponent(paperId)}`, { method: 'PUT' });
+}
+
+export async function apiUnlikePaper(paperId: string): Promise<void> {
+  await call(`/api/db/likes/${encodeURIComponent(paperId)}`, { method: 'DELETE' });
+}
+
 // ---------- Read states ----------
 
 export async function apiGetReadIds(): Promise<string[]> {

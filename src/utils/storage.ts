@@ -13,6 +13,7 @@ import {
 import {
   apiListPapers, apiUpsertPapers, apiUpdatePaperAbstract,
   apiGetLibraryIds, apiSavePaper, apiUnsavePaper,
+  apiGetLikedIds, apiLikePaper, apiUnlikePaper,
   apiGetReadIds, apiSetReadIds,
   apiGetTrackers, apiUpsertTracker, apiDeleteTracker,
   apiGetScores, apiUpsertScores, apiDeleteScoresForTracker,
@@ -101,6 +102,43 @@ export const libraryStore = {
       await apiUnsavePaper(paperId);
     } else {
       writeLocalLibraryIds(readLocalLibraryIds().filter(id => id !== paperId));
+    }
+  },
+};
+
+// Likes — a separate paper-id set from the library (bookmark). Same storage
+// strategy: Postgres in server mode, localStorage otherwise.
+const LIKED_IDS_KEY = 'arxiv_reader_liked_ids';
+
+function readLocalLikedIds(): string[] {
+  try {
+    const raw = localStorage.getItem(LIKED_IDS_KEY);
+    if (raw) return JSON.parse(raw) as string[];
+  } catch { /* ignore */ }
+  return [];
+}
+
+function writeLocalLikedIds(ids: string[]): void {
+  try { localStorage.setItem(LIKED_IDS_KEY, JSON.stringify(ids)); } catch { /* ignore */ }
+}
+
+export const likesStore = {
+  async getIds(): Promise<string[]> {
+    return isServer() ? apiGetLikedIds() : readLocalLikedIds();
+  },
+  async like(paperId: string): Promise<void> {
+    if (isServer()) {
+      await apiLikePaper(paperId);
+    } else {
+      const cur = readLocalLikedIds();
+      if (!cur.includes(paperId)) writeLocalLikedIds([...cur, paperId]);
+    }
+  },
+  async unlike(paperId: string): Promise<void> {
+    if (isServer()) {
+      await apiUnlikePaper(paperId);
+    } else {
+      writeLocalLikedIds(readLocalLikedIds().filter(id => id !== paperId));
     }
   },
 };

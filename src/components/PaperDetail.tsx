@@ -1,4 +1,4 @@
-import { ExternalLink, FileText, Code2, Calendar, HardDrive, MessageSquare, Bookmark, BookmarkCheck, Users, BarChart2, Layers, Quote, BookOpen, Check, Sparkles, ChevronUp } from 'lucide-react';
+import { ExternalLink, FileText, Code2, Calendar, HardDrive, MessageSquare, Bookmark, BookmarkCheck, Heart, Users, BarChart2, Layers, Quote, BookOpen, Check, Sparkles, ChevronUp } from 'lucide-react';
 import { useState, useEffect, useCallback } from 'react';
 import { Paper } from '../types';
 import { CATEGORY_COLORS_LIGHT, getCategoryLabel, CATEGORY_COLORS } from '../utils/categories';
@@ -80,8 +80,9 @@ export default function PaperDetail({ paper }: Props) {
     return () => { cancelled = true; ctrl.abort(); clearTimeout(timeoutId); };
   }, [paper.arxivId, paper.abstract, paper.id, updatePaperAbstract, abstractRetryNonce]);
 
-  const { savePaper, unsavePaper, isSaved } = useLibrary();
+  const { savePaper, unsavePaper, isSaved, isLiked, likePaper, unlikePaper } = useLibrary();
   const saved = isSaved(paper.id);
+  const liked = isLiked(paper.id);
   const [notebookCopied, setNotebookCopied] = useState(false);
 
   // AI Summary
@@ -222,6 +223,17 @@ Return exactly this JSON structure (no other text):
           <h1 className="text-2xl font-bold text-slate-900 leading-tight flex-1">
             {paper.title}
           </h1>
+          <button
+            onClick={() => liked ? unlikePaper(paper.id) : likePaper(paper)}
+            title={liked ? 'Unlike' : 'Like'}
+            className={`shrink-0 mt-1 p-2 rounded-lg border transition-all ${
+              liked
+                ? 'bg-rose-50 border-rose-200 text-rose-600 hover:bg-rose-100'
+                : 'bg-slate-50 border-slate-200 text-slate-400 hover:bg-slate-100 hover:text-rose-500'
+            }`}
+          >
+            <Heart size={18} className={liked ? 'fill-current' : ''} />
+          </button>
           <button
             onClick={() => saved ? unsavePaper(paper.id) : savePaper(paper)}
             title={saved ? 'Remove from library' : 'Save to library'}
