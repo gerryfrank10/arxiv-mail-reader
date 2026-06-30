@@ -45,7 +45,11 @@ export default function PaperDetail({ paper }: Props) {
   useEffect(() => {
     setFetchedAbstract(null);
     setAbstractError(null);
-    if (paper.abstract || paper.arxivId.startsWith('local:')) return;  // no arXiv abstract for uploads
+    // Re-fetch the full abstract when we have none, or when the stored one is
+    // clearly truncated (digest emails sometimes cut abstracts off with an
+    // ellipsis). Uploaded PDFs have no arXiv entry, so never fetch for those.
+    const truncated = /(?:…|\.\.\.)\s*$/.test((paper.abstract || '').trim());
+    if ((paper.abstract && !truncated) || paper.arxivId.startsWith('local:')) return;
     setAbstractLoading(true);
     let cancelled = false;
     const ctrl = new AbortController();
