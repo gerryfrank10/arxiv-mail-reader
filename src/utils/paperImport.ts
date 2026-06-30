@@ -13,19 +13,22 @@ import { Paper } from '../types';
  */
 export function extractArxivIds(input: string): string[] {
   const out = new Set<string>();
+  // Capture the version (vN) when present so importing e.g. an /abs/…v1 link
+  // brings in THAT version's metadata — authors sometimes change the abstract
+  // between versions, and the latest isn't always what the user read.
   const patterns = [
-    /(?:arxiv\.org\/(?:abs|pdf|html)\/)((?:\d{4}\.\d{4,5}|[a-z-]+\/\d{7}))(?:v\d+)?/gi,
-    /\barXiv:\s*((?:\d{4}\.\d{4,5}|[a-z-]+\/\d{7}))(?:v\d+)?\b/gi,
-    /\b(\d{4}\.\d{4,5})(?:v\d+)?\b/g,
-    /\b([a-z-]+\/\d{7})(?:v\d+)?\b/gi,
+    /(?:arxiv\.org\/(?:abs|pdf|html)\/)((?:\d{4}\.\d{4,5}|[a-z-]+\/\d{7}))(v\d+)?/gi,
+    /\barXiv:\s*((?:\d{4}\.\d{4,5}|[a-z-]+\/\d{7}))(v\d+)?\b/gi,
+    /\b(\d{4}\.\d{4,5})(v\d+)?\b/g,
+    /\b([a-z-]+\/\d{7})(v\d+)?\b/gi,
   ];
   for (const re of patterns) {
     let m;
     while ((m = re.exec(input)) !== null) {
-      const id = m[1].toLowerCase();
+      const base = m[1].toLowerCase();
       // skip obvious false positives (e.g. years)
-      if (/^\d{4}$/.test(id)) continue;
-      out.add(id);
+      if (/^\d{4}$/.test(base)) continue;
+      out.add(base + (m[2] ? m[2].toLowerCase() : ''));
     }
   }
   return [...out];
@@ -234,10 +237,12 @@ export function arxivIdFromBibEntry(e: BibtexEntry): string | null {
   const doi = e.fields.doi || '';
   const doiMatch = doi.match(/10\.48550\/arxiv\.(\S+)/i);
   if (doiMatch) return doiMatch[1].replace(/v\d+$/i, '');
+  // BibTeX references the canonical paper, so keep these versionless (the
+  // version-preserving behaviour of extractArxivIds is for direct imports).
   const fromUrl = extractArxivIds(e.fields.url || '');
-  if (fromUrl.length > 0) return fromUrl[0];
+  if (fromUrl.length > 0) return fromUrl[0].replace(/v\d+$/i, '');
   const fromAnything = extractArxivIds(JSON.stringify(e.fields));
-  return fromAnything[0] ?? null;
+  return fromAnything[0]?.replace(/v\d+$/i, '') ?? null;
 }
 
 /** Build a Paper directly from a BibTeX entry without hitting arXiv (offline). */

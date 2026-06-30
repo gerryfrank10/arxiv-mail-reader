@@ -12,8 +12,10 @@ describe('extractArxivIds — plain ids', () => {
     expect(extractArxivIds('2402.05576')).toEqual(['2402.05576']);
   });
 
-  it('strips version suffix', () => {
-    expect(extractArxivIds('2402.05576v3')).toEqual(['2402.05576']);
+  it('preserves version suffix', () => {
+    // Versions are kept so importing a specific version pulls that version's
+    // metadata (e.g. abstracts can change between versions).
+    expect(extractArxivIds('2402.05576v3')).toEqual(['2402.05576v3']);
   });
 
   it('extracts a legacy id', () => {
@@ -21,7 +23,7 @@ describe('extractArxivIds — plain ids', () => {
   });
 
   it('extracts legacy id with version', () => {
-    expect(extractArxivIds('hep-th/9711200v2')).toEqual(['hep-th/9711200']);
+    expect(extractArxivIds('hep-th/9711200v2')).toEqual(['hep-th/9711200v2']);
   });
 
   it('lowercases legacy archive prefixes', () => {
@@ -35,7 +37,7 @@ describe('extractArxivIds — URLs', () => {
   });
 
   it('parses a pdf URL with version', () => {
-    expect(extractArxivIds('https://arxiv.org/pdf/2402.05576v2')).toEqual(['2402.05576']);
+    expect(extractArxivIds('https://arxiv.org/pdf/2402.05576v2')).toEqual(['2402.05576v2']);
   });
 
   it('parses an html URL', () => {
@@ -65,9 +67,10 @@ describe('extractArxivIds — bulk + dedupe', () => {
     expect(ids).toHaveLength(3);
   });
 
-  it('deduplicates identical ids (with and without version)', () => {
+  it('dedupes exact repeats but keeps distinct versions', () => {
+    // The bare id appears twice (deduped); the explicit v2 is a distinct request.
     const ids = extractArxivIds('2402.05576 2402.05576v2 https://arxiv.org/abs/2402.05576');
-    expect(ids).toEqual(['2402.05576']);
+    expect(ids).toEqual(['2402.05576', '2402.05576v2']);
   });
 
   it('skips bare 4-digit years to avoid false positives', () => {

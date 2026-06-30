@@ -240,21 +240,21 @@ const metadataCache = new Map(); // id -> { meta, ts }
 const METADATA_TTL_MS = 24 * 60 * 60 * 1000;
 
 app.get('/api/arxiv-metadata', async (req, res) => {
-  const rawId = String(req.query.id ?? '').trim();
+  const rawId = String(req.query.id ?? '').trim().toLowerCase();
   if (!rawId) return res.status(400).json({ error: 'id is required' });
-  const id = rawId.replace(/v\d+$/i, '');
+  const canon = rawId.replace(/v\d+$/i, '');  // versionless, for messages/fallback
 
-  const cached = metadataCache.get(id);
+  const cached = metadataCache.get(rawId);    // cache key includes the version
   if (cached && Date.now() - cached.ts < METADATA_TTL_MS) {
     return res.json(cached.meta);
   }
   try {
-    const body = await arxivFetchText(id);
-    const meta = extractArxivMetadata(body, id);
+    const body = await arxivFetchText(rawId);  // query the exact version when given
+    const meta = extractArxivMetadata(body, canon);
     if (!meta) {
-      return res.status(404).json({ error: `No entry for arXiv:${id} — check the id` });
+      return res.status(404).json({ error: `No entry for arXiv:${rawId} — check the id` });
     }
-    metadataCache.set(id, { meta, ts: Date.now() });
+    metadataCache.set(rawId, { meta, ts: Date.now() });
     res.json(meta);
   } catch (err) {
     res.status(502).json({ error: `Failed to fetch from arXiv: ${err.message}` });
@@ -272,21 +272,25 @@ const ARXIV_ID_RE = /^(\d{4}\.\d{4,5}|[a-z-]+(?:\.[a-z-]+)?\/\d{7})$/i;
 app.get('/api/arxiv-metadata-batch', async (req, res) => {
   const raw = String(req.query.ids ?? '').trim();
   if (!raw) return res.status(400).json({ error: 'ids is required (comma-separated)' });
+  // Keep any version suffix (vN) the caller passed — we query arXiv for that
+  // exact version so the abstract matches the version the user imported.
   const requested = [...new Set(
-    raw.split(',').map(s => s.trim().replace(/v\d+$/i, '')).filter(Boolean),
+    raw.split(',').map(s => s.trim().toLowerCase()).filter(Boolean),
   )].slice(0, 50);
   if (requested.length === 0) return res.json({ results: {}, errors: {} });
 
-  const results = {};
+  const canonical = (id) => id.replace(/v\d+$/i, '');
+  const results = {};   // keyed by canonical id (versionless), value = requested version's meta
   const errors  = {};
 
   // Serve cached ids without hitting arXiv; reject malformed ids up front
   // so they don't 400 the whole upstream query.
   const toFetch = [];
   for (const id of requested) {
-    if (!ARXIV_ID_RE.test(id)) { errors[id] = 'not a valid arXiv id'; continue; }
-    const c = metadataCache.get(id);
-    if (c && Date.now() - c.ts < METADATA_TTL_MS) results[id] = c.meta;
+    const canon = canonical(id);
+    if (!ARXIV_ID_RE.test(canon)) { errors[canon] = 'not a valid arXiv id'; continue; }
+    const c = metadataCache.get(id);   // cache key includes the version
+    if (c && Date.now() - c.ts < METADATA_TTL_MS) results[canon] = c.meta;
     else toFetch.push(id);
   }
 
@@ -294,21 +298,22 @@ app.get('/api/arxiv-metadata-batch', async (req, res) => {
     try {
       const body = await arxivFetchText(toFetch.join(','));
       const metas = extractAllArxivMetadata(body);
-      // Index returned metadata by arxivId for matching back to requested ids
+      // arXiv strips the version from the returned <id>, so index by canonical.
       const byArxiv = new Map(metas.map(m => [m.arxivId, m]));
       for (const id of toFetch) {
-        const meta = byArxiv.get(id);
+        const canon = canonical(id);
+        const meta = byArxiv.get(canon);
         if (meta) {
           metadataCache.set(id, { meta, ts: Date.now() });
-          results[id] = meta;
+          results[canon] = meta;
         } else {
-          errors[id] = 'no entry returned by arXiv (check the id)';
+          errors[canon] = 'no entry returned by arXiv (check the id)';
         }
       }
     } catch (err) {
       // Whole-batch failure (e.g. 429 after retries) — report per-id so the
       // client can show which ones still need retrying.
-      for (const id of toFetch) errors[id] = err.message;
+      for (const id of toFetch) errors[canonical(id)] = err.message;
     }
   }
 
