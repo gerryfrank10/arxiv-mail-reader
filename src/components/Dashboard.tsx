@@ -8,6 +8,7 @@ import { format, subDays, isAfter } from 'date-fns';
 import { BookOpen, Quote, TrendingUp, Clock, Filter, Users, Presentation, ChevronRight, ArrowUpDown, Award } from 'lucide-react';
 import { usePagination } from '../hooks/usePagination';
 import Pager from './Pager';
+import type { Paper } from '../types';
 
 type Tab = 'overview' | 'authors' | 'conferences';
 type Period = 'all' | '7d' | '30d' | '90d';
@@ -667,31 +668,47 @@ function VenueList({ items, onSelect }: {
   );
 }
 
-// Venue detail — papers sortable by year with ranking
+// Venue detail — papers grouped by year with per-year rankings
 function VenueDetail({ venue, setSelectedPaper, onBack }: {
   venue: VenueGroup;
-  setSelectedPaper: (p: ReturnType<typeof usePapers>['papers'][0]) => void;
+  setSelectedPaper: (p: Paper) => void;
   onBack: () => void;
 }) {
-  const [paperSort, setPaperSort] = useState<'year' | 'recent'>('year');
+  const [yearFilter, setYearFilter] = useState<number | 'all'>('all');
 
-  const sortedPapers = useMemo(() => {
-    const result = venue.papers.slice();
-    if (paperSort === 'year') {
-      // Sort by year descending (extracted from comments), then by date
-      result.sort((a, b) => {
-        const ay = detectVenue(a)?.year ?? 0;
-        const by = detectVenue(b)?.year ?? 0;
-        if (by !== ay) return by - ay;
-        return b.digestDate.getTime() - a.digestDate.getTime();
-      });
-    } else {
-      result.sort((a, b) => b.digestDate.getTime() - a.digestDate.getTime());
+  // Group papers by year (extracted from venue detection), sort years desc
+  const byYear = useMemo(() => {
+    const map = new Map<number, Paper[]>();
+    const noYear: Paper[] = [];
+    for (const p of venue.papers) {
+      const info = detectVenue(p);
+      const yr = info?.year;
+      if (yr) {
+        const arr = map.get(yr) ?? [];
+        arr.push(p);
+        map.set(yr, arr);
+      } else {
+        noYear.push(p);
+      }
     }
-    return result;
-  }, [venue, paperSort]);
+    // Sort each year's papers by assessment score (depth ranking)
+    const sortPapers = (arr: Paper[]) =>
+      arr.map(p => ({ p, a: computeAssessment(p) }))
+         .sort((x, y) => y.a.score - x.a.score)
+         .map(x => x.p);
+    const grouped = Array.from(map.entries())
+      .map(([year, papers]) => ({ year, papers: sortPapers(papers) }))
+      .sort((a, b) => b.year - a.year);
+    return { grouped, noYear: sortPapers(noYear) };
+  }, [venue]);
 
-  const pager = usePagination(sortedPapers, 50);
+  // Years available for the filter dropdown
+  const years = byYear.grouped.map(g => g.year);
+
+  // Filtered groups
+  const visibleGroups = yearFilter === 'all'
+    ? byYear.grouped
+    : byYear.grouped.filter(g => g.year === yearFilter);
 
   return (
     <div className="max-w-5xl mx-auto px-8 py-6 fade-in">
@@ -723,55 +740,125 @@ function VenueDetail({ venue, setSelectedPaper, onBack }: {
               {venue.info.type}
             </span>
           </div>
-          <p className="text-sm text-slate-500 mt-0.5">{venue.info.about}</p>
+          <p className="text-sm text-slate-500 mt-0.5 leading-relaxed">{venue.info.about}</p>
           <p className="text-xs text-slate-400 mt-1">
-            {venue.papers.length} paper{venue.papers.length !== 1 ? 's' : ''}
-            {venue.years.length > 0 && ` · ${venue.years.join(', ')}`}
+            {venue.papers.length} paper{venue.papers.length !== 1 ? 's' : ''} across {years.length} year{years.length !== 1 ? 's' : ''}
+            {years.length > 0 && ` · ${years.join(', ')}`}
           </p>
         </div>
       </div>
 
-      {/* Sort toggle */}
-      <div className="flex items-center gap-2 mb-4">
-        <ArrowUpDown size={13} className="text-slate-400" />
-        <span className="text-xs text-slate-500 mr-1">Sort papers:</span>
-        {([
-          { value: 'year',   label: 'By year (newest first)' },
-          { value: 'recent', label: 'By date' },
-        ] as const).map(opt => (
+      {/* Year filter bar */}
+      {years.length > 1 && (
+        <div className="flex items-center gap-2 mb-6 overflow-x-auto pb-1 hide-scrollbar">
           <button
-            key={opt.value}
-            onClick={() => setPaperSort(opt.value)}
-            className={`px-3 py-1 rounded-full text-xs font-medium transition-all ${
-              paperSort === opt.value
+            onClick={() => setYearFilter('all')}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap transition-all ${
+              yearFilter === 'all'
                 ? 'bg-slate-800 text-white'
                 : 'bg-white text-slate-500 border border-slate-200 hover:border-slate-300 hover:text-slate-700'
             }`}
           >
-            {opt.label}
+            All years
+            <span className={`ml-1.5 text-[10px] px-1.5 py-0.5 rounded-full font-bold ${
+              yearFilter === 'all' ? 'bg-white/20' : 'bg-slate-100'
+            }`}>
+              {venue.papers.length}
+            </span>
           </button>
-        ))}
-      </div>
+          {years.map(yr => {
+            const count = byYear.grouped.find(g => g.year === yr)?.papers.length ?? 0;
+            const active = yearFilter === yr;
+            return (
+              <button
+                key={yr}
+                onClick={() => setYearFilter(yr)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap transition-all ${
+                  active
+                    ? 'bg-slate-800 text-white'
+                    : 'bg-white text-slate-500 border border-slate-200 hover:border-slate-300 hover:text-slate-700'
+                }`}
+              >
+                {yr}
+                <span className={`ml-1.5 text-[10px] px-1.5 py-0.5 rounded-full font-bold ${
+                  active ? 'bg-white/20' : 'bg-slate-100'
+                }`}>
+                  {count}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      )}
 
-      {/* Paper list with ranking + pagination */}
+      {/* Papers grouped by year with per-year ranking */}
+      <div className="space-y-8">
+        {visibleGroups.map(group => (
+          <YearSection
+            key={group.year}
+            year={group.year}
+            papers={group.papers}
+            setSelectedPaper={setSelectedPaper}
+          />
+        ))}
+        {/* Papers with no detected year (only in "all" mode) */}
+        {yearFilter === 'all' && byYear.noYear.length > 0 && (
+          <YearSection
+            year={null}
+            papers={byYear.noYear}
+            setSelectedPaper={setSelectedPaper}
+          />
+        )}
+        {visibleGroups.length === 0 && byYear.noYear.length === 0 && (
+          <p className="text-center text-slate-400 text-sm py-8">No papers for this year.</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// A single year section within a venue detail — papers ranked by depth score
+function YearSection({ year, papers, setSelectedPaper }: {
+  year: number | null;
+  papers: Paper[];
+  setSelectedPaper: (p: Paper) => void;
+}) {
+  const pager = usePagination(papers, 50);
+  return (
+    <section>
+      <div className="flex items-center gap-2 mb-3">
+        <div className={`px-3 py-1 rounded-lg text-sm font-bold ${
+          year ? 'bg-slate-800 text-white' : 'bg-slate-200 text-slate-600'
+        }`}>
+          {year ?? 'Date unknown'}
+        </div>
+        <span className="text-xs text-slate-400">
+          {papers.length} paper{papers.length !== 1 ? 's' : ''} · ranked by depth score
+        </span>
+      </div>
       <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
         {pager.slice.map((paper, idx) => {
           const assessment = computeAssessment(paper);
-          const venueInfo = detectVenue(paper);
-          const rank = pager.rangeStart + idx;
+          const rank = idx + 1; // per-year rank
           return (
             <button
               key={paper.id}
               onClick={() => setSelectedPaper(paper)}
               className={`w-full text-left px-5 py-3.5 flex items-start gap-4 hover:bg-slate-50 transition-colors group border-b border-slate-100 last:border-0`}
             >
-              {/* Rank */}
-              <span className="text-[10px] font-bold text-slate-400 w-6 shrink-0 text-right mt-0.5">{rank}</span>
+              {/* Per-year rank badge */}
+              <div className={`w-7 h-7 rounded-full flex items-center justify-center shrink-0 mt-0.5 font-bold text-xs ${
+                rank === 1 ? 'bg-amber-100 text-amber-700' :
+                rank === 2 ? 'bg-slate-100 text-slate-600' :
+                rank === 3 ? 'bg-orange-100 text-orange-700' :
+                'bg-slate-50 text-slate-400'
+              }`}>
+                {rank}
+              </div>
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-medium text-slate-800 line-clamp-1 group-hover:text-blue-700 transition-colors">{paper.title}</p>
                 <p className="text-xs text-slate-400 mt-1 truncate">
                   {paper.authorList[0]}{paper.authorList.length > 1 ? ' et al.' : ''} · {format(paper.digestDate, 'MMM d, yyyy')}
-                  {venueInfo?.year && ` · ${venueInfo.year}`}
                 </p>
               </div>
               <span className={`text-[10px] font-semibold px-2 py-1 rounded-full border shrink-0 ${ASSESSMENT_BADGE[assessment.label]}`}>
@@ -782,6 +869,6 @@ function VenueDetail({ venue, setSelectedPaper, onBack }: {
         })}
         <Pager pagination={pager} variant="light" size="sm" label="papers" pageSizes={[25, 50, 100]} />
       </div>
-    </div>
+    </section>
   );
 }
