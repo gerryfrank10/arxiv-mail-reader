@@ -61,10 +61,10 @@ export default function AppRail({ activeView, setActiveView, onAISuggest, onSett
   );
 
   const items: RailItem[] = [
-    { id: 'inbox',       icon: <Inbox      size={18} />, label: 'Inbox',       badge: unreadCount || null,        accent: 'blue' },
-    { id: 'discover',    icon: <Compass    size={18} />, label: 'Discover',    badge: null,                       accent: 'indigo' },
-    { id: 'tracking',    icon: <Target     size={18} className={scoring ? 'animate-pulse' : ''} />, label: 'Tracking', badge: trackingNewCount || null, accent: 'emerald' },
-    { id: 'library',     icon: <BookMarked size={18} />, label: 'Library',     badge: savedPapers.length || null, accent: 'amber' },
+    { id: 'inbox',       icon: <Inbox       size={18} />, label: 'Inbox',       badge: unreadCount || null,        accent: 'blue' },
+    { id: 'discover',    icon: <Compass     size={18} />, label: 'Discover',    badge: null,                       accent: 'indigo' },
+    { id: 'tracking',    icon: <Target      size={18} className={scoring ? 'animate-pulse' : ''} />, label: 'Tracking', badge: trackingNewCount || null, accent: 'emerald' },
+    { id: 'library',     icon: <BookMarked  size={18} />, label: 'Library',     badge: savedPapers.length || null, accent: 'amber' },
     { id: 'books',       icon: <Library    size={18} />, label: 'Books',       badge: null,                       accent: 'cyan' },
     { id: 'collections', icon: <FolderOpen size={18} />, label: 'Collections', badge: null,                       accent: 'fuchsia' },
     { id: 'magazine',    icon: <Newspaper  size={18} />, label: 'Magazine',    badge: null,                       accent: 'rose' },

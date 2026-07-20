@@ -50,14 +50,14 @@ function AppLayoutInner() {
   const mainContent = () => {
     if (selectedPaper) return <PaperDetail paper={selectedPaper} />;
     switch (activeView) {
-      case 'tracking':    return <TrackingView />;
-      case 'discover':    return <DiscoverView />;
-      case 'library':     return <LibraryView />;
-      case 'books':       return <BooksView />;
-      case 'writer':      return <WriterView />;
-      case 'collections': return <CollectionsView />;
-      case 'magazine':    return <MagazineView />;
-      default:            return <Dashboard />;
+      case 'tracking':     return <TrackingView />;
+      case 'discover':     return <DiscoverView />;
+      case 'library':      return <LibraryView />;
+      case 'books':        return <BooksView />;
+      case 'writer':       return <WriterView />;
+      case 'collections':  return <CollectionsView />;
+      case 'magazine':     return <MagazineView />;
+      default:             return <Dashboard />;
     }
   };
 
