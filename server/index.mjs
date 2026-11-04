@@ -1100,6 +1100,9 @@ app.put('/api/db/read', (req, res) => withUser(req, res, async (uid) => {
 app.post('/api/db/read/add', (req, res) => withUser(req, res, async (uid) => {
   await db.addReadIds(uid, req.body.ids ?? []); res.json({ ok: true });
 }));
+app.post('/api/db/read/all', (req, res) => withUser(req, res, async (uid) => {
+  const marked = await db.markAllRead(uid); res.json({ ok: true, marked });
+}));
 app.post('/api/db/read/remove', (req, res) => withUser(req, res, async (uid) => {
   await db.removeReadIds(uid, req.body.ids ?? []); res.json({ ok: true });
 }));

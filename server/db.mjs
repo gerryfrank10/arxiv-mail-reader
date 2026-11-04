@@ -515,6 +515,18 @@ export const db = {
     return rows.map(r => r.paper_id);
   },
 
+  // Mark the whole library read in one statement — the client only holds a
+  // window of papers, so it can't enumerate every id itself.
+  async markAllRead(userId) {
+    const r = await pool.query(
+      `INSERT INTO read_states (user_id, paper_id)
+       SELECT user_id, id FROM papers WHERE user_id=$1
+       ON CONFLICT (user_id, paper_id) DO NOTHING`,
+      [userId],
+    );
+    return r.rowCount ?? 0;
+  },
+
   async setReadIds(userId, ids) {
     const client = await pool.connect();
     try {

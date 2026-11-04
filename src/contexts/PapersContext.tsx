@@ -6,7 +6,7 @@ import { computeAssessment } from '../utils/assessment';
 import { useAuth } from './AuthContext';
 import { AssessmentLabel } from '../utils/assessment';
 import { papersStore, readStore, metaStore, onStorageModeChange, getStorageMode } from '../utils/storage';
-import { apiExistingArxivIds } from '../utils/researchApi';
+import { apiExistingArxivIds, apiMarkAllRead } from '../utils/researchApi';
 import type { PaperStats } from '../utils/researchApi';
 
 const SETTINGS_KEY = 'arxiv_reader_settings';
@@ -63,7 +63,7 @@ interface PapersContextValue {
   markUnread: (id: string) => void;
   markManyRead:   (ids: string[]) => void;
   markManyUnread: (ids: string[]) => void;
-  markAllRead:    () => void;
+  markAllRead:    () => void | Promise<void>;
   markAllUnread:  () => void;
   addImportedPapers: (papers: Paper[]) => Promise<{ added: number; duplicates: number; addedPapers: Paper[] }>;
   reloadPapers: () => Promise<void>;
@@ -291,9 +291,22 @@ export function PapersProvider({ children }: { children: React.ReactNode }) {
     });
   }, []);
 
-  const markAllRead = useCallback(() => {
+  const markAllRead = useCallback(async () => {
+    // Only a window of papers is loaded, so mark the whole library server-side
+    // rather than the several thousand rows currently in memory.
+    if (storageMode === 'server') {
+      try {
+        await apiMarkAllRead();
+        const ids = await readStore.get();
+        setReadIds(new Set(ids));
+        refreshStats();
+      } catch (e) {
+        console.warn('[papers] mark all read failed', e);
+      }
+      return;
+    }
     markManyRead(papers.map(p => p.id));
-  }, [papers, markManyRead]);
+  }, [papers, markManyRead, storageMode, refreshStats]);
 
   const markAllUnread = useCallback(() => {
     setReadIds(() => {
@@ -426,7 +439,15 @@ export function PapersProvider({ children }: { children: React.ReactNode }) {
   }, [papers, searchQuery, selectedCategory, authorFilter, assessmentFilter, sortBy, sortDir]);
 
   const activeFilterCount = [selectedCategory, authorFilter, assessmentFilter].filter(Boolean).length;
-  const unreadCount = useMemo(() => papers.filter(p => !readIds.has(p.id)).length, [papers, readIds]);
+  // Server mode only loads a window of papers into memory, so counting unread
+  // from `papers` under-reports a large library. Read ids are fetched for the
+  // whole library, so totalPapers - readIds is accurate and updates live.
+  const unreadCount = useMemo(
+    () => (storageMode === 'server' && totalPapers > 0
+      ? Math.max(0, totalPapers - readIds.size)
+      : papers.filter(p => !readIds.has(p.id)).length),
+    [storageMode, totalPapers, papers, readIds],
+  );
 
   return (
     <PapersContext.Provider value={{

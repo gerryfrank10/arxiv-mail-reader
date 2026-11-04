@@ -443,6 +443,11 @@ export async function apiRemoveReadIds(ids: string[]): Promise<void> {
   await call('/api/db/read/remove', { method: 'POST', body: JSON.stringify({ ids }) });
 }
 
+export async function apiMarkAllRead(): Promise<number> {
+  const { marked } = await call<{ marked: number }>('/api/db/read/all', { method: 'POST' });
+  return marked ?? 0;
+}
+
 // ---------- Trackers + scores ----------
 
 export async function apiGetTrackers(): Promise<Tracker[]> {
