@@ -161,7 +161,7 @@ npm run backfill:abstracts -- --all --limit=1000
 npm run backfill:abstracts -- --dry-run
 ```
 
-Requests are batched (100 ids) and paced; `--delay=2500` controls the gap.
+Requests are batched (50 ids) and paced; `--delay=3000` controls the gap.
 
 ---
 

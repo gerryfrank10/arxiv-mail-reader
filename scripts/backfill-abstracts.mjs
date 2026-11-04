@@ -29,7 +29,7 @@ const HEADERS = {
 };
 
 const args = (() => {
-  const out = { user: '', all: false, limit: 0, batch: 100, delay: 3000, dryRun: false };
+  const out = { user: '', all: false, limit: 0, batch: 50, delay: 3000, dryRun: false };
   for (const a of process.argv.slice(2)) {
     const [k, vRaw] = a.startsWith('--') ? a.slice(2).split('=') : [a, ''];
     const v = vRaw ?? '';
@@ -37,7 +37,7 @@ const args = (() => {
       case 'user':    out.user  = v; break;
       case 'all':     out.all   = true; break;
       case 'limit':   out.limit = Math.max(0, parseInt(v, 10) || 0); break;
-      case 'batch':   out.batch = Math.min(200, Math.max(1, parseInt(v, 10) || 100)); break;
+      case 'batch':   out.batch = Math.min(200, Math.max(1, parseInt(v, 10) || 50)); break;
       case 'delay':   out.delay = Math.max(0, parseInt(v, 10) || 3000); break;
       case 'dry-run': out.dryRun = true; break;
       case 'help':
@@ -51,7 +51,7 @@ const args = (() => {
 
 function printHelp() {
   console.log(`Usage:
-  npm run backfill:abstracts -- --user=you@example.com [--limit=500] [--batch=100] [--delay=3000]
+  npm run backfill:abstracts -- --user=you@example.com [--limit=500] [--batch=50] [--delay=3000]
   npm run backfill:abstracts -- --all
   npm run backfill:abstracts -- --dry-run --limit=50
 
@@ -79,6 +79,9 @@ function decodeXml(s) {
 
 const baseId = (id) => String(id).trim().replace(/v\d+$/i, '');
 
+// Modern (2611.03650) and pre-2007 (hep-th/9901001 or math.GT/0309136) ids.
+const VALID_ID = /^(\d{4}\.\d{4,5}|[a-z-]+(\.[A-Z]{2})?\/\d{7})$/;
+
 // arXiv returns Atom XML; pull id + summary out of each <entry>.
 function parseEntries(xml) {
   const out = new Map();
@@ -96,14 +99,14 @@ function parseEntries(xml) {
 
 async function fetchBatch(ids) {
   const url = `${ARXIV_ENDPOINT}?id_list=${encodeURIComponent(ids.join(','))}&max_results=${ids.length}`;
-  let wait = 5000;
-  for (let attempt = 1; attempt <= 4; attempt++) {
+  let wait = 15_000;
+  for (let attempt = 1; attempt <= 5; attempt++) {
     const r = await fetch(url, { headers: HEADERS, signal: AbortSignal.timeout(60_000) });
     if (r.ok) return parseEntries(await r.text());
-    if (r.status === 429 || r.status === 503) {
-      console.warn(`[backfill] arXiv ${r.status}, retrying in ${wait / 1000}s…`);
+    if (r.status === 429 || r.status === 503 || r.status >= 500) {
+      console.warn(`[backfill] arXiv ${r.status}, retrying in ${wait / 1000}s… (attempt ${attempt}/5)`);
       await sleep(wait);
-      wait *= 2;
+      wait = Math.min(120_000, wait * 2);
       continue;
     }
     throw new Error(`arXiv HTTP ${r.status}`);
@@ -154,12 +157,14 @@ async function main() {
   // Group ids → rows so one arXiv fetch can update many user rows (the same
   // paper can exist in several accounts).
   const byArxiv = new Map();
+  let skipped = 0;
   for (const row of missing) {
     const key = baseId(row.arxiv_id);
-    if (!key) continue;
+    if (!key || !VALID_ID.test(key)) { skipped += 1; continue; }
     if (!byArxiv.has(key)) byArxiv.set(key, []);
     byArxiv.get(key).push(row);
   }
+  if (skipped > 0) console.warn(`[backfill] skipped ${skipped} non-arXiv id(s)`);
   const keys = [...byArxiv.keys()];
   console.log(`[backfill] ${keys.length} unique arXiv id(s), ${Math.ceil(keys.length / args.batch)} request(s)`);
 
