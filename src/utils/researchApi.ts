@@ -15,11 +15,69 @@ function userEmailFromLocalStorage(): string | null {
   } catch { return null; }
 }
 
-function authHeaders(): HeadersInit {
+const TOKEN_KEY = 'arxiv_server_token';
+
+export function getServerToken(): string {
+  try { return localStorage.getItem(TOKEN_KEY) ?? ''; } catch { return ''; }
+}
+
+export function setServerToken(token: string): void {
+  const t = token.trim();
+  try {
+    if (t) localStorage.setItem(TOKEN_KEY, t);
+    else   localStorage.removeItem(TOKEN_KEY);
+  } catch { /* ignore */ }
+}
+
+function sessionToken(): string {
+  try {
+    const raw = localStorage.getItem('arxiv_auth_session');
+    if (!raw) return '';
+    const s = JSON.parse(raw) as { accessToken?: string; provider?: string };
+    return s.provider === 'server' ? (s.accessToken ?? '') : '';
+  } catch { return ''; }
+}
+
+export function authHeaders(): HeadersInit {
   const email = userEmailFromLocalStorage();
   const h: Record<string, string> = { 'Content-Type': 'application/json' };
   if (email) h['x-user-email'] = email;
+  const token = sessionToken() || getServerToken();
+  if (token) h['Authorization'] = `Bearer ${token}`;
   return h;
+}
+
+// ---------- accounts ----------
+
+export interface AuthResult { token: string; user: { email: string } }
+
+export async function apiLogin(email: string, password: string): Promise<AuthResult> {
+  return call<AuthResult>('/api/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({ email, password }),
+  });
+}
+
+export async function apiRegister(email: string, password: string): Promise<AuthResult> {
+  return call<AuthResult>('/api/auth/register', {
+    method: 'POST',
+    body: JSON.stringify({ email, password }),
+  });
+}
+
+export async function apiLogout(): Promise<void> {
+  await call('/api/auth/logout', { method: 'POST' });
+}
+
+export async function apiMe(): Promise<{ user: { email: string } }> {
+  return call<{ user: { email: string } }>('/api/auth/me');
+}
+
+export async function apiChangePassword(currentPassword: string, newPassword: string): Promise<{ token: string }> {
+  return call<{ token: string }>('/api/auth/password', {
+    method: 'POST',
+    body: JSON.stringify({ currentPassword, newPassword }),
+  });
 }
 
 async function call<T>(url: string, init?: RequestInit): Promise<T> {
@@ -79,6 +137,8 @@ export async function uploadBookFile(bookId: string, file: File): Promise<Book> 
   const email = userEmailFromLocalStorage();
   const headers: Record<string, string> = {};
   if (email) headers['x-user-email'] = email;
+  const token = getServerToken();
+  if (token) headers['Authorization'] = `Bearer ${token}`;
   const r = await fetch(`/api/db/books/${encodeURIComponent(bookId)}/upload`, {
     method: 'POST',
     headers,
@@ -113,6 +173,8 @@ export function bookFileUrl(bookId: string, opts: { download?: boolean } = {}): 
   const params = new URLSearchParams();
   if (opts.download) params.set('download', '1');
   if (email)         params.set('email', email);
+  const token = sessionToken() || getServerToken();
+  if (token)         params.set('token', token);
   return `/api/db/books/${encodeURIComponent(bookId)}/file?${params}`;
 }
 
@@ -124,6 +186,8 @@ export async function uploadPaperFile(paperId: string, file: File): Promise<void
   const email = userEmailFromLocalStorage();
   const headers: Record<string, string> = {};
   if (email) headers['x-user-email'] = email;
+  const token = getServerToken();
+  if (token) headers['Authorization'] = `Bearer ${token}`;
   const r = await fetch(`/api/db/papers/${encodeURIComponent(paperId)}/upload`, {
     method: 'POST',
     headers,
@@ -139,6 +203,38 @@ export async function deletePaperFile(paperId: string): Promise<void> {
   await call(`/api/db/papers/${encodeURIComponent(paperId)}/file`, { method: 'DELETE' });
 }
 
+export interface CachedPaperFile {
+  paper: Paper;
+  cached: boolean;       // true when the PDF was already on the server
+  textPending: boolean;  // text extraction still running in the background
+}
+
+/** Download an arXiv PDF into server storage (idempotent) and start text extraction. */
+export async function cachePaperFile(paperId: string): Promise<CachedPaperFile> {
+  const data = await call<CachedPaperFile>(`/api/db/papers/${encodeURIComponent(paperId)}/cache-file`, {
+    method: 'POST',
+    body: '{}',
+  });
+  return {
+    ...data,
+    paper: { ...data.paper, digestDate: new Date(data.paper.digestDate) },
+  };
+}
+
+export interface PaperFullText {
+  text: string;
+  ready: boolean;
+  chars: number;
+  extractedAt: number | null;
+  hasFile: boolean;
+  originalFilename: string | null;
+}
+
+/** Extracted plain text for a cached paper (empty + ready:false until extraction finishes). */
+export async function getPaperFullText(paperId: string): Promise<PaperFullText> {
+  return call(`/api/db/papers/${encodeURIComponent(paperId)}/fulltext`);
+}
+
 // URL the browser can open directly (<iframe src>, <a href>) — email goes in
 // the query since those can't set headers; the server route accepts either.
 export function paperFileUrl(paperId: string, opts: { download?: boolean } = {}): string {
@@ -151,6 +247,8 @@ export function paperFileUrl(paperId: string, opts: { download?: boolean } = {})
   const params = new URLSearchParams();
   if (opts.download) params.set('download', '1');
   if (email)         params.set('email', email);
+  const token = sessionToken() || getServerToken();
+  if (token)         params.set('token', token);
   return `/api/db/papers/${encodeURIComponent(paperId)}/file?${params}`;
 }
 
@@ -244,9 +342,45 @@ export async function deleteLink(link: { sourceKind: EntityKind; sourceId: strin
 
 // ---------- Papers (server-backed inbox) ----------
 
-export async function apiListPapers(): Promise<Paper[]> {
-  const { papers } = await call<{ papers: Array<Paper & { digestDate: string }> }>('/api/db/papers');
-  return papers.map(p => ({ ...p, digestDate: new Date(p.digestDate) }));
+export async function apiListPapers(
+  { limit = 0, offset = 0 }: { limit?: number; offset?: number } = {},
+): Promise<{ papers: Paper[]; total: number }> {
+  const qs = new URLSearchParams();
+  if (limit > 0) qs.set('limit', String(limit));
+  if (offset > 0) qs.set('offset', String(offset));
+  const suffix = qs.toString() ? `?${qs}` : '';
+  const { papers, total } = await call<{
+    papers: Array<Paper & { digestDate: string }>;
+    total: number;
+  }>(`/api/db/papers${suffix}`);
+  return {
+    papers: papers.map(p => ({ ...p, digestDate: new Date(p.digestDate) })),
+    total: typeof total === 'number' ? total : papers.length,
+  };
+}
+
+export interface PaperStats {
+  total: number;
+  read: number;
+  unread: number;
+  saved: number;
+  last30: number;
+  firstDate: string | null;
+  lastDate: string | null;
+  categories: Array<{ category: string; count: number }>;
+  daily: Array<{ day: string; count: number }>;
+}
+
+export async function apiGetStats(): Promise<PaperStats> {
+  return call<PaperStats>('/api/db/stats');
+}
+
+export async function apiExistingArxivIds(arxivIds: string[]): Promise<string[]> {
+  const { arxivIds: found } = await call<{ arxivIds: string[] }>('/api/db/papers/existing', {
+    method: 'POST',
+    body: JSON.stringify({ arxivIds }),
+  });
+  return found ?? [];
 }
 
 export async function apiUpsertPapers(papers: Paper[]): Promise<void> {
@@ -299,6 +433,14 @@ export async function apiGetReadIds(): Promise<string[]> {
 
 export async function apiSetReadIds(ids: string[]): Promise<void> {
   await call('/api/db/read', { method: 'PUT', body: JSON.stringify({ ids }) });
+}
+
+export async function apiAddReadIds(ids: string[]): Promise<void> {
+  await call('/api/db/read/add', { method: 'POST', body: JSON.stringify({ ids }) });
+}
+
+export async function apiRemoveReadIds(ids: string[]): Promise<void> {
+  await call('/api/db/read/remove', { method: 'POST', body: JSON.stringify({ ids }) });
 }
 
 // ---------- Trackers + scores ----------

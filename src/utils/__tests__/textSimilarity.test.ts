@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { SimilarityIndex } from '../textSimilarity';
+import { SimilarityIndex, getCachedSimilarityIndex } from '../textSimilarity';
 import type { Paper } from '../../types';
 
 function mkPaper(over: Partial<Paper> & { arxivId: string; title: string }): Paper {
@@ -149,5 +149,27 @@ describe('SimilarityIndex — signature memoisation hint', () => {
     const p2 = mkPaper({ arxivId: '2', title: 'y' });
     expect(new SimilarityIndex([p1, p2]).signature)
       .toBe(new SimilarityIndex([p2, p1]).signature);
+  });
+});
+
+describe('SimilarityIndex — session cache + out-of-corpus sources', () => {
+  const corpus = [
+    mkPaper({ arxivId: '1', title: 'neural machine translation with transformers' }),
+    mkPaper({ arxivId: '2', title: 'transformer models for language translation' }),
+    mkPaper({ arxivId: '3', title: 'protein folding with graph networks' }),
+  ];
+
+  it('reuses the cached index for the same paper set', () => {
+    const a = getCachedSimilarityIndex(corpus);
+    const b = getCachedSimilarityIndex([...corpus].reverse());
+    expect(a).toBe(b);
+  });
+
+  it('can score a paper that is not part of the indexed corpus', () => {
+    const idx = new SimilarityIndex(corpus);
+    const outsider = mkPaper({ arxivId: '9999', title: 'transformer translation models' });
+    const results = idx.similarToPaper(outsider, 5, 0.01);
+    expect(results.length).toBeGreaterThan(0);
+    expect(results.some(r => r.paper.arxivId === '1' || r.paper.arxivId === '2')).toBe(true);
   });
 });

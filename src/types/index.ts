@@ -14,12 +14,18 @@ export interface Paper {
   emailId: string;
   digestSubject: string;
   digestDate: Date;
-  // Locally-uploaded PDF (server-stored). Null/absent for normal arXiv papers.
+  // Where the row came from: an email digest, an explicit import, or an
+  // uploaded PDF. Imports/uploads are pinned into the first page server-side.
+  source?: 'email' | 'import' | 'upload';
+  // Locally-uploaded / server-cached PDF. Null/absent until a document is cached.
   filePath?: string | null;
   fileSize?: number | null;
   mimeType?: string | null;
   originalFilename?: string | null;
   uploadedAt?: number | null;
+  // Full text extracted from the cached PDF (stored in Postgres; fetched on demand).
+  hasFullText?: boolean;
+  fullTextChars?: number;
 }
 
 // AI providers supported. Anthropic uses its own protocol; everything else
@@ -60,6 +66,8 @@ export interface AIProfiles {
 export interface Settings {
   senderEmail: string;
   maxEmails: number;
+  // Mailbox credentials used to fetch arXiv digest emails (per browser/user).
+  imapConfig?: ImapConfig;
   // Legacy single-key fields (kept for backward compat — used as fallback)
   claudeApiKey?: string;
   s2ApiKey?: string;
@@ -299,7 +307,7 @@ export interface MagazineIssueSummary {
   sectionKeys:   string[];
 }
 
-export type Provider = 'google' | 'imap';
+export type Provider = 'google' | 'imap' | 'server';
 
 export interface ImapConfig {
   host: string;

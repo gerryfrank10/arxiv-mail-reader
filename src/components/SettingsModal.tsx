@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
-import { X, Mail, Hash, RefreshCw, Key, Eye, EyeOff, Cpu, ChevronDown, ExternalLink, CheckCircle2, AlertCircle, Loader2, Database, UploadCloud, Sparkle } from 'lucide-react';
+import { X, Mail, Hash, RefreshCw, Key, Eye, EyeOff, Cpu, ChevronDown, ExternalLink, CheckCircle2, AlertCircle, Loader2, Database, UploadCloud, Sparkle, LogOut, Server, Lock } from 'lucide-react';
 import { usePapers } from '../contexts/PapersContext';
+import { useAuth } from '../contexts/AuthContext';
 import { AI_DEFAULTS, AI_PROVIDERS, listAvailableModels, resolveAIConfig } from '../utils/aiProvider';
 import { AIProvider, AIConfig, AIPurpose, AIProfileSlot, Settings } from '../types';
 import { dbExportAll } from '../utils/paperDb';
@@ -14,10 +15,25 @@ interface Props {
 
 export default function SettingsModal({ onClose }: Props) {
   const { settings, updateSettings, sync } = usePapers();
+  const { user, changePassword, logout } = useAuth();
   const [senderEmail, setSenderEmail] = useState(settings.senderEmail);
   const [maxEmails,   setMaxEmails]   = useState(settings.maxEmails);
   const [s2Key,       setS2Key]       = useState(settings.s2ApiKey ?? '');
   const [showS2,      setShowS2]      = useState(false);
+
+  // ----- Mailbox (IMAP) credentials -----
+  const [imapHost, setImapHost] = useState(settings.imapConfig?.host ?? '');
+  const [imapPort, setImapPort] = useState(String(settings.imapConfig?.port ?? 993));
+  const [imapUser, setImapUser] = useState(settings.imapConfig?.username ?? '');
+  const [imapPass, setImapPass] = useState(settings.imapConfig?.password ?? '');
+  const [showImapPass, setShowImapPass] = useState(false);
+
+  // ----- Account / password -----
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword,     setNewPassword]     = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [pwSaving,        setPwSaving]        = useState(false);
+  const [pwResult,        setPwResult]        = useState<{ ok: boolean; message: string } | null>(null);
 
   // ----- AI provider state (drives the whole picker) -----
   const initialAi = useMemo<AIConfig>(() => {
@@ -60,6 +76,10 @@ export default function SettingsModal({ onClose }: Props) {
     setSenderEmail(settings.senderEmail);
     setMaxEmails(settings.maxEmails);
     setS2Key(settings.s2ApiKey ?? '');
+    setImapHost(settings.imapConfig?.host ?? '');
+    setImapPort(String(settings.imapConfig?.port ?? 993));
+    setImapUser(settings.imapConfig?.username ?? '');
+    setImapPass(settings.imapConfig?.password ?? '');
     // Default profile: prefer aiProfiles.default, else legacy resolveAIConfig
     const defp = settings.aiProfiles?.default ?? resolveAIConfig(settings);
     setProvider(defp.provider);
@@ -196,6 +216,9 @@ export default function SettingsModal({ onClose }: Props) {
     updateSettings({
       senderEmail,
       maxEmails,
+      imapConfig: imapHost.trim() && imapUser.trim() && imapPass
+        ? { host: imapHost.trim(), port: Number(imapPort) || 993, username: imapUser.trim(), password: imapPass }
+        : undefined,
       // Keep legacy field in sync when user is on Claude (so older code paths work)
       claudeApiKey: provider === 'claude' && apiKey.trim() ? apiKey.trim() : undefined,
       s2ApiKey:     s2Key.trim() || undefined,
@@ -204,7 +227,38 @@ export default function SettingsModal({ onClose }: Props) {
       aiRouting:    Object.keys(routing).length > 0 ? routing : undefined,
     });
     onClose();
-    setTimeout(() => sync(true), 100);
+    if (imapHost.trim() && imapUser.trim() && imapPass) {
+      setTimeout(() => sync(true), 100);
+    }
+  }
+
+  async function handleChangePassword() {
+    setPwResult(null);
+    if (newPassword.length < 8) {
+      setPwResult({ ok: false, message: 'New password must be at least 8 characters.' });
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setPwResult({ ok: false, message: 'New passwords do not match.' });
+      return;
+    }
+    setPwSaving(true);
+    try {
+      await changePassword(currentPassword, newPassword);
+      setCurrentPassword('');
+      setNewPassword('');
+      setConfirmPassword('');
+      setPwResult({ ok: true, message: 'Password updated. Other devices were signed out.' });
+    } catch (e) {
+      setPwResult({ ok: false, message: e instanceof Error ? e.message : 'Could not change the password.' });
+    } finally {
+      setPwSaving(false);
+    }
+  }
+
+  function handleSignOut() {
+    logout();
+    onClose();
   }
 
   return (
@@ -218,6 +272,64 @@ export default function SettingsModal({ onClose }: Props) {
         </div>
 
         <div className="space-y-6">
+          {/* ---------- Account ---------- */}
+          <Section title="Account" description="The account you are signed in with.">
+            <div className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 px-3 py-2.5">
+              <div className="flex items-center gap-2 min-w-0">
+                <Mail size={14} className="text-slate-400 shrink-0" />
+                <span className="text-sm text-slate-700 truncate">{user?.email ?? '—'}</span>
+              </div>
+              <button
+                onClick={handleSignOut}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border border-slate-200 text-slate-600 hover:bg-slate-50 transition-colors shrink-0"
+              >
+                <LogOut size={12} /> Sign out
+              </button>
+            </div>
+
+            <div className="space-y-2">
+              <label className="block text-sm font-medium text-slate-700 flex items-center gap-1.5">
+                <Lock size={13} className="text-slate-400" /> Change password
+              </label>
+              <input
+                type="password"
+                autoComplete="current-password"
+                value={currentPassword}
+                onChange={e => { setCurrentPassword(e.target.value); setPwResult(null); }}
+                placeholder="Current password"
+                className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-400"
+              />
+              <div className="flex gap-2">
+                <input
+                  type="password"
+                  autoComplete="new-password"
+                  value={newPassword}
+                  onChange={e => { setNewPassword(e.target.value); setPwResult(null); }}
+                  placeholder="New password"
+                  className="flex-1 px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-400"
+                />
+                <input
+                  type="password"
+                  autoComplete="new-password"
+                  value={confirmPassword}
+                  onChange={e => { setConfirmPassword(e.target.value); setPwResult(null); }}
+                  placeholder="Confirm"
+                  className="flex-1 px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-400"
+                />
+              </div>
+              {pwResult && (
+                <p className={`text-xs ${pwResult.ok ? 'text-emerald-600' : 'text-red-600'}`}>{pwResult.message}</p>
+              )}
+              <button
+                onClick={handleChangePassword}
+                disabled={pwSaving || !currentPassword || !newPassword}
+                className="w-full py-2 rounded-lg text-sm font-medium bg-slate-800 text-white hover:bg-slate-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {pwSaving ? 'Updating…' : 'Update password'}
+              </button>
+            </div>
+          </Section>
+
           {/* ---------- Email ---------- */}
           <Section title="Email & sync">
             <div>
@@ -251,6 +363,62 @@ export default function SettingsModal({ onClose }: Props) {
                 />
               </div>
               <p className="mt-1.5 text-xs text-slate-400">Higher values fetch more history (5–100).</p>
+            </div>
+
+            <div className="rounded-lg border border-slate-200 p-3 space-y-2.5">
+              <div className="flex items-center gap-2">
+                <Server size={13} className="text-slate-500" />
+                <span className="text-xs font-semibold text-slate-700">Mailbox (IMAP)</span>
+              </div>
+              <p className="text-[11px] text-slate-500 leading-relaxed">
+                Used to fetch your arXiv digest emails. Credentials are stored only in this browser
+                and sent to your local backend when syncing.
+              </p>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={imapHost}
+                  onChange={e => setImapHost(e.target.value)}
+                  placeholder="imap.mail.me.com"
+                  className="flex-1 px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-blue-500/40"
+                />
+                <input
+                  type="number"
+                  value={imapPort}
+                  onChange={e => setImapPort(e.target.value)}
+                  placeholder="993"
+                  className="w-20 px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-blue-500/40"
+                />
+              </div>
+              <input
+                type="email"
+                autoComplete="username"
+                value={imapUser}
+                onChange={e => setImapUser(e.target.value)}
+                placeholder="you@example.com"
+                className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-blue-500/40"
+              />
+              <div className="relative">
+                <input
+                  type={showImapPass ? 'text' : 'password'}
+                  autoComplete="current-password"
+                  value={imapPass}
+                  onChange={e => setImapPass(e.target.value)}
+                  placeholder="App password"
+                  className="w-full px-2.5 pr-8 py-1.5 border border-slate-200 rounded-lg text-xs font-mono focus:outline-none focus:ring-2 focus:ring-blue-500/40"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowImapPass(v => !v)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                  aria-label={showImapPass ? 'Hide password' : 'Show password'}
+                >
+                  {showImapPass ? <EyeOff size={13} /> : <Eye size={13} />}
+                </button>
+              </div>
+              <p className="text-[11px] text-slate-400 leading-relaxed">
+                iCloud: imap.mail.me.com · Outlook: imap-mail.outlook.com · Yahoo: imap.yahoo.com
+              </p>
             </div>
           </Section>
 

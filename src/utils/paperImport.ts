@@ -177,6 +177,7 @@ export function metadataToPaper(meta: ArxivMetadata): Paper {
     emailId:       'import',
     digestSubject: 'Imported',
     digestDate:    meta.digestDate,
+    source:        'import',
   };
 }
 
@@ -274,6 +275,7 @@ export function bibEntryToPaper(e: BibtexEntry): Paper | null {
     emailId:       'import',
     digestSubject: 'Imported (BibTeX)',
     digestDate:    year ? new Date(parseInt(year, 10), 0, 1) : new Date(),
+    source:        'import',
   };
 }
 

@@ -26,7 +26,7 @@ const TABS: Array<{ value: Tab; label: string; icon: React.ReactNode }> = [
 ];
 
 export default function Dashboard() {
-  const { papers, setSelectedPaper } = usePapers();
+  const { papers, setSelectedPaper, stats, readIds } = usePapers();
   const [tab, setTab] = useState<Tab>('overview');
 
   if (papers.length === 0) {
@@ -50,7 +50,14 @@ export default function Dashboard() {
             <div>
               <h1 className="text-2xl font-bold text-slate-900">arXiv Papers</h1>
               <p className="text-sm text-slate-500 mt-0.5">
-                {papers.length} papers
+                {(stats?.total ?? papers.length).toLocaleString()} papers
+                {stats && (
+                  <span className="text-slate-400">
+                    {' · '}
+                    {Math.max(0, stats.total - readIds.size).toLocaleString()} unread
+                    {' · '}{stats.saved.toLocaleString()} saved
+                  </span>
+                )}
               </p>
             </div>
             {/* Tab bar */}
@@ -93,12 +100,17 @@ function OverviewTab({ papers, setSelectedPaper }: {
   const [citations, setCitations] = useState<Record<string, number>>({});
   const [citLoading, setCitLoading] = useState(false);
 
-  const catCounts = useMemo(() => {
+  const { stats } = usePapers();
+  const catCounts = useMemo<Array<[string, number]>>(() => {
+    // Server mode: counts cover the whole library, not just the loaded window.
+    if (stats?.categories.length) {
+      return stats.categories.map(c => [c.category, c.count]);
+    }
     const counts: Record<string, number> = {};
     for (const p of papers)
       for (const c of p.categories) counts[c] = (counts[c] ?? 0) + 1;
     return Object.entries(counts).sort((a, b) => b[1] - a[1]);
-  }, [papers]);
+  }, [papers, stats]);
 
   const dashPapers = useMemo(() => {
     let result = papers;
@@ -163,7 +175,7 @@ function OverviewTab({ papers, setSelectedPaper }: {
               <Filter size={11} />
               All
               <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-bold ${!dashCat ? 'bg-blue-100 text-blue-600' : 'bg-slate-100 text-slate-500'}`}>
-                {papers.length}
+                {stats?.total ?? papers.length}
               </span>
             </button>
             {catCounts.slice(0, 14).map(([cat, count]) => {

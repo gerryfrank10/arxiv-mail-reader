@@ -1,7 +1,8 @@
-import { useState } from 'react';
-import { BookMarked, Search, Trash2, ExternalLink, BarChart2, Download, Heart } from 'lucide-react';
+import { useRef, useState } from 'react';
+import { BookMarked, Search, Trash2, ExternalLink, BarChart2, Download, Heart, Database, X } from 'lucide-react';
 import { useLibrary } from '../contexts/LibraryContext';
 import { usePapers } from '../contexts/PapersContext';
+import { cachePaperFile } from '../utils/researchApi';
 import { computeAssessment, ASSESSMENT_BADGE, ASSESSMENT_BAR } from '../utils/assessment';
 import { CATEGORY_COLORS_LIGHT, getCategoryLabel } from '../utils/categories';
 import { downloadBibFile } from '../utils/citationFormats';
@@ -9,9 +10,44 @@ import { format } from 'date-fns';
 
 export default function LibraryView() {
   const { savedPapers, unsavePaper, likedPapers, unlikePaper } = useLibrary();
-  const { setSelectedPaper } = usePapers();
+  const { setSelectedPaper, storageMode, updatePaperMeta } = usePapers();
   const [query, setQuery] = useState('');
   const [tab, setTab] = useState<'saved' | 'liked'>('saved');
+  const [cacheProgress, setCacheProgress] = useState<{ done: number; total: number; running: boolean } | null>(null);
+  const [cacheMessage, setCacheMessage] = useState<string | null>(null);
+  const cancelCache = useRef(false);
+
+  async function cacheAllPdfs() {
+    const targets = source.filter(p => !p.filePath && !p.arxivId.startsWith('local:'));
+    if (targets.length === 0) {
+      setCacheMessage('Every paper in this tab already has a cached PDF.');
+      return;
+    }
+    cancelCache.current = false;
+    setCacheMessage(null);
+    setCacheProgress({ done: 0, total: targets.length, running: true });
+    let ok = 0;
+    let failed = 0;
+    for (let i = 0; i < targets.length; i++) {
+      if (cancelCache.current) break;
+      try {
+        const res = await cachePaperFile(targets[i].id);
+        updatePaperMeta(targets[i].id, {
+          filePath: res.paper.filePath, fileSize: res.paper.fileSize,
+          mimeType: res.paper.mimeType, originalFilename: res.paper.originalFilename,
+          uploadedAt: res.paper.uploadedAt, hasFullText: res.paper.hasFullText,
+          fullTextChars: res.paper.fullTextChars,
+        });
+        ok++;
+      } catch { failed++; }
+      setCacheProgress({ done: i + 1, total: targets.length, running: !cancelCache.current });
+    }
+    setCacheProgress(prev => prev ? { ...prev, running: false } : null);
+    setCacheMessage(
+      `${ok} PDF${ok === 1 ? '' : 's'} cached${failed ? `, ${failed} failed` : ''}.` +
+      (cancelCache.current ? ' Cancelled.' : ' Text extraction continues in the background.'),
+    );
+  }
 
   const isLikedTab = tab === 'liked';
   const source = isLikedTab ? likedPapers : savedPapers;
@@ -63,15 +99,62 @@ export default function LibraryView() {
               {savedPapers.length} saved · {likedPapers.length} liked
             </p>
           </div>
-          <button
-            onClick={() => downloadBibFile(source, `arxiv-${tab}-${format(new Date(), 'yyyy-MM-dd')}.bib`)}
-            title={`Export ${tab} papers as a BibTeX file`}
-            className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 text-slate-700 text-sm font-medium rounded-lg hover:bg-slate-50 hover:border-slate-300 transition-all shadow-sm"
-          >
-            <Download size={14} />
-            Export .bib
-          </button>
+          <div className="flex items-center gap-2">
+            {storageMode === 'server' && (
+              <button
+                onClick={cacheAllPdfs}
+                disabled={cacheProgress?.running}
+                title="Download and store the PDFs for these papers on your server (about 3s each, arXiv rate limit). Text is extracted automatically."
+                className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 text-slate-700 text-sm font-medium rounded-lg hover:bg-slate-50 hover:border-slate-300 transition-all shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <Database size={14} />
+                {cacheProgress?.running
+                  ? `Caching ${cacheProgress.done}/${cacheProgress.total}…`
+                  : 'Cache PDFs'}
+              </button>
+            )}
+            <button
+              onClick={() => downloadBibFile(source, `arxiv-${tab}-${format(new Date(), 'yyyy-MM-dd')}.bib`)}
+              title={`Export ${tab} papers as a BibTeX file`}
+              className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 text-slate-700 text-sm font-medium rounded-lg hover:bg-slate-50 hover:border-slate-300 transition-all shadow-sm"
+            >
+              <Download size={14} />
+              Export .bib
+            </button>
+          </div>
         </div>
+
+        {cacheProgress?.running && (
+          <div className="mb-4 flex items-center gap-3 rounded-lg border border-blue-200 bg-blue-50 px-4 py-2.5 text-sm text-blue-700">
+            <svg className="animate-spin w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+            </svg>
+            <div className="flex-1">
+              <div className="flex items-center justify-between mb-1">
+                <span>Downloading PDFs — {cacheProgress.done} of {cacheProgress.total}</span>
+                <span className="text-xs text-blue-500">~3s each (arXiv rate limit)</span>
+              </div>
+              <div className="w-full h-1.5 rounded-full bg-blue-100 overflow-hidden">
+                <div className="h-full bg-blue-500 transition-all" style={{ width: `${(cacheProgress.done / Math.max(cacheProgress.total, 1)) * 100}%` }} />
+              </div>
+            </div>
+            <button
+              onClick={() => { cancelCache.current = true; }}
+              title="Stop after the current download"
+              className="p-1 rounded hover:bg-blue-100"
+            >
+              <X size={14} />
+            </button>
+          </div>
+        )}
+
+        {cacheMessage && (
+          <div className="mb-4 flex items-start gap-2 rounded-lg border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm text-slate-600">
+            <span className="flex-1">{cacheMessage}</span>
+            <button onClick={() => setCacheMessage(null)} className="text-slate-400 hover:text-slate-600"><X size={14} /></button>
+          </div>
+        )}
 
         {/* Saved / Liked tabs */}
         <div className="flex gap-1 bg-slate-100 rounded-lg p-1 w-fit mb-6">

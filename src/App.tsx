@@ -1,15 +1,7 @@
-import { GoogleOAuthProvider } from '@react-oauth/google';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { PapersProvider } from './contexts/PapersContext';
 import LoginPage from './components/LoginPage';
 import AppLayout from './components/AppLayout';
-
-const CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID;
-
-// useGoogleLogin() inside AuthProvider always needs GoogleOAuthProvider in the
-// tree. We always render it — a placeholder is used when no client ID is set
-// so the hook stays valid. The Google button is only shown when CLIENT_ID exists.
-const PROVIDER_ID = CLIENT_ID || 'not-configured';
 
 function AppInner() {
   const { user, isRestoring } = useAuth();
@@ -27,16 +19,14 @@ function AppInner() {
       <AppLayout />
     </PapersProvider>
   ) : (
-    <LoginPage hasGoogle={!!CLIENT_ID} />
+    <LoginPage />
   );
 }
 
 export default function App() {
   return (
-    <GoogleOAuthProvider clientId={PROVIDER_ID}>
-      <AuthProvider>
-        <AppInner />
-      </AuthProvider>
-    </GoogleOAuthProvider>
+    <AuthProvider>
+      <AppInner />
+    </AuthProvider>
   );
 }

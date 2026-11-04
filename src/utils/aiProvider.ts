@@ -1,5 +1,6 @@
 import { AIConfig, AIProfileSlot, AIProvider, AIPurpose, Settings } from '../types';
 import { _aiActivityFinish, _aiActivityStart } from '../contexts/AIActivityContext';
+import { authHeaders } from './researchApi';
 
 // Sensible defaults so the user only needs to pick a provider + paste a key
 export const AI_DEFAULTS: Record<AIProvider, { baseUrl?: string; model?: string; label: string; help: string }> = {
@@ -270,7 +271,7 @@ async function callOpenAICompatible(
   // Proxy through our server to avoid CORS (especially for Ollama on localhost)
   const resp = await fetch('/api/ai/chat', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders(),
     body: JSON.stringify({
       provider: config.provider,
       baseUrl,

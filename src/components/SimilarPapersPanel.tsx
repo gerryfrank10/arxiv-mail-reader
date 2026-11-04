@@ -1,49 +1,79 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Sigma, Quote, Tag, Users } from 'lucide-react';
 import { Paper } from '../types';
 import { usePapers } from '../contexts/PapersContext';
 import { useLibrary } from '../contexts/LibraryContext';
-import { SimilarityIndex, SimilarityResult } from '../utils/textSimilarity';
+import { SimilarityIndex, SimilarityResult, getCachedSimilarityIndex } from '../utils/textSimilarity';
 
 interface Props {
   paper: Paper;
 }
+
+// Indexing 71k papers (title + abstract) takes seconds and hundreds of MB.
+// The panel only needs a useful neighbourhood, so we index every saved paper
+// plus the most recent N inbox papers. The index is cached for the session and
+// built off the click path, so opening a paper never blocks on it.
+const RECENT_INBOX_FOR_INDEX = 6000;
 
 /**
  * Replaces the previous AI-driven correlations panel with a pure
  * client-side TF-IDF similarity index. No tokens, no network — just
  * cosine similarity over the user's own library + inbox, blended with
  * category and author overlap.
- *
- * The index is built once per render against the current paper set and
- * cached via useMemo keyed on the paper-set signature, so opening
- * different papers in sequence reuses the same index.
  */
 export default function SimilarPapersPanel({ paper }: Props) {
   const { papers, setSelectedPaper } = usePapers();
   const { savedPapers } = useLibrary();
 
-  // Build a single index from library ∪ inbox so saved papers always
-  // get a chance to match even when they aren't in the recent inbox.
+  // Build a single corpus from library ∪ recent inbox. Deliberately does NOT
+  // depend on `paper`: opening another paper reuses the same cached index.
   const corpus: Paper[] = useMemo(() => {
     const seen = new Set<string>();
     const out: Paper[] = [];
-    for (const p of [...savedPapers, ...papers]) {
+    for (const p of savedPapers) {
       if (!p.arxivId || seen.has(p.arxivId)) continue;
       seen.add(p.arxivId);
       out.push(p);
     }
-    // The source paper itself must be in the corpus — otherwise the
-    // index can't compute the similarities we want.
-    if (paper.arxivId && !seen.has(paper.arxivId)) out.push(paper);
+    const recent = [...papers]
+      .sort((a, b) => b.digestDate.getTime() - a.digestDate.getTime())
+      .slice(0, RECENT_INBOX_FOR_INDEX);
+    for (const p of recent) {
+      if (!p.arxivId || seen.has(p.arxivId)) continue;
+      seen.add(p.arxivId);
+      out.push(p);
+    }
     return out;
-  }, [savedPapers, papers, paper]);
+  }, [savedPapers, papers]);
 
-  const index = useMemo(() => new SimilarityIndex(corpus), [corpus]);
+  const [index, setIndex] = useState<SimilarityIndex | null>(null);
+
+  // Build after the browser has painted the paper, not while handling the
+  // click. If the corpus is already cached this resolves almost immediately.
+  useEffect(() => {
+    let cancelled = false;
+    setIndex(null);
+    const build = () => {
+      if (cancelled) return;
+      setIndex(getCachedSimilarityIndex(corpus));
+    };
+    const ric = (window as Window & {
+      requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number;
+    }).requestIdleCallback;
+    if (ric) {
+      const id = ric(build, { timeout: 1500 });
+      return () => {
+        cancelled = true;
+        (window as Window & { cancelIdleCallback?: (id: number) => void }).cancelIdleCallback?.(id);
+      };
+    }
+    const id = setTimeout(build, 0);
+    return () => { cancelled = true; clearTimeout(id); };
+  }, [corpus]);
 
   const results: SimilarityResult[] = useMemo(
-    () => index.similar(paper.arxivId, 12, 0.05),
-    [index, paper.arxivId],
+    () => (index ? index.similarToPaper(paper, 12, 0.05) : []),
+    [index, paper],
   );
 
   return (
@@ -52,10 +82,21 @@ export default function SimilarPapersPanel({ paper }: Props) {
         <Sigma size={15} className="text-indigo-500" />
         <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-500">Similar papers in your library</h2>
         <span className="text-[10px] text-slate-400 ml-1">local · TF-IDF + category + author</span>
-        <span className="ml-auto text-[10px] text-slate-400">{corpus.length.toLocaleString()} papers indexed</span>
+        <span className="ml-auto text-[10px] text-slate-400">
+          {corpus.length.toLocaleString()} papers indexed
+          {papers.length > RECENT_INBOX_FOR_INDEX && ' (recent + saved)'}
+        </span>
       </div>
 
-      {results.length === 0 ? (
+      {!index ? (
+        <div className="flex items-center gap-2 rounded-lg border border-dashed border-slate-300 bg-slate-50/50 px-4 py-4 text-sm text-slate-500">
+          <svg className="animate-spin w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24">
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+          </svg>
+          Indexing your papers in the background…
+        </div>
+      ) : results.length === 0 ? (
         <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50/50 px-4 py-4 text-sm text-slate-500">
           {corpus.length < 3
             ? 'Sync your inbox or bookmark a few papers — the index needs a corpus to compare against.'

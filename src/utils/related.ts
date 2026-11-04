@@ -17,6 +17,19 @@ function extractWords(text: string): Set<string> {
   );
 }
 
+// Title word-sets are recomputed for every candidate paper on every render of
+// the detail view; cache them per Paper object so opening a paper only costs
+// one pass over a few tens of thousands of cached sets.
+const wordCache = new WeakMap<Paper, Set<string>>();
+function titleWords(p: Paper): Set<string> {
+  let words = wordCache.get(p);
+  if (!words) {
+    words = extractWords(p.title);
+    wordCache.set(p, words);
+  }
+  return words;
+}
+
 export interface RelatedPaper {
   paper: Paper;
   score: number;
@@ -58,7 +71,7 @@ export function getRelatedPapers(paper: Paper, allPapers: Paper[], limit = 6): R
         reasons.push(`${sharedAuthors} shared author${sharedAuthors > 1 ? 's' : ''}`);
       }
 
-      const pWords = extractWords(p.title);
+      const pWords = titleWords(p);
       let overlap = 0;
       for (const w of pWords) { if (tWords.has(w)) overlap++; }
       if (overlap) {

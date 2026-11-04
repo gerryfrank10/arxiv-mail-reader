@@ -137,7 +137,37 @@ export class SimilarityIndex {
   similar(sourceArxivId: string, k: number = 20, minScore: number = 0.05): SimilarityResult[] {
     const source = this.papers.get(sourceArxivId);
     if (!source) return [];
-    const srcVec  = this.vectors.get(sourceArxivId);
+    return this.rank(source, this.vectors.get(sourceArxivId), k, minScore);
+  }
+
+  /**
+   * Same as similar(), but accepts a Paper object that may not be in the
+   * indexed corpus (e.g. a very old inbox paper when the index is capped to
+   * the most recent N). The source vector is built on the fly with the
+   * corpus IDF, so switching papers never forces an index rebuild.
+   */
+  similarToPaper(source: Paper, k: number = 20, minScore: number = 0.05): SimilarityResult[] {
+    if (this.papers.has(source.arxivId)) return this.similar(source.arxivId, k, minScore);
+    const tokens = tokenize(textForPaper(source));
+    if (tokens.length === 0) return [];
+    const tf = new Map<string, number>();
+    for (const t of tokens) tf.set(t, (tf.get(t) ?? 0) + 1);
+    const vec = new Map<string, number>();
+    let norm = 0;
+    for (const [term, freq] of tf) {
+      const w = freq * (this.idf.get(term) ?? 0);
+      if (w === 0) continue;
+      vec.set(term, w);
+      norm += w * w;
+    }
+    norm = Math.sqrt(norm);
+    if (norm === 0) return [];
+    for (const [term, w] of vec) vec.set(term, w / norm);
+    return this.rank(source, vec, k, minScore);
+  }
+
+  private rank(source: Paper, srcVec: Map<string, number> | undefined, k: number, minScore: number): SimilarityResult[] {
+    const sourceArxivId = source.arxivId;
     const srcCats = new Set(source.categories ?? []);
     const srcAuth = new Set((source.authorList ?? []).map(a => a.toLowerCase()));
 
@@ -214,4 +244,21 @@ function computeSignature(papers: Paper[]): string {
     }
   }
   return `${ids.length}:${hash}`;
+}
+
+// =========================================================================
+// Session cache
+// =========================================================================
+
+// Building the index is the expensive part (~0.4ms/paper). Keep the last one
+// alive across component unmounts so opening paper A, B, C… reuses a single
+// index instead of rebuilding the corpus on every click.
+let cached: { signature: string; index: SimilarityIndex } | null = null;
+
+export function getCachedSimilarityIndex(papers: Paper[]): SimilarityIndex {
+  const signature = computeSignature(papers);
+  if (cached?.signature === signature) return cached.index;
+  const index = new SimilarityIndex(papers);
+  cached = { signature, index };
+  return index;
 }

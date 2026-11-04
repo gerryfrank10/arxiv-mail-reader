@@ -4,10 +4,12 @@ import cors from 'cors';
 import { ImapFlow } from 'imapflow';
 import { simpleParser } from 'mailparser';
 import { fileURLToPath } from 'url';
-import { dirname, join, extname } from 'path';
-import { mkdirSync, unlinkSync, existsSync, statSync } from 'fs';
+import { dirname, join, extname, basename } from 'path';
+import { mkdirSync, unlinkSync, existsSync, statSync, writeFileSync, readFileSync } from 'fs';
 import multer from 'multer';
 import 'dotenv/config';
+import { extractText as extractPdfTextRaw } from 'unpdf';
+import { timingSafeEqual } from 'node:crypto';
 import { db } from './db.mjs';
 import { fetchSources, buildNewsQuery } from './sources.mjs';
 
@@ -15,6 +17,17 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = process.env.PORT || 3001;
 const isProd = process.env.NODE_ENV === 'production';
+
+// Optional shared API token for /api/db/*. Identity normally comes from a
+// login session; this legacy token is only an extra API fallback alongside
+// x-user-email. Leave empty unless you need scripted access.
+const AUTH_TOKEN = (process.env.APP_AUTH_TOKEN || '').trim();
+
+function safeEqual(a, b) {
+  const ab = Buffer.from(String(a));
+  const bb = Buffer.from(String(b));
+  return ab.length === bb.length && timingSafeEqual(ab, bb);
+}
 
 // Bumped to handle large migration payloads (hundreds of papers with
 // full abstracts). The actual ceiling for a 1000-paper migration is
@@ -765,6 +778,7 @@ function resolveUpstreamBase(baseUrl) {
 // Browser → /api/ai/chat → upstream. Lets us avoid CORS on localhost (Ollama)
 // and on any OpenAI-compatible endpoint the user configures.
 app.post('/api/ai/chat', async (req, res) => {
+  if (!(await requireSession(req, res))) return;
   const { provider, baseUrl, apiKey, model, messages, maxTokens = 1024, temperature = 0.4 } = req.body || {};
   if (!baseUrl || !model || !Array.isArray(messages)) {
     return res.status(400).json({ error: 'baseUrl, model and messages are required' });
@@ -805,6 +819,7 @@ app.post('/api/ai/chat', async (req, res) => {
 });
 
 app.post('/api/fetch-imap-emails', async (req, res) => {
+  if (!(await requireSession(req, res))) return;
   const { host, port = 993, username, password, senderEmail, maxEmails = 30 } = req.body;
 
   if (!host || !username || !password || !senderEmail) {
@@ -842,7 +857,12 @@ app.post('/api/fetch-imap-emails', async (req, res) => {
 
     for await (const msg of client.fetch(slice, { source: true, envelope: true })) {
       try {
-        const parsed = await simpleParser(msg.source);
+        // skipTextToHtml: we only use parsed.text, and mailparser's
+        // text->html pass runs linkify-it over the body — its fuzzy regex
+        // blows up quadratically on pathological emails (one long unbroken
+        // token run pinned the event loop for ~40min). Skipping it removes
+        // the only such path; text parts are still parsed normally.
+        const parsed = await simpleParser(msg.source, { skipTextToHtml: true });
         emails.push({
           id: String(msg.uid),
           subject: parsed.subject ?? msg.envelope?.subject ?? '',
@@ -870,25 +890,165 @@ async function withUser(req, res, run) {
   if (!db.enabled) {
     return res.status(503).json({ error: 'Server storage is not enabled (no DATABASE_URL set).' });
   }
-  // Accept the user email via header (normal API calls) OR query param
-  // (direct file navigation from <a href target=_blank> where headers
-  // can't be set).
-  const email = req.get('x-user-email') || req.query.email;
-  if (!email) return res.status(401).json({ error: 'X-User-Email header or ?email=… required' });
   try {
-    const userId = await db.userIdForEmail(String(email));
-    await run(userId);
+    const who = await resolveRequestUser(req);
+    if (!who) return res.status(401).json({ error: 'Unauthorized — please sign in.' });
+    await run(who.id);
   } catch (e) {
     console.error('[db] route error:', e);
     res.status(500).json({ error: e.message });
   }
 }
 
+function bearerToken(req) {
+  const h = req.get('authorization') ?? '';
+  return h.toLowerCase().startsWith('bearer ') ? h.slice(7).trim() : '';
+}
+
+// Identity comes from a login session (primary). The old shared APP_AUTH_TOKEN
+// remains only as an optional API fallback alongside x-user-email.
+async function resolveRequestUser(req) {
+  const token = bearerToken(req) || String(req.query.token ?? '').trim();
+  if (token) {
+    const session = await db.getSessionUser(token);
+    if (session) return session;
+    if (AUTH_TOKEN && safeEqual(token, AUTH_TOKEN)) {
+      const email = req.get('x-user-email') || req.query.email;
+      if (email) {
+        const id = await db.userIdForEmail(String(email));
+        return { id, email: String(email) };
+      }
+    }
+  }
+  return null;
+}
+
+// Routes that proxy to the network or handle credentials (IMAP, AI) must not
+// be usable by anonymous visitors. With no database there are no accounts, so
+// local development without DATABASE_URL stays open.
+async function requireSession(req, res) {
+  if (!db.enabled) return { id: null, email: null };
+  const who = await resolveRequestUser(req);
+  if (!who) {
+    res.status(401).json({ error: 'Unauthorized — please sign in.' });
+    return null;
+  }
+  return who;
+}
+
 app.get('/api/db/status', (_req, res) => res.json({ enabled: db.enabled }));
 
+// ---------- accounts (email + password) ----------
+const LOGIN_WINDOW_MS = 5 * 60_000;
+const LOGIN_MAX_TRIES = 10;
+const loginTries = new Map();
+
+function loginKey(req, email) { return `${req.ip}|${String(email).toLowerCase()}`; }
+function tooManyTries(key) {
+  const now = Date.now();
+  const t = loginTries.get(key);
+  if (!t || t.resetAt <= now) {
+    loginTries.set(key, { count: 0, resetAt: now + LOGIN_WINDOW_MS });
+    return false;
+  }
+  return t.count >= LOGIN_MAX_TRIES;
+}
+function noteFailure(key) {
+  const t = loginTries.get(key);
+  if (t) t.count += 1;
+}
+
+const validEmail = (e) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e);
+
+app.post('/api/auth/login', async (req, res) => {
+  if (!db.enabled) return res.status(503).json({ error: 'Database is not enabled.' });
+  const email    = String(req.body?.email ?? '').trim().toLowerCase();
+  const password = String(req.body?.password ?? '');
+  if (!email || !password) return res.status(400).json({ error: 'Email and password are required.' });
+  const key = loginKey(req, email);
+  if (tooManyTries(key)) return res.status(429).json({ error: 'Too many attempts. Try again in a few minutes.' });
+  try {
+    const user = await db.authenticateUser(email, password);
+    if (!user) {
+      noteFailure(key);
+      return res.status(401).json({ error: 'Invalid email or password.' });
+    }
+    loginTries.delete(key);
+    const token = await db.createSession(user.id);
+    res.json({ token, user: { email: user.email } });
+  } catch (e) {
+    console.error('[auth] login failed:', e.message);
+    res.status(500).json({ error: 'Login failed.' });
+  }
+});
+
+app.post('/api/auth/register', async (req, res) => {
+  if (!db.enabled) return res.status(503).json({ error: 'Database is not enabled.' });
+  const email    = String(req.body?.email ?? '').trim().toLowerCase();
+  const password = String(req.body?.password ?? '');
+  if (!validEmail(email))        return res.status(400).json({ error: 'Enter a valid email address.' });
+  if (password.length < 8)       return res.status(400).json({ error: 'Password must be at least 8 characters.' });
+  try {
+    const user = await db.createUser(email, password);
+    const token = await db.createSession(user.id);
+    res.json({ token, user: { email: user.email } });
+  } catch (e) {
+    if (e.code === '23505') return res.status(409).json({ error: 'An account with that email already exists.' });
+    console.error('[auth] register failed:', e.message);
+    res.status(500).json({ error: 'Could not create the account.' });
+  }
+});
+
+app.post('/api/auth/logout', async (req, res) => {
+  try { await db.deleteSession(bearerToken(req)); } catch { /* ignore */ }
+  res.json({ ok: true });
+});
+
+app.get('/api/auth/me', async (req, res) => {
+  if (!db.enabled) return res.status(503).json({ error: 'Database is not enabled.' });
+  try {
+    const user = await db.getSessionUser(bearerToken(req));
+    if (!user) return res.status(401).json({ error: 'Not signed in.' });
+    res.json({ user: { email: user.email } });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/auth/password', async (req, res) => {
+  if (!db.enabled) return res.status(503).json({ error: 'Database is not enabled.' });
+  const current = String(req.body?.currentPassword ?? '');
+  const next    = String(req.body?.newPassword ?? '');
+  if (next.length < 8) return res.status(400).json({ error: 'New password must be at least 8 characters.' });
+  try {
+    const user = await db.getSessionUser(bearerToken(req));
+    if (!user) return res.status(401).json({ error: 'Not signed in.' });
+    const ok = await db.changePassword(user.id, current, next);
+    if (!ok) return res.status(400).json({ error: 'Current password is incorrect.' });
+    // changePassword clears all sessions; issue a fresh one for this browser.
+    const token = await db.createSession(user.id);
+    res.json({ ok: true, token });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Gate every DB route (status above stays public so the client can detect an
+// unavailable DB). Browser-direct file URLs can't set headers, so the token is
+// also accepted as ?token=… for those routes only.
 // papers
 app.get('/api/db/papers', (req, res) => withUser(req, res, async (uid) => {
-  res.json({ papers: await db.getPapers(uid) });
+  const limit  = Math.min(20000, Math.max(0, Math.trunc(Number(req.query.limit)  || 0)));
+  const offset = Math.max(0, Math.trunc(Number(req.query.offset) || 0));
+  const { papers, total } = await db.getPapers(uid, { limit, offset });
+  res.json({ papers, total, hasMore: limit > 0 && offset + papers.length < total });
+}));
+app.get('/api/db/stats', (req, res) => withUser(req, res, async (uid) => {
+  res.json(await db.getStats(uid));
+}));
+app.post('/api/db/papers/existing', (req, res) => withUser(req, res, async (uid) => {
+  const arxivIds = Array.isArray(req.body.arxivIds) ? req.body.arxivIds.slice(0, 5000) : [];
+  res.json({ arxivIds: await db.getExistingArxivIds(uid, arxivIds) });
 }));
 app.post('/api/db/papers', (req, res) => withUser(req, res, async (uid) => {
   await db.upsertPapers(uid, req.body.papers ?? []);
@@ -927,6 +1087,12 @@ app.get('/api/db/read', (req, res) => withUser(req, res, async (uid) => {
 }));
 app.put('/api/db/read', (req, res) => withUser(req, res, async (uid) => {
   await db.setReadIds(uid, req.body.ids ?? []); res.json({ ok: true });
+}));
+app.post('/api/db/read/add', (req, res) => withUser(req, res, async (uid) => {
+  await db.addReadIds(uid, req.body.ids ?? []); res.json({ ok: true });
+}));
+app.post('/api/db/read/remove', (req, res) => withUser(req, res, async (uid) => {
+  await db.removeReadIds(uid, req.body.ids ?? []); res.json({ ok: true });
 }));
 
 // trackers
@@ -1081,27 +1247,266 @@ app.post('/api/db/papers/:id/upload', (req, res) => withUser(req, res, async (ui
     await db.attachFileToPaper(uid, req.params.id, req.file);
     const updated = await db.getPaper(uid, req.params.id);
     res.json({ ok: true, paper: updated });
+    // Extract the text for search / AI in the background (PDF opens first).
+    scheduleTextExtraction(uid, req.params.id, req.file.path);
   });
 }));
 
 app.get('/api/db/papers/:id/file', (req, res) => withUser(req, res, async (uid) => {
   const p = await db.getPaper(uid, req.params.id);
-  if (!p?.filePath || !existsSync(p.filePath)) return res.status(404).json({ error: 'no file attached' });
+  const filePath = resolvePaperFilePath(p, req.get('x-user-email') || req.query.email);
+  if (!filePath) return res.status(404).json({ error: 'no file attached' });
   res.setHeader('Content-Type', p.mimeType || 'application/pdf');
-  res.setHeader('Content-Length', String(statSync(p.filePath).size));
+  res.setHeader('Content-Length', String(statSync(filePath).size));
   const disposition = req.query.download ? 'attachment' : 'inline';
   res.setHeader('Content-Disposition',
     `${disposition}; filename="${(p.originalFilename ?? 'paper.pdf').replace(/"/g, '')}"`);
-  res.sendFile(p.filePath);
+  res.sendFile(filePath);
 }));
 
 app.delete('/api/db/papers/:id/file', (req, res) => withUser(req, res, async (uid) => {
   const p = await db.getPaper(uid, req.params.id);
-  if (p?.filePath && existsSync(p.filePath)) {
-    try { unlinkSync(p.filePath); } catch { /* ignore */ }
+  const filePath = resolvePaperFilePath(p, req.get('x-user-email') || req.query.email);
+  if (filePath) {
+    try { unlinkSync(filePath); } catch { /* ignore */ }
   }
   await db.clearPaperFile(uid, req.params.id);
+  await db.clearPaperText(uid, req.params.id);
   res.json({ ok: true });
+}));
+
+// ---------- Full-text caching for arXiv papers ----------
+//
+// Opening an arXiv paper used to mean a fresh request to arxiv.org every time
+// (slow, and unusable offline). These routes download the PDF once, keep it on
+// disk under ./uploads/papers/<user>/, and extract its plain text into
+// papers.full_text so search + AI can use the whole document. Repeated opens
+// are served straight from the local file via /api/db/papers/:id/file.
+//
+// Downloads are serialised with the same politeness gap arXiv asks for, so a
+// "cache my whole library" run can't burst past their rate limit.
+const PDF_MIN_GAP_MS = Number(process.env.ARXIV_PDF_GAP_MS || 3200);
+const PDF_MAX_BYTES  = 100 * 1024 * 1024;   // 100 MB safety cap
+const FULL_TEXT_MAX  =  8 * 1024 * 1024;    // chars stored per paper
+let lastPdfFetch = 0;
+let pdfQueue = Promise.resolve();
+const downloadInFlight = new Map();
+
+function enqueuePdfFetch(fn) {
+  const run = pdfQueue.then(async () => {
+    const wait = Math.max(0, PDF_MIN_GAP_MS - (Date.now() - lastPdfFetch));
+    if (wait > 0) await new Promise(r => setTimeout(r, wait));
+    lastPdfFetch = Date.now();
+    return fn();
+  });
+  // Keep the chain usable after a failed download.
+  pdfQueue = run.then(() => {}, () => {});
+  return run;
+}
+
+async function downloadArxivPdf(arxivId) {
+  const id = String(arxivId).trim().replace(/^arxiv:/i, '');
+  if (!/^[a-z0-9][a-z0-9./-]*$/i.test(id) || id.includes('..')) {
+    throw new Error(`Invalid arXiv id: ${arxivId}`);
+  }
+  const ctrl  = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 120_000);
+  try {
+    const r = await fetch(`https://arxiv.org/pdf/${id}`, {
+      headers: { ...ARXIV_HEADERS, Accept: 'application/pdf' },
+      redirect: 'follow',
+      signal: ctrl.signal,
+    });
+    if (!r.ok) throw new Error(`arXiv PDF request failed (HTTP ${r.status})`);
+    const type = (r.headers.get('content-type') ?? '').toLowerCase();
+    if (type.includes('text/html')) throw new Error('arXiv returned an HTML page instead of the PDF');
+    const declared = Number(r.headers.get('content-length') ?? 0);
+    if (declared > PDF_MAX_BYTES) throw new Error('PDF is larger than the 100 MB cache limit');
+    const buf = Buffer.from(await r.arrayBuffer());
+    if (buf.length > PDF_MAX_BYTES) throw new Error('PDF is larger than the 100 MB cache limit');
+    if (buf.subarray(0, 5).toString('latin1') !== '%PDF-') throw new Error('Downloaded file is not a PDF');
+    return buf;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function extractPaperText(buffer) {
+  const { text } = await extractPdfTextRaw(new Uint8Array(buffer), { mergePages: true });
+  const merged = Array.isArray(text) ? text.join('\n\n') : String(text ?? '');
+  return sanitizePdfText(merged);
+}
+
+// PDF text frequently contains NUL bytes and other control characters (they
+// come from embedded fonts/CMaps). Postgres `text` cannot store U+0000, so an
+// otherwise-successful extraction would fail at the insert step — that is why
+// some papers cached fine and others never got full text. Strip them here.
+function sanitizePdfText(input) {
+  return String(input ?? '')
+    .replace(/\u0000/g, '')
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0001-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, ' ')
+    .replace(/\r\n?/g, '\n')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{4,}/g, '\n\n\n')
+    .trim();
+}
+
+const extractionInFlight = new Set();
+// After a real failure, don't let the client's 3s polling spin re-extraction
+// forever; wait a bit before allowing another attempt.
+const extractionCooldown = new Map();
+
+// PDF.js/unpdf is not safe to run many extractions through at once: with a
+// bulk warm-up and several open papers, parallel calls intermittently hang
+// forever and leave papers stuck as "text pending". Serialise the work.
+let extractionQueue = Promise.resolve();
+function enqueueExtraction(fn) {
+  const run = extractionQueue.then(fn);
+  extractionQueue = run.then(() => {}, () => {});
+  return run;
+}
+
+function withTimeout(promise, ms, message) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+// Text extraction runs after the HTTP response so the PDF opens immediately;
+// the client polls /fulltext until `ready` flips to true.
+function scheduleTextExtraction(userId, paperId, filePath) {
+  if (extractionInFlight.has(paperId)) return;
+  if ((extractionCooldown.get(paperId) ?? 0) > Date.now()) return;
+  extractionInFlight.add(paperId);
+  enqueueExtraction(async () => {
+    let lastError;
+    // PDF parsing is occasionally flaky (large/font-heavy files); a couple of
+    // attempts makes it predictable without changing successful runs.
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const buf  = readFileSync(filePath);
+        const text = await withTimeout(
+          extractPaperText(buf),
+          45_000,
+          'text extraction timed out',
+        );
+        if (!text) throw new Error('no extractable text found in PDF');
+        const chars = await db.setPaperFullText(userId, paperId, text.slice(0, FULL_TEXT_MAX));
+        console.log(`[papers] extracted ${chars} chars from ${paperId}`);
+        extractionCooldown.delete(paperId);
+        lastError = null;
+        break;
+      } catch (e) {
+        lastError = e;
+        // A timeout means this file can't be parsed promptly; retrying just
+        // blocks every other paper behind it in the queue.
+        if (e.message === 'text extraction timed out') break;
+        if (attempt < 3) await new Promise(r => setTimeout(r, attempt * 1500));
+      }
+    }
+    if (lastError) {
+      extractionCooldown.set(paperId, Date.now() + 30_000);
+      console.warn(`[papers] text extraction failed for ${paperId}: ${lastError.message}`);
+    }
+    extractionInFlight.delete(paperId);
+  }).catch(e => {
+    extractionInFlight.delete(paperId);
+    console.warn(`[papers] extraction job crashed for ${paperId}: ${e.message}`);
+  });
+}
+
+function safeUserDir(email) {
+  return String(email).replace(/[^a-z0-9_.@-]/gi, '_');
+}
+
+// Stored file paths are absolute. The same volume is mounted at different
+// paths on the host (…/uploads) and in Docker (/app/uploads), and a DB moved
+// between the two keeps the old prefix. Resolve by basename under the current
+// UPLOAD_ROOT before declaring a cached file missing.
+function resolvePaperFilePath(paper, email) {
+  if (paper?.filePath && existsSync(paper.filePath)) return paper.filePath;
+  if (!paper?.filePath) return null;
+  const dir  = join(UPLOAD_ROOT, 'papers', safeUserDir(email));
+  const name = basename(paper.filePath);
+  const candidates = [
+    join(dir, name),
+    join(dir, `${paper.id}.pdf`),   // id-based name used by the cache route
+  ];
+  return candidates.find(p => existsSync(p)) ?? null;
+}
+
+function paperCachePath(req, paperId) {
+  const email = String(req.get('x-user-email') || req.query.email || 'unknown');
+  const dir = join(UPLOAD_ROOT, 'papers', safeUserDir(email));
+  mkdirSync(dir, { recursive: true });
+  return join(dir, `${paperId}.pdf`);
+}
+
+app.post('/api/db/papers/:id/cache-file', (req, res) => withUser(req, res, async (uid) => {
+  const paper = await db.getPaper(uid, req.params.id);
+  if (!paper) return res.status(404).json({ error: 'paper not found' });
+  if (String(paper.arxivId).startsWith('local:')) {
+    return res.status(400).json({ error: 'this paper has no arXiv id to download' });
+  }
+
+  // Already cached: repair a stale host/container path if needed, and make
+  // sure text extraction is running if it never finished.
+  const existingPath = resolvePaperFilePath(paper, req.get('x-user-email') || req.query.email);
+  if (existingPath) {
+    if (existingPath !== paper.filePath) {
+      await db.attachFileToPaper(uid, paper.id, {
+        path: existingPath,
+        size: statSync(existingPath).size,
+        mimetype: 'application/pdf',
+        originalname: paper.originalFilename ?? `${paper.arxivId}.pdf`,
+      });
+    }
+    if (!paper.hasFullText) scheduleTextExtraction(uid, paper.id, existingPath);
+    const refreshed = existingPath !== paper.filePath ? await db.getPaper(uid, paper.id) : paper;
+    return res.json({ ok: true, cached: true, textPending: !refreshed.hasFullText, paper: refreshed });
+  }
+
+  const buf = await (() => {
+    // De-duplicate concurrent requests for the same paper (e.g. opening it
+    // while the library warm-up is working through its queue).
+    const key = paper.id;
+    let pending = downloadInFlight.get(key);
+    if (!pending) {
+      pending = enqueuePdfFetch(() => downloadArxivPdf(paper.arxivId));
+      downloadInFlight.set(key, pending);
+      pending.finally(() => downloadInFlight.delete(key)).catch(() => {});
+    }
+    return pending;
+  })();
+  const filePath = paperCachePath(req, paper.id);
+  writeFileSync(filePath, buf);
+
+  await db.attachFileToPaper(uid, paper.id, {
+    path: filePath,
+    size: buf.length,
+    mimetype: 'application/pdf',
+    originalname: `${paper.arxivId}.pdf`,
+  });
+  const updated = await db.getPaper(uid, paper.id);
+  res.json({ ok: true, cached: false, textPending: true, paper: updated });
+  scheduleTextExtraction(uid, paper.id, filePath);
+}));
+
+app.get('/api/db/papers/:id/fulltext', (req, res) => withUser(req, res, async (uid) => {
+  const data = await db.getPaperFullText(uid, req.params.id);
+  if (!data) return res.status(404).json({ error: 'paper not found' });
+  // Self-heal: the PDF is cached but text is missing (e.g. it was extracted
+  // before the NUL-byte fix, or a one-off parse error). Kick off extraction
+  // again so opening the paper repairs it without a manual re-cache.
+  if (!data.ready && data.hasFile) {
+    const paper = await db.getPaper(uid, req.params.id);
+    const path  = resolvePaperFilePath(paper, req.get('x-user-email') || req.query.email);
+    if (path) scheduleTextExtraction(uid, req.params.id, path);
+  }
+  res.json(data);
 }));
 
 // documents (Writer drafts)
@@ -1400,5 +1805,21 @@ if (isProd) {
 app.listen(PORT, async () => {
   console.log(`[arxiv-server] running on http://localhost:${PORT} (${isProd ? 'production' : 'development'})`);
   await db.init();
+  if (db.enabled) {
+    const email    = (process.env.SEED_USER_EMAIL || '').trim();
+    const password = process.env.SEED_USER_PASSWORD || '';
+    if (email && password) {
+      try {
+        const r = await db.ensureSeedUser({
+          email,
+          password,
+          legacyEmail: process.env.SEED_LEGACY_EMAIL || '',
+        });
+        console.log(`[auth] owner account ready: ${r.email}${r.created ? ' (created)' : ''}${r.passwordSet ? ' (password set)' : ''}`);
+      } catch (e) {
+        console.error('[auth] seed account failed:', e.message);
+      }
+    }
+  }
   startMagazineScheduler();
 });

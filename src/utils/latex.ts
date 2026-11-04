@@ -8,8 +8,29 @@ function renderKatex(math: string, displayMode: boolean): string {
   }
 }
 
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function unescapeHtml(s: string): string {
+  return s
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, '&');
+}
+
 export function renderAbstract(text: string): string {
-  let result = text;
+  // Abstract text is untrusted (email bodies, imported metadata). Escape all
+  // HTML first so a malicious `<script>`/`<img onerror>` renders as text; the
+  // only markup in the output is what we add below (plus KaTeX's own HTML).
+  let result = escapeHtml(text);
 
   // First, clean up plain-text LaTeX artifacts that arXiv abstracts are full
   // of — otherwise they show as literal "80\%" / "data -- such as" and look
@@ -25,13 +46,13 @@ export function renderAbstract(text: string): string {
     .replace(/\\(?:,|;|:|!)/g, ' ');           // TeX spacing macros
 
   // Display math: \[...\]
-  result = result.replace(/\\\[([\s\S]+?)\\\]/g, (_, m) => renderKatex(m.trim(), true));
+  result = result.replace(/\\\[([\s\S]+?)\\\]/g, (_, m) => renderKatex(unescapeHtml(m).trim(), true));
 
   // Inline math: \(...\)
-  result = result.replace(/\\\((.+?)\\\)/g, (_, m) => renderKatex(m.trim(), false));
+  result = result.replace(/\\\((.+?)\\\)/g, (_, m) => renderKatex(unescapeHtml(m).trim(), false));
 
   // Dollar math: $...$  (not $$)
-  result = result.replace(/(?<!\$)\$([^$\n]+?)\$(?!\$)/g, (_, m) => renderKatex(m.trim(), false));
+  result = result.replace(/(?<!\$)\$([^$\n]+?)\$(?!\$)/g, (_, m) => renderKatex(unescapeHtml(m).trim(), false));
 
   // LaTeX text commands
   result = result.replace(/\\emph\{([^}]+)\}/g, '<em>$1</em>');

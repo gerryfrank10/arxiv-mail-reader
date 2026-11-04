@@ -15,6 +15,7 @@ everything else is built on top.
 **Reading**
 - **Smart parser** — pulls title, authors, categories, abstract, arXiv ID, and PDF link out of arXiv's plaintext digest format
 - **LaTeX rendering** — inline and display math via [KaTeX](https://katex.org/)
+- **Offline full text** — with server storage, a paper's PDF is downloaded once, stored in `uploads/papers/`, and its text is extracted into Postgres. Every later open is instant; no arxiv.org round-trip
 - **Search & filter** — full-text search, category and author filters, assessment filter
 - **Dashboard** — stats cards, category distribution, papers-over-time timeline
 
@@ -57,6 +58,15 @@ everything else is built on top.
 Storage has two modes:
 - **IndexedDB (default, local-only)** — works with no backend; the Library/Reader run entirely in the browser (Gmail login only).
 - **Server mode (Postgres)** — set `DATABASE_URL` and the `/api/db/*` routes light up, enabling Books, Writer, Magazine, Collections, Cross-refs, trackers, and cross-device sync.
+
+In server mode, opening an arXiv paper downloads its PDF once into
+`uploads/papers/<user>/` and extracts its text into `papers.full_text`. The
+**Library → Cache PDFs** button does the same for every saved paper in the
+background (one download every ~3 s to respect arXiv's rate limits). Set
+`ARXIV_PDF_GAP_MS` to change that gap.
+
+> Node **22+** is required (the PDF text extractor uses `unpdf`/PDF.js). The
+> Docker image already uses `node:22-alpine`.
 
 ---
 

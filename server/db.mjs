@@ -7,6 +7,7 @@
 // and the server simply doesn't mount the /api/db/* routes.
 
 import pg from 'pg';
+import { hashPassword, verifyPassword, newSessionToken, hashSessionToken } from './auth.mjs';
 
 const { Pool } = pg;
 
@@ -35,7 +36,14 @@ export const db = {
             ADD COLUMN IF NOT EXISTS file_size         bigint,
             ADD COLUMN IF NOT EXISTS mime_type         text,
             ADD COLUMN IF NOT EXISTS original_filename text,
-            ADD COLUMN IF NOT EXISTS uploaded_at       timestamptz
+            ADD COLUMN IF NOT EXISTS uploaded_at       timestamptz,
+            ADD COLUMN IF NOT EXISTS full_text         text,
+            ADD COLUMN IF NOT EXISTS full_text_chars   integer,
+            ADD COLUMN IF NOT EXISTS full_text_at      timestamptz
+        `);
+        await pool.query(`
+          CREATE INDEX IF NOT EXISTS idx_papers_user_file
+            ON papers (user_id) WHERE file_path IS NOT NULL
         `);
         // "Liked" papers — a lightweight signal distinct from the library
         // (bookmark). Mirrors the library table. Idempotent so existing DBs
@@ -49,6 +57,20 @@ export const db = {
             FOREIGN KEY (user_id, paper_id) REFERENCES papers (user_id, id) ON DELETE CASCADE
           )
         `);
+        // Accounts: passwords live on the user row; sessions are opaque bearer
+        // tokens stored as SHA-256 hashes with an expiry.
+        await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash text`);
+        await pool.query(`
+          CREATE TABLE IF NOT EXISTS sessions (
+            token_hash TEXT        PRIMARY KEY,
+            user_id    UUID        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            expires_at TIMESTAMPTZ NOT NULL
+          )
+        `);
+        await pool.query(`
+          CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions (user_id)
+        `);
         return true;
       }
     } catch (e) {
@@ -59,6 +81,98 @@ export const db = {
   },
 
   // ----- user resolution -----
+
+  // ----- accounts / sessions -----
+
+  // First-run setup: optionally adopt an existing user row (so its papers keep
+  // the same user_id) and give it a password if it has none.
+  async ensureSeedUser({ email, password, legacyEmail }) {
+    const target = String(email).trim().toLowerCase();
+    const legacy = legacyEmail ? String(legacyEmail).trim().toLowerCase() : '';
+    if (legacy && legacy !== target) {
+      const exists = await pool.query(`SELECT id FROM users WHERE email=$1`, [target]);
+      if (exists.rows.length === 0) {
+        const moved = await pool.query(
+          `UPDATE users SET email=$2 WHERE email=$1 RETURNING id`,
+          [legacy, target],
+        );
+        if (moved.rows.length > 0) {
+          console.log(`[auth] renamed existing user ${legacy} → ${target} (all papers kept)`);
+        }
+      }
+    }
+    const { rows } = await pool.query(
+      `SELECT id, email, password_hash FROM users WHERE email=$1`, [target],
+    );
+    if (rows.length === 0) {
+      await pool.query(
+        `INSERT INTO users (email, password_hash) VALUES ($1,$2)`,
+        [target, password ? hashPassword(password) : null],
+      );
+      return { email: target, created: true, passwordSet: true };
+    }
+    if (!rows[0].password_hash && password) {
+      await pool.query(`UPDATE users SET password_hash=$2 WHERE id=$1`, [rows[0].id, hashPassword(password)]);
+      return { email: target, created: false, passwordSet: true };
+    }
+    return { email: target, created: false, passwordSet: false };
+  },
+
+  async createUser(email, password) {
+    const e = String(email).trim().toLowerCase();
+    const { rows } = await pool.query(
+      `INSERT INTO users (email, password_hash) VALUES ($1,$2) RETURNING id, email`,
+      [e, hashPassword(password)],
+    );
+    return rows[0];
+  },
+
+  async authenticateUser(email, password) {
+    const e = String(email || '').trim().toLowerCase();
+    if (!e || !password) return null;
+    const { rows } = await pool.query(
+      `SELECT id, email, password_hash FROM users WHERE email=$1`, [e],
+    );
+    const row = rows[0];
+    if (!row || !verifyPassword(password, row.password_hash)) return null;
+    await pool.query(`UPDATE users SET last_seen=now() WHERE id=$1`, [row.id]);
+    return { id: row.id, email: row.email };
+  },
+
+  async changePassword(userId, currentPassword, nextPassword) {
+    const { rows } = await pool.query(`SELECT password_hash FROM users WHERE id=$1`, [userId]);
+    if (!rows[0] || !verifyPassword(currentPassword, rows[0].password_hash)) return false;
+    await pool.query(`UPDATE users SET password_hash=$2 WHERE id=$1`, [userId, hashPassword(nextPassword)]);
+    // Changing the password invalidates other sessions.
+    await pool.query(`DELETE FROM sessions WHERE user_id=$1`, [userId]);
+    return true;
+  },
+
+  async createSession(userId, days = 30) {
+    const token = newSessionToken();
+    await pool.query(
+      `INSERT INTO sessions (token_hash, user_id, expires_at)
+       VALUES ($1,$2, now() + ($3::int * interval '1 day'))`,
+      [hashSessionToken(token), userId, days],
+    );
+    return token;
+  },
+
+  async getSessionUser(token) {
+    if (!token) return null;
+    const { rows } = await pool.query(
+      `SELECT u.id, u.email
+       FROM sessions s JOIN users u ON u.id = s.user_id
+       WHERE s.token_hash=$1 AND s.expires_at > now()`,
+      [hashSessionToken(token)],
+    );
+    return rows[0] ?? null;
+  },
+
+  async deleteSession(token) {
+    if (!token) return;
+    await pool.query(`DELETE FROM sessions WHERE token_hash=$1`, [hashSessionToken(token)]);
+  },
 
   async userIdForEmail(email) {
     if (!email) throw new Error('email required');
@@ -75,12 +189,116 @@ export const db = {
 
   // ----- papers -----
 
-  async getPapers(userId) {
-    const { rows } = await pool.query(
-      `SELECT * FROM papers WHERE user_id=$1 ORDER BY digest_date DESC`,
+  // Paginated list. `limit <= 0` (or omitted) returns every paper, which keeps
+  // older callers working. The total row count comes back with the page so the
+  // client can show "N of M" and know whether more pages exist.
+  async getPapers(userId, { limit = 0, offset = 0 } = {}) {
+    // Never SELECT *: full_text can be megabytes per paper. The list only
+    // needs a flag + size; the text itself is fetched per-paper on demand.
+    const cols = `id, arxiv_id, title, authors, author_list, categories,
+              abstract, comments, url, pdf_url, size, date, email_id,
+              digest_subject, digest_date, source,
+              file_path, file_size, mime_type, original_filename, uploaded_at,
+              (full_text IS NOT NULL) AS has_full_text,
+              COALESCE(full_text_chars, 0) AS full_text_chars`;
+    const lim = Math.trunc(Number(limit) || 0);
+    const off = Math.max(0, Math.trunc(Number(offset) || 0));
+
+    // The list is paginated, but a paper the user explicitly kept (saved,
+    // liked, imported, uploaded) must always be in the first window — otherwise
+    // the Library/Liked panes silently lose anything older than the page.
+    // Keep ids are read once and passed as an array: an EXISTS probe per row
+    // made the first page ~3x slower.
+    const { rows: keptRows } = await pool.query(
+      `SELECT paper_id FROM library WHERE user_id=$1
+       UNION
+       SELECT paper_id FROM likes WHERE user_id=$1`,
       [userId],
     );
-    return rows.map(rowToPaper);
+    const keptIds = keptRows.map(r => r.paper_id);
+    const pinnedFirst = (param) => `(p.source IN ('import','upload') OR p.id = ANY(${param}::text[]))`;
+
+    if (lim <= 0) {
+      const { rows } = await pool.query(
+        `SELECT ${cols} FROM papers p WHERE p.user_id=$1
+         ORDER BY ${pinnedFirst('$2')} DESC, p.digest_date DESC, p.id DESC`,
+        [userId, keptIds],
+      );
+      return { papers: rows.map(rowToPaper), total: rows.length };
+    }
+
+    const { rows } = await pool.query(
+      `SELECT ${cols}, COUNT(*) OVER() AS total_count FROM papers p
+       WHERE p.user_id=$1
+       ORDER BY ${pinnedFirst('$4')} DESC, p.digest_date DESC, p.id DESC
+       LIMIT $2 OFFSET $3`,
+      [userId, lim, off, keptIds],
+    );
+    const total = rows.length > 0 ? Number(rows[0].total_count) : 0;
+    return { papers: rows.map(rowToPaper), total };
+  },
+
+  // Library-wide aggregates for the Dashboard. The papers list is paginated, so
+  // the client can no longer count everything itself; these queries scan only
+  // the user's rows and return numbers, not paper bodies.
+  async getStats(userId) {
+    const [totals, reads, saves, cats, daily] = await Promise.all([
+      pool.query(
+        `SELECT count(*)::int AS total,
+                count(*) FILTER (WHERE digest_date > now() - interval '30 days')::int AS last30,
+                min(digest_date) AS first_date,
+                max(digest_date) AS last_date
+         FROM papers WHERE user_id=$1`,
+        [userId],
+      ),
+      pool.query(`SELECT count(*)::int AS n FROM read_states WHERE user_id=$1`, [userId]),
+      pool.query(`SELECT count(*)::int AS n FROM library WHERE user_id=$1`, [userId]),
+      pool.query(
+        `SELECT c AS category, count(*)::int AS count
+         FROM papers p, unnest(p.categories) AS c
+         WHERE p.user_id=$1
+         GROUP BY c ORDER BY count DESC`,
+        [userId],
+      ),
+      pool.query(
+        `SELECT digest_date::date AS day, count(*)::int AS count
+         FROM papers
+         WHERE user_id=$1 AND digest_date > now() - interval '180 days'
+         GROUP BY 1 ORDER BY 1`,
+        [userId],
+      ),
+    ]);
+
+    const t = totals.rows[0] ?? {};
+    const total = t.total ?? 0;
+    const read  = reads.rows[0]?.n ?? 0;
+    const dayString = (d) => (d instanceof Date ? d.toISOString().slice(0, 10) : String(d).slice(0, 10));
+
+    return {
+      total,
+      read,
+      unread: Math.max(0, total - read),
+      saved: saves.rows[0]?.n ?? 0,
+      last30: t.last30 ?? 0,
+      firstDate: t.first_date ?? null,
+      lastDate: t.last_date ?? null,
+      categories: cats.rows.map(r => ({ category: r.category, count: r.count })),
+      daily: daily.rows.map(r => ({ day: dayString(r.day), count: r.count })),
+    };
+  },
+
+  // Existing rows for a set of arXiv IDs. Import uses this to dedupe against
+  // the whole library, not just the page the client has loaded.
+  async getExistingArxivIds(userId, arxivIds) {
+    const ids = [...new Set((arxivIds ?? []).filter(Boolean))];
+    if (ids.length === 0) return [];
+    const { rows } = await pool.query(
+      `SELECT DISTINCT regexp_replace(arxiv_id, 'v[0-9]+$', '') AS arxiv_id
+       FROM papers
+       WHERE user_id=$1 AND regexp_replace(arxiv_id, 'v[0-9]+$', '') = ANY($2::text[])`,
+      [userId, ids.map(id => String(id).toLowerCase().replace(/v\d+$/i, ''))],
+    );
+    return rows.map(r => r.arxiv_id);
   },
 
   async upsertPapers(userId, papers) {
@@ -146,7 +364,13 @@ export const db = {
 
   async getPaper(userId, id) {
     const { rows } = await pool.query(
-      `SELECT * FROM papers WHERE user_id=$1 AND id=$2`,
+      `SELECT id, arxiv_id, title, authors, author_list, categories,
+              abstract, comments, url, pdf_url, size, date, email_id,
+              digest_subject, digest_date, source,
+              file_path, file_size, mime_type, original_filename, uploaded_at,
+              (full_text IS NOT NULL) AS has_full_text,
+              COALESCE(full_text_chars, 0) AS full_text_chars
+       FROM papers WHERE user_id=$1 AND id=$2`,
       [userId, id],
     );
     return rows[0] ? rowToPaper(rows[0]) : null;
@@ -165,6 +389,49 @@ export const db = {
     await pool.query(
       `UPDATE papers
        SET file_path=NULL, file_size=NULL, mime_type=NULL, original_filename=NULL, uploaded_at=NULL
+       WHERE user_id=$1 AND id=$2`,
+      [userId, id],
+    );
+  },
+
+  // Extracted plain text (from the cached PDF) is kept in its own column so
+  // it can be searched / fed to AI without re-downloading or re-parsing.
+  async setPaperFullText(userId, id, text) {
+    // Postgres `text` rejects U+0000 — strip any that survived the extractor
+    // rather than losing the whole document to an insert error.
+    const body  = String(text ?? '').replace(/\u0000/g, '');
+    const chars = body.length;
+    await pool.query(
+      `UPDATE papers
+       SET full_text=$3, full_text_chars=$4, full_text_at=now()
+       WHERE user_id=$1 AND id=$2`,
+      [userId, id, body, chars],
+    );
+    return chars;
+  },
+
+  async getPaperFullText(userId, id) {
+    const { rows } = await pool.query(
+      `SELECT full_text, full_text_chars, full_text_at, file_path, original_filename
+       FROM papers WHERE user_id=$1 AND id=$2`,
+      [userId, id],
+    );
+    if (!rows[0]) return null;
+    const r = rows[0];
+    return {
+      text:       r.full_text ?? '',
+      ready:      r.full_text != null,
+      chars:      r.full_text_chars ?? (r.full_text ? r.full_text.length : 0),
+      extractedAt: r.full_text_at ? new Date(r.full_text_at).getTime() : null,
+      hasFile:    !!r.file_path,
+      originalFilename: r.original_filename ?? null,
+    };
+  },
+
+  async clearPaperText(userId, id) {
+    await pool.query(
+      `UPDATE papers
+       SET full_text=NULL, full_text_chars=NULL, full_text_at=NULL
        WHERE user_id=$1 AND id=$2`,
       [userId, id],
     );
@@ -265,6 +532,33 @@ export const db = {
     } finally {
       client.release();
     }
+  },
+
+  // Incremental read-state updates. Opening a paper used to rewrite the whole
+  // read_states table (tens of thousands of rows) on every click; these touch
+  // only the papers that actually changed.
+  async addReadIds(userId, ids) {
+    if (!ids.length) return;
+    // Postgres caps bind parameters at 65,535; chunk so "mark all read" on a
+    // large inbox still works.
+    const CHUNK = 5000;
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      const chunk  = ids.slice(i, i + CHUNK);
+      const values = chunk.map((_id, j) => `($1, $${j + 2})`).join(',');
+      await pool.query(
+        `INSERT INTO read_states (user_id, paper_id) VALUES ${values}
+         ON CONFLICT (user_id, paper_id) DO NOTHING`,
+        [userId, ...chunk],
+      );
+    }
+  },
+
+  async removeReadIds(userId, ids) {
+    if (!ids.length) return;
+    await pool.query(
+      `DELETE FROM read_states WHERE user_id=$1 AND paper_id = ANY($2::text[])`,
+      [userId, ids],
+    );
   },
 
   // ----- trackers -----
@@ -827,7 +1121,8 @@ db.globalSearch = async function (userId, query, limit = 40) {
              EXTRACT(EPOCH FROM digest_date)*1000 AS ts
       FROM papers
       WHERE user_id = $1
-        AND (lower(title) LIKE $2 OR lower(abstract) LIKE $2 OR lower(authors) LIKE $2 OR arxiv_id LIKE $2)
+        AND (lower(title) LIKE $2 OR lower(abstract) LIKE $2 OR lower(authors) LIKE $2 OR arxiv_id LIKE $2
+             OR (full_text IS NOT NULL AND lower(full_text) LIKE $2))
 
       UNION ALL
 
@@ -991,12 +1286,15 @@ function rowToPaper(r) {
     digestSubject: r.digest_subject ?? '',
     digestDate:    r.digest_date,
     source:        r.source ?? 'email',
-    // Locally-uploaded PDF (null for normal arXiv papers)
+    // Locally-uploaded / cached PDF (null for a paper with no document yet)
     filePath:         r.file_path ?? null,
     fileSize:         r.file_size != null ? Number(r.file_size) : null,
     mimeType:         r.mime_type ?? null,
     originalFilename: r.original_filename ?? null,
     uploadedAt:       r.uploaded_at ? new Date(r.uploaded_at).getTime() : null,
+    // Extracted full text lives in the DB, but only as a flag in list payloads
+    hasFullText:      !!r.has_full_text,
+    fullTextChars:    Number(r.full_text_chars ?? 0),
   };
 }
 

@@ -30,14 +30,22 @@ interface ProgressState {
   done: number;
   total: number;
   failures: Array<{ id: string; reason: string }>;
+  label: 'arXiv' | 'PDFs';
+}
+
+interface ImportResult {
+  added: number;
+  duplicates: number;
+  failed: number;
+  papers: Paper[];
 }
 
 export default function ImportModal({ onClose }: Props) {
-  const { addImportedPapers, reloadPapers, storageMode } = usePapers();
+  const { addImportedPapers, storageMode, setSelectedPaper } = usePapers();
   const [tab, setTab]       = useState<Tab>('single');
   const [busy, setBusy]     = useState(false);
   const [progress, setProgress] = useState<ProgressState | null>(null);
-  const [result, setResult] = useState<{ added: number; duplicates: number; failed: number } | null>(null);
+  const [result, setResult] = useState<ImportResult | null>(null);
   const [error, setError]   = useState<string | null>(null);
 
   // single
@@ -73,7 +81,7 @@ export default function ImportModal({ onClose }: Props) {
     setBusy(true);
     setError(null);
     setResult(null);
-    setProgress({ done: 0, total: ids.length, failures: [] });
+    setProgress({ done: 0, total: ids.length, failures: [], label: 'arXiv' });
     const papers: Paper[] = [];
     const failures: Array<{ id: string; reason: string }> = [];
 
@@ -96,12 +104,17 @@ export default function ImportModal({ onClose }: Props) {
         const reason = e instanceof Error ? e.message : 'batch failed';
         for (const id of chunk) failures.push({ id, reason });
       }
-      setProgress({ done: Math.min(i + CHUNK, ids.length), total: ids.length, failures: [...failures] });
+      setProgress({ done: Math.min(i + CHUNK, ids.length), total: ids.length, failures: [...failures], label: 'arXiv' });
     }
 
-    const { added, duplicates } = await addImportedPapers(papers);
-    setResult({ added, duplicates, failed: failures.length });
-    setBusy(false);
+    try {
+      const { added, duplicates, addedPapers } = await addImportedPapers(papers);
+      setResult({ added, duplicates, failed: failures.length, papers: addedPapers });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not save the imported papers.');
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function handleSingle() {
@@ -146,7 +159,7 @@ export default function ImportModal({ onClose }: Props) {
 
     setBusy(true);
     setError(null);
-    setProgress({ done: 0, total: needsFetch.length, failures: [] });
+    setProgress({ done: 0, total: needsFetch.length, failures: [], label: 'arXiv' });
     const fetched: Paper[] = [];
     const failures: Array<{ id: string; reason: string }> = [];
     // Enrich abstract-less BibTeX entries via the batch endpoint (one arXiv
@@ -166,17 +179,23 @@ export default function ImportModal({ onClose }: Props) {
         const reason = e instanceof Error ? e.message : 'batch failed';
         for (const id of chunk) failures.push({ id, reason });
       }
-      setProgress({ done: Math.min(i + CHUNK, needsFetch.length), total: needsFetch.length, failures: [...failures] });
+      setProgress({ done: Math.min(i + CHUNK, needsFetch.length), total: needsFetch.length, failures: [...failures], label: 'arXiv' });
     }
 
     const allPapers = [...offlinePapers, ...fetched];
-    const { added, duplicates } = await addImportedPapers(allPapers);
-    setResult({
-      added,
-      duplicates,
-      failed: failures.length + (entries.length - allPapers.length - failures.length),
-    });
-    setBusy(false);
+    try {
+      const { added, duplicates, addedPapers } = await addImportedPapers(allPapers);
+      setResult({
+        added,
+        duplicates,
+        failed: failures.length + (entries.length - allPapers.length - failures.length),
+        papers: addedPapers,
+      });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not save the imported papers.');
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function handleArxiv() {
@@ -206,8 +225,8 @@ export default function ImportModal({ onClose }: Props) {
         setBusy(false);
         return;
       }
-      const { added, duplicates } = await addImportedPapers(results.map(metadataToPaper));
-      setResult({ added, duplicates, failed: 0 });
+      const { added, duplicates, addedPapers } = await addImportedPapers(results.map(metadataToPaper));
+      setResult({ added, duplicates, failed: 0, papers: addedPapers });
     } catch (e) {
       setError(e instanceof Error ? e.message : 'arXiv search failed');
     } finally {
@@ -235,6 +254,7 @@ export default function ImportModal({ onClose }: Props) {
       emailId: 'upload',
       digestSubject: 'Uploaded PDF',
       digestDate: now,
+      source: 'upload',
     };
   }
 
@@ -250,30 +270,33 @@ export default function ImportModal({ onClose }: Props) {
     setBusy(true);
     setError(null);
     setResult(null);
-    setProgress({ done: 0, total: uploadFiles.length, failures: [] });
+    setProgress({ done: 0, total: uploadFiles.length, failures: [], label: 'PDFs' });
 
     // Create the paper rows first (server-side), then attach each file.
     const pairs = uploadFiles.map(file => ({ file, paper: makeLocalPaper(file) }));
     const failures: Array<{ id: string; reason: string }> = [];
+    let recordResult: { added: number; duplicates: number; addedPapers: Paper[] };
     try {
-      await addImportedPapers(pairs.map(p => p.paper));
+      recordResult = await addImportedPapers(pairs.map(p => p.paper));
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not create the paper records.');
       setBusy(false);
       return;
     }
-    let added = 0;
     for (let i = 0; i < pairs.length; i++) {
       try {
         await uploadPaperFile(pairs[i].paper.id, pairs[i].file);
-        added++;
       } catch (e) {
         failures.push({ id: pairs[i].file.name, reason: e instanceof Error ? e.message : 'upload failed' });
       }
-      setProgress({ done: i + 1, total: pairs.length, failures: [...failures] });
+      setProgress({ done: i + 1, total: pairs.length, failures: [...failures], label: 'PDFs' });
     }
-    await reloadPapers();
-    setResult({ added, duplicates: 0, failed: failures.length });
+    setResult({
+      added: recordResult.added,
+      duplicates: recordResult.duplicates,
+      failed: failures.length,
+      papers: recordResult.addedPapers,
+    });
     setUploadFiles([]);
     setBusy(false);
   }
@@ -536,7 +559,10 @@ export default function ImportModal({ onClose }: Props) {
           <div className="mt-5 p-3 rounded-lg bg-blue-50 border border-blue-200 text-sm text-blue-800">
             <div className="flex items-center gap-2 mb-1">
               <Loader2 size={14} className={busy ? 'animate-spin' : ''} />
-              <span>Fetched {progress.done} / {progress.total} from arXiv</span>
+              <span>
+                {progress.label === 'PDFs' ? 'Uploaded' : 'Fetched'} {progress.done} / {progress.total}
+                {progress.label === 'PDFs' ? ' PDFs' : ' from arXiv'}
+              </span>
               {progress.failures.length > 0 && (
                 <span className="text-amber-600 ml-2">({progress.failures.length} failed)</span>
               )}
@@ -563,7 +589,7 @@ export default function ImportModal({ onClose }: Props) {
               <p className="font-medium">
                 Added <span className="font-bold">{result.added}</span> new paper{result.added !== 1 ? 's' : ''}
                 {result.duplicates > 0 && <> · {result.duplicates} already in inbox</>}
-                {result.failed > 0     && <> · {result.failed} failed</>}
+                {result.failed > 0     && <> · {result.failed} {progress?.label === 'PDFs' ? `file${result.failed !== 1 ? 's' : ''} failed` : 'failed'}</>}
               </p>
               {progress?.failures && progress.failures.length > 0 && (
                 <ul className="text-xs mt-1 text-emerald-700/80">
@@ -572,6 +598,24 @@ export default function ImportModal({ onClose }: Props) {
                   ))}
                   {progress.failures.length > 5 && <li>… and {progress.failures.length - 5} more</li>}
                 </ul>
+              )}
+              {result.papers.length > 0 && (
+                <div className="mt-2 space-y-0.5">
+                  {result.papers.slice(0, 5).map(p => (
+                    <button
+                      key={p.id}
+                      onClick={() => { setSelectedPaper(p); onClose(); }}
+                      className="flex w-full items-center gap-2 text-left text-xs text-emerald-800 hover:text-emerald-950 hover:bg-emerald-100/70 rounded px-1.5 py-1 transition-colors"
+                      title="Open this paper"
+                    >
+                      <span className="flex-1 truncate">{p.title}</span>
+                      <span className="font-medium shrink-0">Open →</span>
+                    </button>
+                  ))}
+                  {result.papers.length > 5 && (
+                    <p className="text-xs text-emerald-700/80 px-1.5">… and {result.papers.length - 5} more</p>
+                  )}
+                </div>
               )}
             </div>
           </div>

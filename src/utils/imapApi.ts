@@ -1,6 +1,7 @@
 import { Paper } from '../types';
 import { ImapConfig } from '../types';
 import { parseArxivEmail } from './emailParser';
+import { authHeaders } from './researchApi';
 
 interface RawEmail {
   id: string;
@@ -25,13 +26,13 @@ export async function fetchArxivPapersImap(
       'IMAP (iCloud, Outlook, Yahoo) needs the backend running and reachable from the page you have open:\n\n' +
       '• Docker (everything in one place): run `npm run app:up`, then open http://localhost:3001 — NOT :5173.\n' +
       '• Local dev: run `npm run dev:all`, then open http://localhost:5173.\n\n' +
-      'If the app is served as a static build with no backend, IMAP is not available — only Gmail works.'
+      'Mail credentials belong in Settings → Email & sync.'
     );
   }
 
   const res = await fetch('/api/fetch-imap-emails', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders(),
     body: JSON.stringify({
       host: imapConfig.host,
       port: imapConfig.port,

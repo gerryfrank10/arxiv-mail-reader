@@ -5,16 +5,17 @@
 // `storage-mode-changed` event we dispatch.
 
 import { Paper, PaperScore, Tracker } from '../types';
+import type { PaperStats } from './researchApi';
 import {
   dbGetAllPapers, dbUpsertPapers, dbUpdateAbstract,
   dbGetTrackers, dbUpsertTracker, dbDeleteTracker,
   dbGetAllScores, dbUpsertScores, dbDeleteScoresForTracker,
 } from './paperDb';
 import {
-  apiListPapers, apiUpsertPapers, apiUpdatePaperAbstract,
+  apiListPapers, apiUpsertPapers, apiUpdatePaperAbstract, apiGetStats,
   apiGetLibraryIds, apiSavePaper, apiUnsavePaper,
   apiGetLikedIds, apiLikePaper, apiUnlikePaper,
-  apiGetReadIds, apiSetReadIds,
+  apiGetReadIds, apiSetReadIds, apiAddReadIds, apiRemoveReadIds,
   apiGetTrackers, apiUpsertTracker, apiDeleteTracker,
   apiGetScores, apiUpsertScores, apiDeleteScoresForTracker,
 } from './researchApi';
@@ -48,7 +49,22 @@ const isServer = () => getStorageMode() === 'server';
 
 export const papersStore = {
   async getAll(): Promise<Paper[]> {
-    return isServer() ? apiListPapers() : dbGetAllPapers();
+    return isServer() ? (await apiListPapers()).papers : dbGetAllPapers();
+  },
+  // Page through the paper list. Local IndexedDB is small enough to read in
+  // one go, so only server mode actually paginates.
+  async getPage(offset = 0, limit = 0): Promise<{ papers: Paper[]; total: number; hasMore: boolean }> {
+    if (isServer()) {
+      const { papers, total } = await apiListPapers({ limit, offset });
+      return { papers, total, hasMore: limit > 0 && offset + papers.length < total };
+    }
+    const all = await dbGetAllPapers();
+    return { papers: all, total: all.length, hasMore: false };
+  },
+  // Library-wide counts for the Dashboard (server mode only; local mode is
+  // small enough for the UI to compute from the in-memory list).
+  async getStats(): Promise<PaperStats | null> {
+    return isServer() ? apiGetStats() : null;
   },
   async upsert(papers: Paper[]): Promise<void> {
     if (isServer()) await apiUpsertPapers(papers);
@@ -160,6 +176,25 @@ export const readStore = {
     else {
       try { localStorage.setItem(READ_KEY, JSON.stringify(arr)); } catch { /* ignore */ }
     }
+  },
+  // Incremental updates — don't resend tens of thousands of ids on every click.
+  async add(ids: string[]): Promise<void> {
+    if (ids.length === 0) return;
+    if (isServer()) { await apiAddReadIds(ids); return; }
+    try {
+      const cur = new Set<string>(JSON.parse(localStorage.getItem(READ_KEY) ?? '[]') as string[]);
+      for (const id of ids) cur.add(id);
+      localStorage.setItem(READ_KEY, JSON.stringify([...cur]));
+    } catch { /* ignore */ }
+  },
+  async remove(ids: string[]): Promise<void> {
+    if (ids.length === 0) return;
+    if (isServer()) { await apiRemoveReadIds(ids); return; }
+    try {
+      const cur = new Set<string>(JSON.parse(localStorage.getItem(READ_KEY) ?? '[]') as string[]);
+      for (const id of ids) cur.delete(id);
+      localStorage.setItem(READ_KEY, JSON.stringify([...cur]));
+    } catch { /* ignore */ }
   },
 };
 

@@ -1,5 +1,5 @@
 import { ExternalLink, FileText, Code2, Calendar, HardDrive, MessageSquare, Bookmark, BookmarkCheck, Heart, Users, BarChart2, Layers, Quote, BookOpen, Check, Sparkles, ChevronUp } from 'lucide-react';
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Paper } from '../types';
 import { CATEGORY_COLORS_LIGHT, getCategoryLabel, CATEGORY_COLORS } from '../utils/categories';
 import { renderAbstract } from '../utils/latex';
@@ -14,7 +14,7 @@ import PaperDiscoveryPanel from './PaperDiscoveryPanel';
 import CrossRefsPanel from './CrossRefsPanel';
 import SimilarPapersPanel from './SimilarPapersPanel';
 import { aiChat, hasAI, resolveAIConfig, providerLabel } from '../utils/aiProvider';
-import { paperFileUrl } from '../utils/researchApi';
+import { paperFileUrl, cachePaperFile, getPaperFullText } from '../utils/researchApi';
 import { ArrowLeft } from 'lucide-react';
 
 interface Props {
@@ -22,7 +22,7 @@ interface Props {
 }
 
 export default function PaperDetail({ paper }: Props) {
-  const { papers, setSelectedPaper, updatePaperAbstract } = usePapers();
+  const { papers, setSelectedPaper, updatePaperAbstract, updatePaperMeta, storageMode } = usePapers();
   // Locally-uploaded PDF papers have a synthetic `local:` id and a server-stored file.
   const isLocal = paper.arxivId.startsWith('local:');
   const hasFile = !!paper.originalFilename || !!paper.filePath;
@@ -31,6 +31,93 @@ export default function PaperDetail({ paper }: Props) {
   const [abstractLoading, setAbstractLoading] = useState(false);
   const [abstractError, setAbstractError] = useState<string | null>(null);
   const [abstractRetryNonce, setAbstractRetryNonce] = useState(0);
+
+  // Full-text caching. In server mode the first open downloads the PDF once
+  // and stores it (plus extracted text); every later open is served locally.
+  const canUseServer = storageMode === 'server';
+  const [cacheState, setCacheState] = useState<'idle' | 'working' | 'ready' | 'error'>('idle');
+  const [cacheError, setCacheError] = useState<string | null>(null);
+  const [cacheRetry, setCacheRetry] = useState(0);
+  const [fullText, setFullText] = useState<{ ready: boolean; text: string; chars: number } | null>(null);
+  const [fullTextOpen, setFullTextOpen] = useState(false);
+  const [fullTextLoading, setFullTextLoading] = useState(false);
+  const [fullTextError, setFullTextError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setCacheError(null);
+    if (isLocal || hasFile) { setCacheState('ready'); return; }
+    if (!canUseServer)      { setCacheState('idle'); return; }
+    let cancelled = false;
+    setCacheState('working');
+    (async () => {
+      try {
+        const res = await cachePaperFile(paper.id);
+        if (cancelled) return;
+        updatePaperMeta(paper.id, {
+          filePath:         res.paper.filePath,
+          fileSize:         res.paper.fileSize,
+          mimeType:         res.paper.mimeType,
+          originalFilename: res.paper.originalFilename,
+          uploadedAt:       res.paper.uploadedAt,
+          hasFullText:      res.paper.hasFullText,
+          fullTextChars:    res.paper.fullTextChars,
+        });
+        setCacheState('ready');
+      } catch (e) {
+        if (cancelled) return;
+        setCacheError(e instanceof Error ? e.message : 'Could not download the PDF');
+        setCacheState('error');
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [paper.id, isLocal, hasFile, canUseServer, cacheRetry, updatePaperMeta]);
+
+  // The extraction runs after the PDF is saved; poll briefly so the "full
+  // text" affordance shows up without a manual refresh.
+  useEffect(() => {
+    if (!hasFile || paper.hasFullText || !canUseServer) return;
+    let cancelled = false;
+    let attempts = 0;
+    let timer: ReturnType<typeof setTimeout>;
+    const check = async () => {
+      try {
+        const t = await getPaperFullText(paper.id);
+        if (cancelled) return;
+        if (t.ready) {
+          updatePaperMeta(paper.id, { hasFullText: true, fullTextChars: t.chars });
+          setFullText({ ready: true, text: t.text, chars: t.chars });
+          return;
+        }
+      } catch { /* ignore */ }
+      if (!cancelled && ++attempts < 20) timer = setTimeout(check, 3000);
+    };
+    timer = setTimeout(check, 2000);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [hasFile, paper.id, paper.hasFullText, canUseServer, updatePaperMeta]);
+
+  // Reset per-paper text state when switching papers.
+  useEffect(() => {
+    setFullText(null);
+    setFullTextOpen(false);
+    setFullTextError(null);
+  }, [paper.id]);
+
+  const toggleFullText = useCallback(async () => {
+    if (fullTextOpen) { setFullTextOpen(false); return; }
+    setFullTextOpen(true);
+    if (fullText?.ready || fullTextLoading) return;
+    setFullTextLoading(true);
+    setFullTextError(null);
+    try {
+      const t = await getPaperFullText(paper.id);
+      setFullText({ ready: t.ready, text: t.text, chars: t.chars });
+      if (t.ready) updatePaperMeta(paper.id, { hasFullText: true, fullTextChars: t.chars });
+    } catch (e) {
+      setFullTextError(e instanceof Error ? e.message : 'Could not load the full text');
+    } finally {
+      setFullTextLoading(false);
+    }
+  }, [fullTextOpen, fullText, fullTextLoading, paper.id, updatePaperMeta]);
 
   useEffect(() => {
     setCitationCount(null);
@@ -148,11 +235,22 @@ export default function PaperDetail({ paper }: Props) {
     setSummaryError(null);
 
     const abstract = (paper.abstract || fetchedAbstract || '') || 'Abstract not available.';
+    // Prefer the cached full text when we have it — summaries grounded in the
+    // whole paper are far more useful than abstract-only ones.
+    let sourceText = abstract;
+    if (paper.hasFullText && canUseServer) {
+      try {
+        const ft = await getPaperFullText(paper.id);
+        if (ft.ready && ft.text) {
+          sourceText = `${abstract}\n\nFULL TEXT (excerpt):\n${ft.text.slice(0, 16_000)}`;
+        }
+      } catch { /* fall back to the abstract */ }
+    }
     const prompt = `You are a research paper assistant. Summarize this paper concisely and return ONLY a JSON object.
 
 Title: ${paper.title}
 Authors: ${paper.authors}
-Abstract: ${abstract}
+Abstract: ${sourceText}
 
 Return exactly this JSON structure (no other text):
 {
@@ -177,7 +275,7 @@ Return exactly this JSON structure (no other text):
     } finally {
       setSummaryLoading(false);
     }
-  }, [aiEnabled, summary, paper.title, paper.authors, paper.abstract, fetchedAbstract, settings]);
+  }, [aiEnabled, summary, paper.title, paper.authors, paper.abstract, paper.id, paper.hasFullText, fetchedAbstract, settings, canUseServer]);
 
   const openNotebookLM = useCallback(() => {
     navigator.clipboard.writeText(paper.pdfUrl).catch(() => {});
@@ -188,7 +286,7 @@ Return exactly this JSON structure (no other text):
 
   const abstractHtml = renderAbstract(displayAbstract);
   const assessment   = computeAssessment(paper);
-  const related      = getRelatedPapers(paper, papers, 6);
+  const related = useMemo(() => getRelatedPapers(paper, papers, 6), [paper, papers]);
 
   return (
     <div className="h-full overflow-y-auto main-scroll">
@@ -340,11 +438,14 @@ Return exactly this JSON structure (no other text):
           )}
         </div>
 
-        {/* In-app PDF reader (uploaded papers) */}
-        {hasFile && (
+        {/* In-app PDF reader. For arXiv papers the file is cached on first
+            open (server storage), so later opens never touch arxiv.org. */}
+        {hasFile ? (
           <div className="mb-8">
             <div className="flex items-center justify-between mb-3">
-              <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-400">PDF</h2>
+              <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-400">
+                PDF {!isLocal && <span className="ml-2 normal-case tracking-normal text-[10px] font-medium text-emerald-600">cached locally</span>}
+              </h2>
               <div className="flex gap-2">
                 <a
                   href={paperFileUrl(paper.id)}
@@ -368,6 +469,84 @@ Return exactly this JSON structure (no other text):
               className="w-full rounded-xl border border-slate-200 bg-slate-50"
               style={{ height: '80vh' }}
             />
+          </div>
+        ) : cacheState === 'working' ? (
+          <div className="mb-8 flex items-center gap-3 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-700">
+            <svg className="animate-spin w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+            </svg>
+            <span>
+              Downloading the full paper from arXiv and storing it on your server…
+              <span className="block text-xs text-blue-500 mt-0.5">This happens once per paper — every later open is instant and works offline.</span>
+            </span>
+          </div>
+        ) : cacheState === 'error' ? (
+          <div className="mb-8 flex flex-wrap items-center gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+            <span className="flex-1 min-w-[200px]">
+              Couldn't cache the PDF: {cacheError}
+              <span className="block text-xs text-amber-600 mt-0.5">You can still read it on arXiv, or retry.</span>
+            </span>
+            <button
+              onClick={() => setCacheRetry(n => n + 1)}
+              className="px-3 py-1 text-xs font-medium bg-white border border-amber-300 text-amber-700 rounded-md hover:bg-amber-100"
+            >
+              Retry
+            </button>
+            <a
+              href={paper.pdfUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="px-3 py-1 text-xs font-medium bg-white border border-amber-300 text-amber-700 rounded-md hover:bg-amber-100"
+            >
+              Open on arXiv
+            </a>
+          </div>
+        ) : null}
+
+        {/* Extracted full text (searchable/copyable, served from Postgres) */}
+        {canUseServer && (hasFile || paper.hasFullText) && (
+          <div className="mb-8">
+            <div className="flex items-center gap-2 mb-2">
+              <button
+                onClick={toggleFullText}
+                className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-widest text-slate-400 hover:text-slate-600"
+              >
+                <FileText size={12} />
+                Full text
+                {paper.fullTextChars ? (
+                  <span className="normal-case tracking-normal font-normal text-[10px] text-slate-400">
+                    · {paper.fullTextChars.toLocaleString()} chars stored
+                  </span>
+                ) : (
+                  <span className="normal-case tracking-normal font-normal text-[10px] text-slate-400">· extracting…</span>
+                )}
+              </button>
+              <span className="ml-auto text-[10px] text-slate-400">{fullTextOpen ? 'Hide' : 'Show'}</span>
+            </div>
+            {fullTextOpen && (
+              <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-4">
+                {fullTextLoading ? (
+                  <div className="flex items-center gap-2 text-sm text-slate-500">
+                    <svg className="animate-spin w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                    </svg>
+                    Loading extracted text…
+                  </div>
+                ) : fullTextError ? (
+                  <p className="text-sm text-amber-700">{fullTextError}</p>
+                ) : fullText?.ready && fullText.text ? (
+                  <div className="max-h-[60vh] overflow-y-auto pr-2 text-[13px] leading-relaxed text-slate-700 whitespace-pre-wrap font-serif">
+                    {fullText.text}
+                  </div>
+                ) : (
+                  <p className="text-sm text-slate-500">
+                    Text extraction hasn't finished yet. The PDF is stored — retry in a few seconds.
+                  </p>
+                )}
+              </div>
+            )}
           </div>
         )}
 
@@ -416,7 +595,7 @@ Return exactly this JSON structure (no other text):
           </a>
           )}
           <a
-            href={isLocal ? paperFileUrl(paper.id, { download: true }) : paper.pdfUrl}
+            href={hasFile ? paperFileUrl(paper.id, { download: true }) : paper.pdfUrl}
             target="_blank"
             rel="noopener noreferrer"
             className="flex items-center gap-2 px-5 py-2.5 bg-slate-800 text-white text-sm font-medium rounded-lg hover:bg-slate-700 transition-colors"

@@ -301,7 +301,10 @@ function InboxPane() {
 }
 
 function InboxList({ loading, likedOnly = false }: { loading: boolean; likedOnly?: boolean }) {
-  const { filteredPapers, papers, selectedPaper, setSelectedPaper, readIds } = usePapers();
+  const {
+    filteredPapers, papers, selectedPaper, setSelectedPaper, readIds,
+    hasMorePapers, totalPapers, loadingMore, loadMorePapers,
+  } = usePapers();
   const { isSaved, isLiked } = useLibrary();
   const visible = useMemo(
     () => likedOnly ? filteredPapers.filter(p => isLiked(p.id)) : filteredPapers,
@@ -328,6 +331,18 @@ function InboxList({ loading, likedOnly = false }: { loading: boolean; likedOnly
         ))}
       </div>
       <Pager pagination={pager} variant="dark" size="sm" label="papers" pageSizes={[25, 50, 100, 250]} />
+      {hasMorePapers && (
+        <button
+          type="button"
+          onClick={loadMorePapers}
+          disabled={loadingMore}
+          className="w-full px-4 py-2 text-[11px] text-slate-400 hover:text-slate-200 hover:bg-slate-800/60 border-t border-slate-700/60 disabled:opacity-60 disabled:cursor-wait"
+        >
+          {loadingMore
+            ? 'Loading older papers…'
+            : `Load older papers (${papers.length.toLocaleString()} of ${totalPapers.toLocaleString()})`}
+        </button>
+      )}
     </>
   );
 }

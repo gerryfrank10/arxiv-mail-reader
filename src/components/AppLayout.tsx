@@ -24,6 +24,7 @@ import { ConfirmProvider } from '../contexts/ConfirmContext';
 import { MagazineProvider } from '../contexts/MagazineContext';
 import { AIActivityProvider } from '../contexts/AIActivityContext';
 import AIActivityPanel from './AIActivityPanel';
+import AutoPaperCache from './AutoPaperCache';
 
 export type ActiveView = 'inbox' | 'library' | 'discover' | 'tracking' | 'books' | 'writer' | 'collections' | 'magazine';
 
@@ -81,6 +82,7 @@ function AppLayoutInner() {
       {showSettings  && <SettingsModal   onClose={() => setShowSettings(false)} />}
       {showSearch    && <SearchOverlay   onClose={() => setShowSearch(false)} setActiveView={setActiveView} />}
       {showActivity  && <AIActivityPanel onClose={() => setShowActivity(false)} />}
+      <AutoPaperCache />
     </div>
   );
 }
