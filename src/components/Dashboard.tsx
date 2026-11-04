@@ -7,7 +7,7 @@ import { computeAuthorStats, groupByVenue, detectVenue, type AuthorStat, type Ve
 import { publisherOf } from '../utils/publisher';
 import { apiGetPaperComments, apiAddPaperComment, apiDeletePaperComment, apiGetCommentCounts } from '../utils/researchApi';
 import { format, formatDistanceToNow } from 'date-fns';
-import { BookOpen, Users, Presentation, ChevronRight, ArrowUpDown, Award, Rss, Heart, Bookmark, BookmarkCheck, MessageCircle, ExternalLink, Send, Trash2, Loader2, ChevronUp, Timer } from 'lucide-react';
+import { BookOpen, Users, Presentation, ChevronRight, ArrowUpDown, Award, Rss, Heart, Bookmark, BookmarkCheck, MessageCircle, ExternalLink, Loader2 } from 'lucide-react';
 import { usePagination } from '../hooks/usePagination';
 import Pager from './Pager';
 import type { Paper, PaperComment } from '../types';
@@ -85,7 +85,7 @@ export default function Dashboard() {
 }
 
 // =========================================================================
-// Feed tab — a Twitter-style stream of the papers that just came in
+// Feed tab — a flat, chronological stream of incoming papers
 // =========================================================================
 
 const LOCAL_COMMENTS_KEY = 'arxiv_paper_comments';
@@ -127,8 +127,6 @@ function FeedTab() {
   const [openComments, setOpenComments] = useState<Set<string>>(new Set());
   const [commentCounts, setCommentCounts] = useState<Record<string, number>>({});
 
-  // Newest first — the whole point of a feed. The library list keeps its own
-  // sort; this is deliberately independent.
   const sorted = useMemo(
     () => [...papers].sort((a, b) => b.digestDate.getTime() - a.digestDate.getTime()),
     [papers],
@@ -152,16 +150,14 @@ function FeedTab() {
   }, [sorted, category, filter, readIds, isLiked, isSaved]);
 
   const pagination = usePagination(filtered, 25);
-  const pageIds = pagination.slice.map(p => p.id);
-  const pageKey = pageIds.join(',');
+  const pageKey = pagination.slice.map(p => p.id).join(',');
 
-  // Comment counts for just the visible page. Server mode batches them in one
-  // query; local mode reads the same map the thread writes to.
   useEffect(() => {
     if (!pageKey) return;
     let cancelled = false;
+    const ids = pageKey.split(',');
     if (storageMode === 'server') {
-      apiGetCommentCounts(pageKey.split(','))
+      apiGetCommentCounts(ids)
         .then(counts => {
           if (!cancelled) setCommentCounts(prev => ({ ...prev, ...counts }));
         })
@@ -169,7 +165,7 @@ function FeedTab() {
     } else {
       const map = readLocalCommentMap();
       const next: Record<string, number> = {};
-      for (const id of pageKey.split(',')) next[id] = (map[id] ?? []).length;
+      for (const id of ids) next[id] = (map[id] ?? []).length;
       setCommentCounts(prev => ({ ...prev, ...next }));
     }
     return () => { cancelled = true; };
@@ -180,103 +176,83 @@ function FeedTab() {
     ? Math.max(0, stats.total - readIds.size)
     : sorted.filter(p => !readIds.has(p.id)).length;
 
-  const filters: Array<{ value: FeedFilter; label: string; count: number; icon: React.ReactNode }> = [
-    { value: 'all',    label: 'All',    count: total,       icon: <Rss size={12} /> },
-    { value: 'unread', label: 'Unread', count: unreadTotal, icon: <Timer size={12} /> },
-    { value: 'liked',  label: 'Liked',  count: likedCount,  icon: <Heart size={12} /> },
-    { value: 'saved',  label: 'Saved',  count: savedCount,  icon: <Bookmark size={12} /> },
+  const filters: Array<{ value: FeedFilter; label: string; count: number }> = [
+    { value: 'all',    label: 'All',    count: total },
+    { value: 'unread', label: 'Unread', count: unreadTotal },
+    { value: 'liked',  label: 'Liked',  count: likedCount },
+    { value: 'saved',  label: 'Saved',  count: savedCount },
   ];
 
   const toggleAbstract = (id: string) => setExpandedAbstract(prev => {
     const next = new Set(prev);
-    next.has(id) ? next.delete(id) : next.add(id);
+    if (next.has(id)) next.delete(id); else next.add(id);
     return next;
   });
 
   const toggleComments = (id: string) => setOpenComments(prev => {
     const next = new Set(prev);
-    next.has(id) ? next.delete(id) : next.add(id);
+    if (next.has(id)) next.delete(id); else next.add(id);
     return next;
   });
 
   return (
-    <div className="max-w-2xl mx-auto px-4 sm:px-8 py-5">
-      {/* Filters */}
-      <div className="flex flex-wrap items-center gap-1.5 mb-3">
+    <div className="max-w-[640px] mx-auto px-4 py-6">
+      {/* Filter tabs */}
+      <div className="flex items-end gap-5 border-b border-slate-200 mb-2">
         {filters.map(f => {
           const active = filter === f.value;
           return (
             <button
               key={f.value}
               onClick={() => setFilter(f.value)}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold border transition-colors ${
-                active
-                  ? 'bg-slate-900 text-white border-slate-900'
-                  : 'bg-white text-slate-600 border-slate-200 hover:border-slate-300 hover:text-slate-800'
+              className={`relative pb-2.5 text-[13px] font-medium transition-colors ${
+                active ? 'text-slate-900' : 'text-slate-400 hover:text-slate-600'
               }`}
             >
-              {f.icon}
               {f.label}
-              <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-bold ${
-                active ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-500'
-              }`}>
-                {f.count.toLocaleString()}
-              </span>
+              <span className="ml-1.5 text-[11px] tabular-nums text-slate-400">{f.count.toLocaleString()}</span>
+              {active && <span className="absolute left-0 right-0 -bottom-px h-[2px] bg-slate-900 rounded-full" />}
             </button>
           );
         })}
-        {category && (
-          <button
-            onClick={() => setCategory('')}
-            className="flex items-center gap-1 px-3 py-1.5 rounded-full text-xs font-semibold bg-blue-50 text-blue-700 border border-blue-200"
-          >
-            {category}
-            <ChevronUp size={11} className="rotate-45" />
-          </button>
-        )}
       </div>
 
-      {/* Category chips */}
+      {/* Category filter */}
       {catCounts.length > 0 && (
-        <div className="flex gap-1.5 overflow-x-auto hide-scrollbar pb-1 mb-4 -mx-1 px-1">
-          {catCounts.slice(0, 18).map(([cat, count]) => {
-            const color = CATEGORY_COLORS_LIGHT[cat] ?? CATEGORY_COLORS_LIGHT.default;
+        <div className="flex items-center gap-3 overflow-x-auto hide-scrollbar py-3 text-[12px]">
+          <button
+            onClick={() => setCategory('')}
+            className={`shrink-0 ${!category ? 'text-slate-900 font-semibold' : 'text-slate-400 hover:text-slate-600'}`}
+          >
+            Everything
+          </button>
+          {catCounts.slice(0, 16).map(([cat]) => {
             const active = category === cat;
             return (
               <button
                 key={cat}
                 onClick={() => setCategory(active ? '' : cat)}
-                className={`shrink-0 text-[11px] font-semibold px-2.5 py-1 rounded-full border transition-all ${
-                  active
-                    ? `${color} border-current`
-                    : 'bg-white text-slate-500 border-slate-200 hover:text-slate-700 hover:border-slate-300'
-                }`}
+                className={`shrink-0 font-mono ${active ? 'text-slate-900 font-semibold underline underline-offset-4 decoration-2' : 'text-slate-400 hover:text-slate-600'}`}
               >
                 {cat}
-                <span className="ml-1 text-[10px] opacity-60">{count}</span>
               </button>
             );
           })}
         </div>
       )}
 
-      {/* Cards */}
+      {/* Stream */}
       {filtered.length === 0 ? (
-        <div className="text-center py-16">
-          <div className="w-12 h-12 rounded-full bg-slate-100 flex items-center justify-center mx-auto mb-3">
-            {filter === 'liked' ? <Heart size={18} className="text-slate-400" />
-              : filter === 'saved' ? <Bookmark size={18} className="text-slate-400" />
-              : <Rss size={18} className="text-slate-400" />}
-          </div>
-          <p className="text-sm text-slate-500">
-            {filter === 'unread' ? 'You are all caught up.'
-              : filter === 'liked' ? 'No liked papers yet — tap the heart on something good.'
-              : filter === 'saved' ? 'Nothing saved yet — use the bookmark to keep a paper.'
+        <div className="py-20 text-center">
+          <p className="text-[13px] text-slate-400">
+            {filter === 'unread' ? 'Nothing unread. You are caught up.'
+              : filter === 'liked' ? 'No liked papers yet.'
+              : filter === 'saved' ? 'Nothing saved yet.'
               : 'No papers match this filter.'}
           </p>
         </div>
       ) : (
-        <div className="space-y-3">
+        <div className="divide-y divide-slate-200 border-t border-slate-200">
           {pagination.slice.map(paper => {
             const pub = publisherOf(paper);
             const read = readIds.has(paper.id);
@@ -286,138 +262,117 @@ function FeedTab() {
             const showingComments = openComments.has(paper.id);
             const comments = commentCounts[paper.id] ?? 0;
             const abstract = paper.abstract?.trim() ?? '';
-            const canCollapse = abstract.length > 240;
+            const longAbstract = abstract.length > 280;
+            const openHref = paper.url || (paper.arxivId ? `https://arxiv.org/abs/${paper.arxivId}` : '');
+            const handle = pub.key.replace(/[^a-z0-9]+/g, '');
 
             return (
-              <article
-                key={paper.id}
-                className={`bg-white rounded-2xl border shadow-sm overflow-hidden transition-colors ${
-                  read ? 'border-slate-200' : 'border-blue-200/80'
-                }`}
-              >
-                {/* Publisher header */}
-                <div className="px-4 pt-4 flex items-start gap-3">
-                  <div className={`w-10 h-10 rounded-full border flex items-center justify-center text-[11px] font-bold shrink-0 ${pub.bg} ${pub.text} ${pub.border}`}>
-                    {pub.short}
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      <span className={`text-[11px] font-bold px-1.5 py-0.5 rounded ${pub.bg} ${pub.text}`}>
-                        {pub.name}
-                      </span>
-                      <span className="text-slate-300">·</span>
-                      <span
-                        className="text-xs text-slate-400"
-                        title={format(paper.digestDate, 'MMM d, yyyy HH:mm')}
+              <article key={paper.id} className="group relative py-5 pl-5 pr-1 hover:bg-slate-50/70 transition-colors">
+                {/* Unread marker */}
+                {!read && <span className="absolute left-1.5 top-7 w-1.5 h-1.5 rounded-full bg-blue-500" title="Unread" />}
+
+                {/* Header: publisher as handle */}
+                <header className="flex items-baseline gap-2 text-[13px]">
+                  <span className="font-semibold text-slate-900">{pub.name}</span>
+                  <span className="text-slate-400 truncate">@{handle || 'source'}</span>
+                  <span className="text-slate-300">·</span>
+                  <time
+                    dateTime={paper.digestDate.toISOString()}
+                    title={format(paper.digestDate, 'PPpp')}
+                    className="text-slate-400 whitespace-nowrap"
+                  >
+                    {formatDistanceToNow(paper.digestDate, { addSuffix: false })}
+                  </time>
+                  {paper.arxivId && (
+                    <span className="ml-auto font-mono text-[11px] text-slate-400 shrink-0">{paper.arxivId}</span>
+                  )}
+                </header>
+
+                {/* Title + authors */}
+                <button
+                  onClick={() => { markRead(paper.id); setSelectedPaper(paper); }}
+                  className="block text-left mt-1.5 w-full"
+                >
+                  <h3 className={`text-[16px] leading-snug group-hover:underline decoration-slate-300 underline-offset-2 ${
+                    read ? 'font-medium text-slate-700' : 'font-semibold text-slate-900'
+                  }`}>
+                    {paper.title}
+                  </h3>
+                </button>
+                <p className="mt-0.5 text-[12.5px] text-slate-500 truncate">
+                  {paper.authors || paper.authorList.join(', ')}
+                </p>
+
+                {/* Abstract */}
+                {abstract ? (
+                  <div className="mt-2.5">
+                    <p className={`text-[14px] leading-[1.65] text-slate-600 ${expanded ? '' : 'line-clamp-3'}`}>
+                      {abstract}
+                    </p>
+                    {longAbstract && (
+                      <button
+                        onClick={() => toggleAbstract(paper.id)}
+                        className="mt-1 text-[12px] font-medium text-slate-500 hover:text-slate-900"
                       >
-                        {formatDistanceToNow(paper.digestDate, { addSuffix: true })}
-                      </span>
-                      {!read && <span className="w-1.5 h-1.5 rounded-full bg-blue-500" title="Unread" />}
-                    </div>
-                    <p className="text-[11px] text-slate-400 mt-0.5 truncate">
-                      {paper.arxivId || paper.url || paper.source || 'paper'}
-                      {paper.digestSubject ? ` · ${paper.digestSubject}` : ''}
-                    </p>
+                        {expanded ? 'Show less' : 'Show more'}
+                      </button>
+                    )}
                   </div>
-                  <button
-                    onClick={() => { markRead(paper.id); setSelectedPaper(paper); }}
-                    title="Open paper"
-                    className="p-1.5 rounded-full text-slate-400 hover:text-blue-600 hover:bg-blue-50 transition-colors shrink-0"
-                  >
-                    <ExternalLink size={14} />
-                  </button>
-                </div>
+                ) : (
+                  <p className="mt-2.5 text-[12.5px] text-slate-400">No abstract yet. Open the paper to fetch it.</p>
+                )}
 
-                {/* Body */}
-                <div className="px-4 pt-2.5">
-                  <button
-                    onClick={() => { markRead(paper.id); setSelectedPaper(paper); }}
-                    className="text-left w-full group"
-                  >
-                    <h3 className="text-[15px] font-semibold text-slate-900 leading-snug group-hover:text-blue-700 transition-colors">
-                      {paper.title}
-                    </h3>
-                  </button>
-                  <p className="text-xs text-slate-500 mt-1 line-clamp-2">
-                    {paper.authors || paper.authorList.join(', ')}
-                  </p>
-
-                  {abstract ? (
-                    <div className="mt-2">
-                      <p className={`text-[13px] leading-relaxed text-slate-600 ${expanded ? '' : 'line-clamp-3'}`}>
-                        {abstract}
-                      </p>
-                      {canCollapse && (
-                        <button
-                          onClick={() => toggleAbstract(paper.id)}
-                          className="mt-1 text-[11px] font-semibold text-blue-600 hover:text-blue-700"
-                        >
-                          {expanded ? 'Show less' : 'Show more'}
-                        </button>
-                      )}
-                    </div>
-                  ) : (
-                    <p className="mt-2 text-[12px] italic text-slate-400">
-                      No abstract stored — open the paper to fetch it.
-                    </p>
-                  )}
-
-                  {paper.categories.length > 0 && (
-                    <div className="flex flex-wrap gap-1 mt-2.5">
-                      {paper.categories.slice(0, 5).map(cat => (
-                        <span key={cat} className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">
-                          {cat}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                </div>
+                {paper.categories.length > 0 && (
+                  <div className="mt-2.5 flex flex-wrap gap-x-3 gap-y-1 font-mono text-[11px] text-slate-400">
+                    {paper.categories.slice(0, 5).map(cat => <span key={cat}>{cat}</span>)}
+                  </div>
+                )}
 
                 {/* Actions */}
-                <div className="px-2.5 py-2 mt-2 flex items-center gap-0.5 border-t border-slate-100">
-                  <FeedAction
-                    active={liked}
-                    activeClass="bg-rose-50 text-rose-600"
-                    title={liked ? 'Unlike' : 'Like'}
+                <div className="mt-3 flex items-center gap-6 text-[12px] text-slate-400">
+                  <button
                     onClick={() => (liked ? unlikePaper(paper.id) : likePaper(paper))}
-                    icon={<Heart size={14} className={liked ? 'fill-rose-500 text-rose-500' : ''} />}
-                    label={liked ? 'Liked' : 'Like'}
-                  />
-                  <FeedAction
-                    active={showingComments}
-                    activeClass="bg-sky-50 text-sky-600"
-                    title="Comments"
+                    className={`flex items-center gap-1.5 transition-colors ${liked ? 'text-rose-600' : 'hover:text-rose-600'}`}
+                    title={liked ? 'Unlike' : 'Like'}
+                  >
+                    <Heart size={15} className={liked ? 'fill-current' : ''} />
+                    <span className="tabular-nums">{liked ? 'Liked' : 'Like'}</span>
+                  </button>
+                  <button
                     onClick={() => toggleComments(paper.id)}
-                    icon={<MessageCircle size={14} />}
-                    label={comments > 0 ? String(comments) : 'Comment'}
-                  />
-                  <FeedAction
-                    active={saved}
-                    activeClass="bg-amber-50 text-amber-600"
-                    title={saved ? 'Remove from library' : 'Save to library'}
+                    className={`flex items-center gap-1.5 transition-colors ${showingComments ? 'text-sky-600' : 'hover:text-sky-600'}`}
+                    title="Comments"
+                  >
+                    <MessageCircle size={15} />
+                    <span className="tabular-nums">{comments > 0 ? comments : 'Comment'}</span>
+                  </button>
+                  <button
                     onClick={() => (saved ? unsavePaper(paper.id) : savePaper(paper))}
-                    icon={saved ? <BookmarkCheck size={14} /> : <Bookmark size={14} />}
-                    label={saved ? 'Saved' : 'Save'}
-                  />
-                  <div className="ml-auto flex items-center gap-0.5">
-                    <FeedAction
-                      active={false}
-                      activeClass=""
-                      title={read ? 'Mark unread' : 'Mark read'}
+                    className={`flex items-center gap-1.5 transition-colors ${saved ? 'text-amber-600' : 'hover:text-amber-600'}`}
+                    title={saved ? 'Remove from library' : 'Save to library'}
+                  >
+                    {saved ? <BookmarkCheck size={15} /> : <Bookmark size={15} />}
+                    <span>{saved ? 'Saved' : 'Save'}</span>
+                  </button>
+                  <div className="ml-auto flex items-center gap-4">
+                    <button
                       onClick={() => (read ? markUnread(paper.id) : markRead(paper.id))}
-                      icon={<Timer size={14} />}
-                      label={read ? 'Read' : 'Unread'}
-                    />
-                    {(paper.url || paper.arxivId) && (
+                      className="hover:text-slate-700"
+                      title={read ? 'Mark as unread' : 'Mark as read'}
+                    >
+                      {read ? 'Mark unread' : 'Mark read'}
+                    </button>
+                    {openHref && (
                       <a
-                        href={paper.url || `https://arxiv.org/abs/${paper.arxivId}`}
+                        href={openHref}
                         target="_blank"
                         rel="noreferrer"
-                        title="Open on the publisher's site"
                         onClick={() => markRead(paper.id)}
-                        className="p-2 rounded-full text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors"
+                        className="flex items-center gap-1 hover:text-slate-700"
+                        title={`Open on ${pub.name}`}
                       >
-                        <ExternalLink size={14} />
+                        <ExternalLink size={13} />
+                        <span>Open</span>
                       </a>
                     )}
                   </div>
@@ -436,39 +391,11 @@ function FeedTab() {
       )}
 
       {filtered.length > 0 && (
-        <div className="mt-4 rounded-xl border border-slate-200 overflow-hidden">
-          <Pager
-            pagination={pagination}
-            variant="light"
-            size="sm"
-            label="papers"
-            pageSizes={[25, 50, 100]}
-          />
+        <div className="mt-6">
+          <Pager pagination={pagination} variant="light" size="sm" label="papers" pageSizes={[25, 50, 100]} />
         </div>
       )}
     </div>
-  );
-}
-
-function FeedAction({ active, activeClass, title, onClick, icon, label }: {
-  active: boolean;
-  activeClass: string;
-  title: string;
-  onClick: () => void;
-  icon: React.ReactNode;
-  label: string;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      title={title}
-      className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-xs font-medium transition-colors ${
-        active ? activeClass : 'text-slate-500 hover:bg-slate-100 hover:text-slate-700'
-      }`}
-    >
-      {icon}
-      <span className="hidden sm:inline">{label}</span>
-    </button>
   );
 }
 
@@ -558,37 +485,28 @@ function CommentThread({ paperId, onCountChange }: {
   };
 
   return (
-    <div className="border-t border-slate-100 bg-slate-50/60 px-4 py-3 space-y-2.5">
+    <div className="mt-4 pl-4 border-l-2 border-slate-200 space-y-3">
       {loading ? (
-        <p className="flex items-center gap-2 text-xs text-slate-400">
-          <Loader2 size={12} className="animate-spin" /> Loading comments…
+        <p className="text-[12px] text-slate-400 flex items-center gap-2">
+          <Loader2 size={12} className="animate-spin" /> Loading
         </p>
       ) : comments.length === 0 ? (
-        <p className="text-xs text-slate-400">No comments yet. Add a note for yourself.</p>
+        <p className="text-[12px] text-slate-400">No notes yet.</p>
       ) : (
         comments.map(c => (
-          <div key={c.id} className="group flex items-start gap-2">
-            <div className="w-6 h-6 rounded-full bg-slate-200 text-slate-600 flex items-center justify-center text-[10px] font-bold shrink-0">
-              You
+          <div key={c.id} className="group/c">
+            <p className="text-[13px] leading-relaxed text-slate-700 whitespace-pre-wrap break-words">{c.body}</p>
+            <div className="mt-0.5 flex items-center gap-3 text-[11px] text-slate-400">
+              <span>{formatDistanceToNow(new Date(c.createdAt), { addSuffix: true })}</span>
+              <button onClick={() => remove(c.id)} className="opacity-0 group-hover/c:opacity-100 hover:text-rose-600 transition-opacity">
+                Delete
+              </button>
             </div>
-            <div className="flex-1 min-w-0 bg-white border border-slate-200 rounded-xl px-3 py-2">
-              <p className="text-[13px] text-slate-700 whitespace-pre-wrap break-words">{c.body}</p>
-              <p className="text-[10px] text-slate-400 mt-1">
-                {formatDistanceToNow(new Date(c.createdAt), { addSuffix: true })}
-              </p>
-            </div>
-            <button
-              onClick={() => remove(c.id)}
-              title="Delete comment"
-              className="p-1 rounded text-slate-300 hover:text-rose-600 hover:bg-rose-50 transition-colors opacity-0 group-hover:opacity-100 shrink-0"
-            >
-              <Trash2 size={12} />
-            </button>
           </div>
         ))
       )}
 
-      <div className="flex items-start gap-2">
+      <div className="flex items-end gap-2">
         <textarea
           value={body}
           onChange={e => setBody(e.target.value)}
@@ -600,18 +518,18 @@ function CommentThread({ paperId, onCountChange }: {
           }}
           rows={2}
           maxLength={4000}
-          placeholder="Write a comment… (⌘/Ctrl + Enter to post)"
-          className="flex-1 resize-none text-[13px] text-slate-700 bg-white border border-slate-200 rounded-xl px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-300"
+          placeholder="Add a note"
+          className="flex-1 resize-none bg-transparent border-b border-slate-300 focus:border-slate-900 text-[13px] text-slate-800 placeholder:text-slate-400 py-1.5 focus:outline-none"
         />
         <button
           onClick={() => void submit()}
           disabled={busy || !body.trim()}
-          title="Post comment"
-          className="p-2 rounded-xl bg-slate-900 text-white hover:bg-slate-800 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+          className="text-[12px] font-semibold text-slate-900 disabled:text-slate-300 pb-1.5"
         >
-          {busy ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />}
+          {busy ? 'Posting…' : 'Post'}
         </button>
       </div>
+      <p className="text-[10.5px] text-slate-400">⌘/Ctrl + Enter to post</p>
 
       {error && <p className="text-[11px] text-rose-600">{error}</p>}
     </div>
