@@ -71,6 +71,20 @@ export const db = {
         await pool.query(`
           CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions (user_id)
         `);
+        // Per-paper comments shown in the dashboard feed.
+        await pool.query(`
+          CREATE TABLE IF NOT EXISTS paper_comments (
+            id         UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+            user_id    UUID         NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            paper_id   TEXT         NOT NULL,
+            body       TEXT         NOT NULL,
+            created_at TIMESTAMPTZ  NOT NULL DEFAULT now()
+          )
+        `);
+        await pool.query(`
+          CREATE INDEX IF NOT EXISTS idx_paper_comments_user_paper
+            ON paper_comments (user_id, paper_id, created_at)
+        `);
         return true;
       }
     } catch (e) {
@@ -503,6 +517,63 @@ export const db = {
 
   async unlikePaper(userId, paperId) {
     await pool.query(`DELETE FROM likes WHERE user_id=$1 AND paper_id=$2`, [userId, paperId]);
+  },
+
+  // ----- paper comments (dashboard feed) -----
+
+  async getPaperComments(userId, paperId) {
+    const { rows } = await pool.query(
+      `SELECT id, paper_id, body, created_at
+       FROM paper_comments
+       WHERE user_id=$1 AND paper_id=$2
+       ORDER BY created_at ASC`,
+      [userId, paperId],
+    );
+    return rows.map(r => ({
+      id: r.id,
+      paperId: r.paper_id,
+      body: r.body,
+      createdAt: r.created_at ? new Date(r.created_at).getTime() : Date.now(),
+    }));
+  },
+
+  async addPaperComment(userId, paperId, body) {
+    const text = String(body ?? '').trim().slice(0, 4000);
+    if (!text) throw new Error('Comment is empty.');
+    const { rows } = await pool.query(
+      `INSERT INTO paper_comments (user_id, paper_id, body)
+       VALUES ($1,$2,$3)
+       RETURNING id, paper_id, body, created_at`,
+      [userId, paperId, text],
+    );
+    const r = rows[0];
+    return {
+      id: r.id,
+      paperId: r.paper_id,
+      body: r.body,
+      createdAt: r.created_at ? new Date(r.created_at).getTime() : Date.now(),
+    };
+  },
+
+  async deletePaperComment(userId, commentId) {
+    const r = await pool.query(
+      `DELETE FROM paper_comments WHERE user_id=$1 AND id=$2`,
+      [userId, commentId],
+    );
+    return (r.rowCount ?? 0) > 0;
+  },
+
+  // Comment counts for a page of papers, in one query.
+  async getCommentCounts(userId, paperIds) {
+    if (!Array.isArray(paperIds) || paperIds.length === 0) return {};
+    const { rows } = await pool.query(
+      `SELECT paper_id, count(*)::int AS n
+       FROM paper_comments
+       WHERE user_id=$1 AND paper_id = ANY($2::text[])
+       GROUP BY paper_id`,
+      [userId, paperIds],
+    );
+    return Object.fromEntries(rows.map(r => [r.paper_id, r.n]));
   },
 
   // ----- read states -----

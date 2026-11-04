@@ -5,11 +5,13 @@ import { usePapers } from './PapersContext';
 
 interface LibraryContextValue {
   savedPapers: Paper[];
+  savedCount: number;
   savePaper:   (p: Paper) => void;
   unsavePaper: (id: string) => void;
   isSaved:     (id: string) => boolean;
   // Likes — a separate signal from bookmarks
   likedPapers: Paper[];
+  likedCount: number;
   likePaper:   (p: Paper) => void;
   unlikePaper: (id: string) => void;
   isLiked:     (id: string) => boolean;
@@ -108,8 +110,8 @@ export function LibraryProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <LibraryContext.Provider value={{
-      savedPapers, savePaper, unsavePaper, isSaved,
-      likedPapers, likePaper, unlikePaper, isLiked,
+      savedPapers, savedCount: savedIds.size, savePaper, unsavePaper, isSaved,
+      likedPapers, likedCount: likedIds.size, likePaper, unlikePaper, isLiked,
     }}>
       {children}
     </LibraryContext.Provider>

@@ -26,6 +26,18 @@ export interface Paper {
   // Full text extracted from the cached PDF (stored in Postgres; fetched on demand).
   hasFullText?: boolean;
   fullTextChars?: number;
+  // Hosting/publishing platform, e.g. 'arXiv', 'OpenReview', 'ACL Anthology'.
+  // Importers set this when they know it; otherwise publisherOf() infers it
+  // from the URL/arxiv id. Kept optional for backward compatibility.
+  publisher?: string;
+}
+
+// A user's own note/comment on a paper (dashboard feed).
+export interface PaperComment {
+  id: string;
+  paperId: string;
+  body: string;
+  createdAt: number;
 }
 
 // AI providers supported. Anthropic uses its own protocol; everything else

@@ -43,6 +43,11 @@ everything else is built on top.
 - **Collections & Cross-references** — group and link papers, books, and documents
 - **AI providers** — Claude, OpenAI, Groq, Ollama, or any OpenAI-compatible endpoint; two-tier profiles (a premium model + a cheap/local default) with per-purpose routing, an activity log, and a master pause switch
 
+**Sources**
+- arXiv is supported today. Other publishing sites (OpenReview, ACL Anthology,
+  PMLR, bioRxiv, PubMed, DOI/URL import, …) are planned — see
+  [docs/PARSERS.md](docs/PARSERS.md) for the parser contract and roadmap.
+
 **Login**
 - **Email + password** accounts stored in Postgres (scrypt hashes, 30-day
   sessions). The first account is seeded from `SEED_USER_EMAIL` /

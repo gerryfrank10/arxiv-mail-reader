@@ -4,7 +4,7 @@
 // isn't enabled, the status endpoint returns { enabled: false } and the
 // client UI shows a setup hint instead of an empty/broken state.
 
-import { Book, Collection, CollectionItem, EntityKind, Link, LinkRel, MagazineDraft, MagazineIssue, MagazineIssueSummary, MagazineSource, Paper, PaperScore, ResearchDocument, Tracker } from '../types';
+import { Book, Collection, CollectionItem, EntityKind, Link, LinkRel, MagazineDraft, MagazineIssue, MagazineIssueSummary, MagazineSource, Paper, PaperComment, PaperScore, ResearchDocument, Tracker } from '../types';
 
 function userEmailFromLocalStorage(): string | null {
   try {
@@ -392,6 +392,36 @@ export async function apiUpdatePaperAbstract(id: string, abstract: string): Prom
     method: 'PATCH',
     body: JSON.stringify({ abstract }),
   });
+}
+
+// ---------- Paper comments ----------
+
+export async function apiGetPaperComments(paperId: string): Promise<PaperComment[]> {
+  const { comments } = await call<{ comments: PaperComment[] }>(
+    `/api/db/papers/${encodeURIComponent(paperId)}/comments`,
+  );
+  return comments ?? [];
+}
+
+export async function apiAddPaperComment(paperId: string, body: string): Promise<PaperComment> {
+  const { comment } = await call<{ comment: PaperComment }>(
+    `/api/db/papers/${encodeURIComponent(paperId)}/comments`,
+    { method: 'POST', body: JSON.stringify({ body }) },
+  );
+  return comment;
+}
+
+export async function apiDeletePaperComment(commentId: string): Promise<void> {
+  await call(`/api/db/comments/${encodeURIComponent(commentId)}`, { method: 'DELETE' });
+}
+
+export async function apiGetCommentCounts(paperIds: string[]): Promise<Record<string, number>> {
+  if (paperIds.length === 0) return {};
+  const { counts } = await call<{ counts: Record<string, number> }>(
+    '/api/db/comments/counts',
+    { method: 'POST', body: JSON.stringify({ ids: paperIds }) },
+  );
+  return counts ?? {};
 }
 
 // ---------- Library ----------

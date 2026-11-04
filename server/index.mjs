@@ -1068,6 +1068,22 @@ app.patch('/api/db/papers/:id/abstract', (req, res) => withUser(req, res, async 
   res.json({ ok: true });
 }));
 
+// per-paper comments (dashboard feed)
+app.get('/api/db/papers/:id/comments', (req, res) => withUser(req, res, async (uid) => {
+  res.json({ comments: await db.getPaperComments(uid, req.params.id) });
+}));
+app.post('/api/db/papers/:id/comments', (req, res) => withUser(req, res, async (uid) => {
+  const comment = await db.addPaperComment(uid, req.params.id, req.body.body ?? '');
+  res.json({ comment });
+}));
+app.delete('/api/db/comments/:id', (req, res) => withUser(req, res, async (uid) => {
+  const removed = await db.deletePaperComment(uid, req.params.id);
+  res.json({ ok: removed });
+}));
+app.post('/api/db/comments/counts', (req, res) => withUser(req, res, async (uid) => {
+  res.json({ counts: await db.getCommentCounts(uid, req.body.ids ?? []) });
+}));
+
 // library
 app.get('/api/db/library', (req, res) => withUser(req, res, async (uid) => {
   res.json({ items: await db.getLibrary(uid) });
