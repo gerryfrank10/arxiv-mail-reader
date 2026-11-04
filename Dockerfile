@@ -18,11 +18,8 @@ RUN npm ci
 
 COPY . .
 
-# Vite inlines VITE_*-prefixed vars at BUILD time, so the Google OAuth client
-# id (if you use "Sign in with Google") must be passed as a build arg. Leave
-# empty to hide the Google button and use IMAP login.
-ARG VITE_GOOGLE_CLIENT_ID=
-ENV VITE_GOOGLE_CLIENT_ID=${VITE_GOOGLE_CLIENT_ID}
+# Vite inlines VITE_*-prefixed vars at BUILD time, so any build-time
+# configuration must be passed as a build arg here.
 
 RUN npm run build
 

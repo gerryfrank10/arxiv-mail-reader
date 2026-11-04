@@ -1,6 +1,5 @@
 import React, { createContext, useContext, useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { Paper, Settings, SortField, SortDir } from '../types';
-import { fetchArxivPapers } from '../utils/gmailApi';
 import { fetchArxivPapersImap } from '../utils/imapApi';
 import { computeAssessment } from '../utils/assessment';
 import { useAuth } from './AuthContext';
@@ -196,15 +195,6 @@ export function PapersProvider({ children }: { children: React.ReactNode }) {
       if (settings.imapConfig) {
         newPapers = await fetchArxivPapersImap(
           settings.imapConfig,
-          settings.senderEmail,
-          settings.maxEmails,
-          (loaded, total) => setProgress(Math.round((loaded / total) * 100))
-        );
-      } else if (user.provider === 'google' && user.accessToken) {
-        // Legacy Google sessions are no longer issued, but keep the path for
-        // any session that still has a valid token.
-        newPapers = await fetchArxivPapers(
-          user.accessToken,
           settings.senderEmail,
           settings.maxEmails,
           (loaded, total) => setProgress(Math.round((loaded / total) * 100))

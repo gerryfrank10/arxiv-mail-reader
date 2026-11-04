@@ -89,7 +89,9 @@ server deploy:
 
 | Variable | What it does |
 | --- | --- |
-| `VITE_GOOGLE_CLIENT_ID` | Enables "Sign in with Google" (Gmail). **Baked at build time** — set it *before* `app:up`. Leave blank to use IMAP login (iCloud/Outlook/Yahoo). |
+| `SEED_USER_EMAIL` | Owner account to create/adopt on startup. |
+| `SEED_USER_PASSWORD` | Password applied once if the owner has none. |
+| `SEED_LEGACY_EMAIL` | Existing user to rename to `SEED_USER_EMAIL` (keeps its papers). |
 | `SEMANTIC_SCHOLAR_API_KEY` | Higher rate limits for Discover + citation graph. |
 | `OPENALEX_MAILTO` | Polite-pool email for the Discover fallback. |
 | `DISABLE_MAGAZINE_SCHEDULER` | Set to `1` to stop the weekly auto-generation worker. |

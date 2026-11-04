@@ -44,8 +44,11 @@ everything else is built on top.
 - **AI providers** — Claude, OpenAI, Groq, Ollama, or any OpenAI-compatible endpoint; two-tier profiles (a premium model + a cheap/local default) with per-purpose routing, an activity log, and a master pause switch
 
 **Login**
-- **Gmail** via Google OAuth (read-only, nothing stored on any server), or
-- **IMAP** — iCloud, Outlook, Yahoo, or any IMAP host (requires the backend running)
+- **Email + password** accounts stored in Postgres (scrypt hashes, 30-day
+  sessions). The first account is seeded from `SEED_USER_EMAIL` /
+  `SEED_USER_PASSWORD`; anyone else can create their own account and library.
+- **Mailbox credentials** (IMAP host/port/username/app password) are entered
+  after sign-in under **Settings → Email & sync** and stored in that browser.
 
 ---
 
@@ -56,8 +59,11 @@ everything else is built on top.
 - **Database** — PostgreSQL (optional)
 
 Storage has two modes:
-- **IndexedDB (default, local-only)** — works with no backend; the Library/Reader run entirely in the browser (Gmail login only).
-- **Server mode (Postgres)** — set `DATABASE_URL` and the `/api/db/*` routes light up, enabling Books, Writer, Magazine, Collections, Cross-refs, trackers, and cross-device sync.
+- **Server mode (Postgres, required for accounts)** — set `DATABASE_URL`; login,
+  sessions and the `/api/db/*` routes (Books, Writer, Magazine, Collections,
+  Cross-refs, trackers, cross-device sync) all live here.
+- **IndexedDB (per-browser cache)** — the paper list can still be cached
+  locally, but signing in requires the backend + Postgres.
 
 In server mode, opening an arXiv paper downloads its PDF once into
 `uploads/papers/<user>/` and extracts its text into `papers.full_text`. The
@@ -98,7 +104,8 @@ npm run dev:all             # Vite (:5173) + API (:3001)
 # → open http://localhost:5173
 ```
 
-`npm run dev` alone runs only the frontend (IndexedDB mode, Gmail login).
+`npm run dev` alone runs only the frontend, but sign-in needs the API and
+Postgres — use `npm run dev:all` plus `npm run db:up`.
 
 > Run **either** Docker (`:3001`) **or** dev (`:5173`) — both use port 3001 for
 > the API, so don't run them at once.
@@ -112,8 +119,10 @@ Everything is optional — the app degrades gracefully. Copy `.env.example` to
 
 | Variable | Purpose |
 | --- | --- |
-| `VITE_GOOGLE_CLIENT_ID` | Enables "Sign in with Google" (Gmail). **Baked at build time.** Blank → IMAP login only. |
-| `DATABASE_URL` | Connect Postgres → enables server-storage features. Unset → IndexedDB-only. |
+| `DATABASE_URL` | Connect Postgres — required for accounts, sessions and all library data. |
+| `SEED_USER_EMAIL` | Owner account created/adopted on first start. |
+| `SEED_USER_PASSWORD` | Password set once, when the owner account has none yet. |
+| `SEED_LEGACY_EMAIL` | Existing user email to rename to `SEED_USER_EMAIL` so its papers stay attached. |
 | `PORT` | API port (default 3001). |
 | `SEMANTIC_SCHOLAR_API_KEY` | Higher rate limits for Discover + citation graph. |
 | `OPENALEX_MAILTO` | Polite-pool contact for OpenAlex (and the arXiv User-Agent). |
@@ -122,14 +131,37 @@ Everything is optional — the app degrades gracefully. Copy `.env.example` to
 > Non-`VITE_`-prefixed values (API keys, `DATABASE_URL`) stay on the server and
 > never reach the browser bundle.
 
-### Google OAuth client ID (for Gmail login)
+### Accounts and first login
 
-1. [console.cloud.google.com](https://console.cloud.google.com) → new project
-2. **APIs & Services → Library** → enable **Gmail API**
-3. **OAuth consent screen** → External → add scope `gmail.readonly` → add your email as a test user
-4. **Credentials → Create → OAuth 2.0 Client ID** → Web application
-   - Authorized JavaScript origins: `http://localhost:5173` (dev), `http://localhost:3001` (Docker), and your production URL
-5. Put the Client ID in `.env` as `VITE_GOOGLE_CLIENT_ID`
+On startup the server ensures the owner account exists:
+
+1. If `SEED_LEGACY_EMAIL` is set and `SEED_USER_EMAIL` doesn't exist yet, the
+   legacy user row is **renamed** to `SEED_USER_EMAIL` — every paper, library
+   entry, like, read state and score keeps its `user_id`, so nothing moves.
+2. If that account has no password yet, `SEED_USER_PASSWORD` is applied.
+   Later password changes (Settings → Account) are never overwritten.
+
+```dotenv
+SEED_USER_EMAIL=you@example.com
+SEED_USER_PASSWORD=choose-a-strong-one
+SEED_LEGACY_EMAIL=old-address@example.com   # optional, for migrations
+```
+
+Everyone else can click **Create an account** on the login screen; each account
+gets its own papers, library, trackers and mail settings.
+
+### Abstract backfill
+
+Papers imported from listings can have no abstract. Fill them from the arXiv API
+(only empty rows are touched, so re-running is safe):
+
+```bash
+npm run backfill:abstracts -- --user=you@example.com
+npm run backfill:abstracts -- --all --limit=1000
+npm run backfill:abstracts -- --dry-run
+```
+
+Requests are batched (100 ids) and paced; `--delay=2500` controls the gap.
 
 ---
 
@@ -177,14 +209,14 @@ src/
 │                      Books, Magazine, Collections, Tracking, Import, Settings…
 ├── contexts/          State: Auth, Papers, Library, Writer, Books, Magazine,
 │                      Collections, Tracking, Links, AIActivity, Confirm
-└── utils/             emailParser, gmailApi, imapApi, paperImport, researchApi,
+└── utils/             emailParser, imapApi, paperImport, researchApi,
                        aiProvider, aiJson, semanticScholar, storage, latex…
 server/
 ├── index.mjs          Express API (arXiv/S2/AI proxies, IMAP, /api/db/*, SPA)
 ├── db.mjs             Postgres data access
 ├── sources.mjs        Magazine external-source fetchers
 └── migrations/        SQL schema (run on first DB init)
-scripts/               backup, restore, migrate, score-papers (CLI)
+scripts/               backup, restore, migrate, score-papers, backfill-abstracts (CLI)
 Dockerfile, docker-compose.yml, DEPLOY.md
 ```
 
@@ -199,6 +231,7 @@ Dockerfile, docker-compose.yml, DEPLOY.md
 | `build` | Type-check + production build |
 | `test` / `test:run` | Vitest |
 | `score-papers` | Offline tracker scoring CLI |
+| `backfill:abstracts` | Fill missing abstracts from the arXiv API |
 
 ---
 
@@ -207,7 +240,6 @@ Dockerfile, docker-compose.yml, DEPLOY.md
 - [arXiv.org](https://arxiv.org) — open-access preprints
 - [Semantic Scholar](https://www.semanticscholar.org/product/api) & [OpenAlex](https://openalex.org) — discovery / citation graph
 - [KaTeX](https://katex.org), [CodeMirror](https://codemirror.net), [Recharts](https://recharts.org), [Lucide](https://lucide.dev), [date-fns](https://date-fns.org)
-- [@react-oauth/google](https://github.com/MomenSherif/react-oauth) by Momen Sherif
 - [Tailwind CSS](https://tailwindcss.com), [Vite](https://vitejs.dev), [Express](https://expressjs.com), [PostgreSQL](https://www.postgresql.org), [Ollama](https://ollama.com)
 
 ---

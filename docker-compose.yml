@@ -44,9 +44,6 @@ services:
     profiles: ["app"]
     build:
       context: .
-      args:
-        # Read from your .env (compose auto-loads it). Only needed for Google login.
-        VITE_GOOGLE_CLIENT_ID: ${VITE_GOOGLE_CLIENT_ID:-}
     container_name: arxiv-reader-app
     restart: unless-stopped
     # Brings in SEMANTIC_SCHOLAR_API_KEY, OPENALEX_MAILTO, DISABLE_MAGAZINE_SCHEDULER, etc.
