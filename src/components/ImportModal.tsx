@@ -1,5 +1,5 @@
-import { useState, useRef } from 'react';
-import { X, Upload, FileText, Plus, Loader2, AlertCircle, CheckCircle2, FileUp, Search, File as FileIcon } from 'lucide-react';
+import { useState, useRef, useEffect } from 'react';
+import { X, Upload, FileText, Plus, Loader2, AlertCircle, CheckCircle2, FileUp, Search, File as FileIcon, History, Pause, Play, XCircle } from 'lucide-react';
 import { usePapers } from '../contexts/PapersContext';
 import {
   extractArxivIds,
@@ -10,14 +10,20 @@ import {
   bibEntryToPaper,
   type ArxivSearchMode,
 } from '../utils/paperImport';
-import { uploadPaperFile } from '../utils/researchApi';
+import {
+  uploadPaperFile,
+  apiListIngestJobs,
+  apiCreateArxivHistoryJob,
+  apiControlIngestJob,
+  type IngestJob,
+} from '../utils/researchApi';
 import { Paper } from '../types';
 
 interface Props {
   onClose: () => void;
 }
 
-type Tab = 'single' | 'bulk' | 'bibtex' | 'arxiv' | 'upload';
+type Tab = 'single' | 'bulk' | 'bibtex' | 'arxiv' | 'history' | 'upload';
 
 // A few common arXiv categories offered as autocomplete suggestions.
 const COMMON_CATEGORIES = [
@@ -41,7 +47,7 @@ interface ImportResult {
 }
 
 export default function ImportModal({ onClose }: Props) {
-  const { addImportedPapers, storageMode, setSelectedPaper } = usePapers();
+  const { addImportedPapers, storageMode, setSelectedPaper, reloadPapers } = usePapers();
   const [tab, setTab]       = useState<Tab>('single');
   const [busy, setBusy]     = useState(false);
   const [progress, setProgress] = useState<ProgressState | null>(null);
@@ -64,6 +70,70 @@ export default function ImportModal({ onClose }: Props) {
   const [arxivFrom,  setArxivFrom]  = useState('');
   const [arxivTo,    setArxivTo]    = useState('');
   const [arxivMax,   setArxivMax]   = useState(100);
+  // durable historical import
+  const [historyCategories, setHistoryCategories] = useState('');
+  const [historyFromYear, setHistoryFromYear] = useState(2000);
+  const [historyToYear, setHistoryToYear] = useState(new Date().getFullYear());
+  const [historyJobs, setHistoryJobs] = useState<IngestJob[]>([]);
+  const [historyBusy, setHistoryBusy] = useState(false);
+  const [historyError, setHistoryError] = useState('');
+  const refreshedJobs = useRef(new Set<string>());
+
+  useEffect(() => {
+    if (tab !== 'history') return;
+    let disposed = false;
+    let timer: number | undefined;
+    const refreshJobs = async () => {
+      try {
+        const jobs = await apiListIngestJobs();
+        if (!disposed) {
+          setHistoryJobs(jobs);
+          const newlyCompleted = jobs.some(job => job.status === 'completed' && !refreshedJobs.current.has(job.id));
+          if (newlyCompleted) {
+            for (const job of jobs) if (job.status === 'completed') refreshedJobs.current.add(job.id);
+            void reloadPapers();
+          }
+        }
+      } catch (e) {
+        if (!disposed) setHistoryError(e instanceof Error ? e.message : 'Could not load import jobs.');
+      } finally {
+        if (!disposed) timer = window.setTimeout(refreshJobs, 4000);
+      }
+    };
+    void refreshJobs();
+    return () => {
+      disposed = true;
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [tab, reloadPapers]);
+
+  async function startHistoryImport() {
+    const categories = historyCategories.split(',').map(c => c.trim()).filter(Boolean);
+    if (categories.length === 0) {
+      setHistoryError('Enter one or more arXiv categories, such as cs.AI, cs.LG.');
+      return;
+    }
+    setHistoryBusy(true);
+    setHistoryError('');
+    try {
+      const job = await apiCreateArxivHistoryJob({ categories, fromYear: historyFromYear, toYear: historyToYear });
+      setHistoryJobs(prev => [job, ...prev.filter(j => j.id !== job.id)]);
+    } catch (e) {
+      setHistoryError(e instanceof Error ? e.message : 'Could not start the import.');
+    } finally {
+      setHistoryBusy(false);
+    }
+  }
+
+  async function controlHistoryJob(id: string, action: 'pause' | 'resume' | 'cancel') {
+    try {
+      const updated = await apiControlIngestJob(id, action);
+      setHistoryJobs(prev => prev.map(j => j.id === id ? updated : j));
+      setHistoryError('');
+    } catch (e) {
+      setHistoryError(e instanceof Error ? e.message : `Could not ${action} the job.`);
+    }
+  }
 
   function reset() {
     setBusy(false);
@@ -314,6 +384,7 @@ export default function ImportModal({ onClose }: Props) {
     { id: 'bulk',   label: 'Bulk paste',     icon: <FileText size={13} /> },
     { id: 'bibtex', label: 'BibTeX (.bib)',  icon: <FileUp size={13} /> },
     { id: 'arxiv',  label: 'From arXiv',     icon: <Search size={13} /> },
+    { id: 'history', label: 'History',        icon: <History size={13} /> },
     { id: 'upload', label: 'Upload PDF',     icon: <Upload size={13} /> },
   ];
 
@@ -331,12 +402,12 @@ export default function ImportModal({ onClose }: Props) {
         </div>
 
         {/* Tabs */}
-        <div className="flex gap-1 bg-slate-100 rounded-lg p-1 mb-5 w-fit">
+        <div className="flex gap-1 bg-slate-100 rounded-lg p-1 mb-5 w-fit max-w-full overflow-x-auto">
           {tabs.map(t => (
             <button
               key={t.id}
               onClick={() => { setTab(t.id); reset(); }}
-              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-md text-sm font-medium transition-all ${
+              className={`flex shrink-0 items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium transition-all ${
                 tab === t.id ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'
               }`}
             >
@@ -488,6 +559,160 @@ export default function ImportModal({ onClose }: Props) {
           </div>
         )}
 
+        {tab === 'history' && (
+          <div className="space-y-5">
+            <section className="rounded-xl border border-slate-200 bg-slate-50/70 p-4">
+              <div className="flex items-start gap-3 mb-4">
+                <div className="w-8 h-8 rounded-lg bg-slate-900 text-white flex items-center justify-center shrink-0">
+                  <History size={15} />
+                </div>
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-800">Build a historical arXiv library</h3>
+                  <p className="mt-1 text-xs text-slate-500 leading-relaxed">
+                    Runs on the server in monthly checkpoints. You can close this window; progress is saved and can be resumed.
+                    Metadata and abstracts are imported, while PDFs stay on-demand.
+                  </p>
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 mb-1.5">arXiv categories</label>
+                  <input
+                    value={historyCategories}
+                    onChange={e => setHistoryCategories(e.target.value)}
+                    list="history-arxiv-categories"
+                    placeholder="e.g. cs.AI, cs.LG, cs.CL"
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-400"
+                  />
+                  <datalist id="history-arxiv-categories">
+                    {COMMON_CATEGORIES.map(c => <option key={c} value={c} />)}
+                  </datalist>
+                  <p className="mt-1 text-[11px] text-slate-400">Comma-separated. Each category is deduplicated against your existing papers and other selected categories.</p>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-medium text-slate-600 mb-1.5">From year</label>
+                    <input
+                      type="number" min={2000} max={new Date().getFullYear()}
+                      value={historyFromYear}
+                      onChange={e => setHistoryFromYear(Number(e.target.value))}
+                      className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white text-sm tabular-nums focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-400"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-slate-600 mb-1.5">Through year</label>
+                    <input
+                      type="number" min={2000} max={new Date().getFullYear()}
+                      value={historyToYear}
+                      onChange={e => setHistoryToYear(Number(e.target.value))}
+                      className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white text-sm tabular-nums focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-400"
+                    />
+                  </div>
+                </div>
+
+                {storageMode !== 'server' ? (
+                  <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                    Switch to Server storage in Settings to import into your account library.
+                  </p>
+                ) : (
+                  <button
+                    onClick={() => void startHistoryImport()}
+                    disabled={historyBusy}
+                    className="inline-flex items-center gap-2 rounded-lg bg-slate-900 px-4 py-2 text-xs font-semibold text-white hover:bg-slate-800 disabled:opacity-50 transition-colors"
+                  >
+                    {historyBusy ? <Loader2 size={14} className="animate-spin" /> : <History size={14} />}
+                    Start background import
+                  </button>
+                )}
+              </div>
+            </section>
+
+            {historyError && (
+              <div className="px-3 py-2.5 rounded-lg bg-red-50 border border-red-200 text-sm text-red-700 flex items-start gap-2">
+                <AlertCircle size={15} className="shrink-0 mt-0.5" />
+                <span>{historyError}</span>
+              </div>
+            )}
+
+            <section>
+              <div className="flex items-baseline justify-between mb-2">
+                <h3 className="text-sm font-semibold text-slate-800">Import jobs</h3>
+                <span className="text-[11px] text-slate-400">Refreshes automatically</span>
+              </div>
+              {historyJobs.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-slate-200 px-4 py-7 text-center">
+                  <p className="text-xs text-slate-500">No historical imports yet.</p>
+                  <p className="text-[11px] text-slate-400 mt-1">Your job will keep running even after you close this dialog.</p>
+                </div>
+              ) : (
+                <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
+                  {historyJobs.map(job => {
+                    const percent = job.status === 'completed' ? 100
+                      : job.totalSlices > 0 ? Math.floor(100 * job.sliceIndex / job.totalSlices) : 0;
+                    const statusClass = job.status === 'completed' ? 'text-emerald-700 bg-emerald-50'
+                      : job.status === 'failed' ? 'text-red-700 bg-red-50'
+                      : job.status === 'paused' ? 'text-amber-700 bg-amber-50'
+                      : job.status === 'cancelled' ? 'text-slate-500 bg-slate-100'
+                      : 'text-blue-700 bg-blue-50';
+                    return (
+                      <article key={job.id} className="rounded-xl border border-slate-200 bg-white px-3.5 py-3">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs font-semibold text-slate-800 truncate">{job.config.categories.join(', ')}</span>
+                              <span className="text-[10px] text-slate-400 shrink-0">{job.config.fromYear}–{job.config.toYear}</span>
+                            </div>
+                            <p className="mt-1 text-[11px] text-slate-500">
+                              {job.status === 'completed' ? 'Complete'
+                                : job.status === 'failed' ? 'Stopped with an error'
+                                : job.status === 'cancelled' ? 'Cancelled'
+                                : job.currentSlice || (job.status === 'paused' ? 'Paused' : 'Waiting for worker')}
+                            </p>
+                          </div>
+                          <span className={`shrink-0 rounded-full px-2 py-1 text-[10px] font-semibold capitalize ${statusClass}`}>
+                            {job.status}
+                          </span>
+                        </div>
+                        <div className="mt-2.5 h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                          <div className={`h-full transition-all ${job.status === 'failed' ? 'bg-red-500' : 'bg-slate-800'}`} style={{ width: `${percent}%` }} />
+                        </div>
+                        <div className="mt-2 flex items-center justify-between gap-3">
+                          <p className="text-[10px] text-slate-400 tabular-nums">
+                            {job.sliceIndex.toLocaleString()} / {job.totalSlices.toLocaleString()} month windows
+                            {' · '}{job.papersAdded.toLocaleString()} added
+                            {' · '}{job.papersSkipped.toLocaleString()} already present
+                            {job.pageStart > 0 && ` · page offset ${job.pageStart.toLocaleString()}`}
+                          </p>
+                          <div className="flex items-center gap-1 shrink-0">
+                            {(job.status === 'running' || job.status === 'queued') && (
+                              <button onClick={() => void controlHistoryJob(job.id, 'pause')} title="Pause import" className="p-1.5 rounded-md text-slate-400 hover:text-slate-800 hover:bg-slate-100">
+                                <Pause size={13} />
+                              </button>
+                            )}
+                            {(job.status === 'paused' || job.status === 'failed') && (
+                              <button onClick={() => void controlHistoryJob(job.id, 'resume')} title="Resume import" className="p-1.5 rounded-md text-slate-400 hover:text-emerald-700 hover:bg-emerald-50">
+                                <Play size={13} />
+                              </button>
+                            )}
+                            {['queued', 'running', 'paused', 'failed'].includes(job.status) && (
+                              <button onClick={() => void controlHistoryJob(job.id, 'cancel')} title="Cancel import" className="p-1.5 rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50">
+                                <XCircle size={14} />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                        {job.error && <p className="mt-2 text-[11px] text-red-600 break-words">{job.error}</p>}
+                      </article>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
+          </div>
+        )}
+
         {tab === 'upload' && (
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-2">
@@ -624,16 +849,18 @@ export default function ImportModal({ onClose }: Props) {
         <div className="mt-6 flex gap-3 items-center">
           <div className="flex-1" />
           <button onClick={onClose} className="px-4 py-2.5 border border-slate-200 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors">
-            {result ? 'Done' : 'Cancel'}
+            {tab === 'history' ? 'Close' : result ? 'Done' : 'Cancel'}
           </button>
-          <button
-            onClick={tab === 'single' ? handleSingle : tab === 'bulk' ? handleBulk : tab === 'bibtex' ? handleBibtex : tab === 'arxiv' ? handleArxiv : handleUpload}
-            disabled={busy}
-            className="px-5 py-2.5 bg-blue-600 rounded-lg text-sm font-medium text-white hover:bg-blue-700 transition-colors disabled:opacity-50 flex items-center gap-2"
-          >
-            {busy ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
-            {busy ? 'Importing…' : 'Import'}
-          </button>
+          {tab !== 'history' && (
+            <button
+              onClick={tab === 'single' ? handleSingle : tab === 'bulk' ? handleBulk : tab === 'bibtex' ? handleBibtex : tab === 'arxiv' ? handleArxiv : handleUpload}
+              disabled={busy}
+              className="px-5 py-2.5 bg-blue-600 rounded-lg text-sm font-medium text-white hover:bg-blue-700 transition-colors disabled:opacity-50 flex items-center gap-2"
+            >
+              {busy ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
+              {busy ? 'Importing…' : 'Import'}
+            </button>
+          )}
         </div>
       </div>
     </div>

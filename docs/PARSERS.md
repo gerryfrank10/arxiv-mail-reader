@@ -11,6 +11,7 @@ what is supported now, and what is planned.
 | --- | --- | --- |
 | arXiv (digest emails) | IMAP → `parseArxivEmail` (`src/utils/emailParser.ts`) | Supported |
 | arXiv (id / URL import) | `src/utils/paperImport.ts`, `/api/arxiv-metadata*` | Supported |
+| arXiv (historical category imports) | `server/ingestion/sources/arxiv.mjs` + durable job worker | Supported; category/month checkpoints, year range from 2000 |
 | arXiv (abstracts) | `scripts/backfill-abstracts.mjs`, `/api/arxiv-abstract` | Supported |
 | BibTeX (`.bib`) | `src/utils/paperImport.ts` | Supported. Does not set `publisher` yet, so the badge falls back to the URL or "Unknown source" (planned: read `journal`/`booktitle`/`publisher` fields) |
 | Local PDF upload | `/api/db/papers/:id/upload` | Supported, publisher shown as "Local upload" |
@@ -33,10 +34,19 @@ header. The answer is computed in one place, `src/utils/publisher.ts`
 Parsers should therefore always set `publisher` when they know it. The URL
 heuristic is only a fallback.
 
-## Adapter contract
+## Historical source plugin contract (implemented)
 
-A source is a small adapter object. Each one answers four questions: does this
-input belong to me, how do I read it, how do I enrich it, and how is it named.
+Durable server-side sources use the plugin interface in
+`server/ingestion/registry.mjs`. See [INGESTION.md](INGESTION.md) for the full
+contract and job lifecycle. A source plans checkpointable work slices and
+fetches one page at a time; the shared worker commits each page together with
+its cursor.
+
+## Parser adapter contract (planned)
+
+A separate parser adapter will handle single IDs, URLs, and incoming mail. It
+will answer four questions: does this input belong to me, how do I read it,
+how do I enrich it, and how is it named.
 
 ```ts
 interface PaperSourceAdapter {
@@ -53,14 +63,16 @@ interface PaperSourceAdapter {
 }
 ```
 
-Rules every adapter must follow:
+Rules every parser adapter must follow:
 
 - **Set `publisher` and `source`.** `publisher` is the `label`. `source` stays
   one of `'email' | 'import' | 'upload'` (how it arrived, not where it was
   published).
-- **Keep the native id** in `arxivId`, or in `url` for sources without arXiv
-  ids. The DB unique key is `(user_id, arxiv_id)`, so a DOI-based source should
-  store a stable prefixed id such as `doi:10.1234/abcd`.
+- **Keep native identity.** For arXiv, set `arxivId` to its canonical id. The
+  current `Paper`/database model requires `arxivId` and uniquely keys on
+  `(user_id, arxiv_id)`. Do not permanently put a DOI into that field; a
+  non-arXiv source must wait for the generic `source_id`/`external_id` schema
+  migration described in [INGESTION.md](INGESTION.md).
 - **Abstract is required when available.** Abstracts shown on the feed come
   from `paper.abstract`. If a digest omits it, `fetchMetadata` fills it in
   later, the same way the arXiv backfill does.
@@ -113,9 +125,11 @@ the arXiv sender in `Settings.senderEmail`.
 
 ## Adding a source
 
-1. Add a file under `src/utils/sources/` (or a server module if it needs
-   secrets or a server-side fetch) implementing the contract above.
-2. Register it in the source list used by import and feed ingestion.
+1. For a durable history source, add a server plugin under
+   `server/ingestion/sources/` implementing the checkpointed source contract.
+   For one-off URL/email parsing, add a parser under `src/utils/sources/`.
+2. Register it in the relevant source registry and add its configuration to
+   the import/job UI.
 3. Add its host to `KNOWN` in `src/utils/publisher.ts` so the badge and colour
    are right even when `publisher` is missing.
 4. Add a fixture-based test next to the adapter (see

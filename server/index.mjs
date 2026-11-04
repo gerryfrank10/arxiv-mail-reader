@@ -10,6 +10,14 @@ import multer from 'multer';
 import 'dotenv/config';
 import { extractText as extractPdfTextRaw } from 'unpdf';
 import { detectOrganization } from './organizations.mjs';
+import {
+  ARXIV_CATEGORY_RE as ARXIV_CAT_RE,
+  extractArxivAbstract,
+  extractArxivMetadata,
+  parseArxivEntries as extractAllArxivMetadata,
+} from './ingestion/sources/arxiv.mjs';
+import { startIngestionWorker } from './ingestion/worker.mjs';
+import { getSourcePlugin } from './ingestion/registry.mjs';
 import { timingSafeEqual } from 'node:crypto';
 import { db } from './db.mjs';
 import { fetchSources, buildNewsQuery } from './sources.mjs';
@@ -112,80 +120,6 @@ function retryAfterMs(r) {
   if (!ra) return 0;
   const secs = Number(ra);
   return Number.isFinite(secs) ? Math.min(Math.max(secs, 0) * 1000, 60_000) : 0;
-}
-
-function decodeXmlText(s) {
-  return s
-    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"').replace(/&apos;/g, "'")
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function extractArxivAbstract(xml) {
-  const m = xml.match(/<entry[\s\S]*?<summary>([\s\S]*?)<\/summary>/);
-  return m ? decodeXmlText(m[1]) : null;
-}
-
-/**
- * Extract full paper metadata from arXiv Atom XML. Returns null when the
- * feed has no entry (e.g. unknown id), otherwise an object suitable for
- * direct JSON response.
- */
-// Parse a single <entry>…</entry> body into a metadata object.
-function parseArxivEntry(entry, fallbackId) {
-  const titleM     = entry.match(/<title>([\s\S]*?)<\/title>/);
-  const summaryM   = entry.match(/<summary>([\s\S]*?)<\/summary>/);
-  const publishedM = entry.match(/<published>([\s\S]*?)<\/published>/);
-  const updatedM   = entry.match(/<updated>([\s\S]*?)<\/updated>/);
-  const commentM   = entry.match(/<arxiv:comment[^>]*>([\s\S]*?)<\/arxiv:comment>/);
-  const idM        = entry.match(/<id>https?:\/\/arxiv\.org\/abs\/([^<\s]+)<\/id>/);
-  const authors = [];
-  const reAuthor = /<author>\s*<name>([\s\S]*?)<\/name>/g;
-  let am;
-  while ((am = reAuthor.exec(entry)) !== null) authors.push(decodeXmlText(am[1]));
-  const categories = [];
-  const reCat = /<category[^>]*term="([^"]+)"/g;
-  let cm;
-  while ((cm = reCat.exec(entry)) !== null) categories.push(cm[1]);
-
-  const published = publishedM ? publishedM[1].trim() : '';
-  const dateStr = published
-    ? new Date(published).toUTCString().replace(/^\w+, /, '').replace(/ GMT$/, '')
-    : (updatedM ? updatedM[1].trim() : '');
-
-  const arxivId = (idM ? idM[1] : fallbackId ?? '').replace(/v\d+$/, '');
-
-  return {
-    arxivId,
-    title:      titleM   ? decodeXmlText(titleM[1])   : '(untitled)',
-    abstract:   summaryM ? decodeXmlText(summaryM[1]) : '',
-    authorList: authors,
-    categories,
-    date:       dateStr,
-    published,
-    comments:   commentM ? decodeXmlText(commentM[1]) : '',
-  };
-}
-
-// Single-entry extractor (back-compat for the /api/arxiv-metadata route).
-function extractArxivMetadata(xml, requestedId) {
-  const entryMatch = xml.match(/<entry>([\s\S]*?)<\/entry>/);
-  if (!entryMatch) return null;
-  return parseArxivEntry(entryMatch[1], requestedId);
-}
-
-// Multi-entry extractor for batch queries (id_list with many ids).
-function extractAllArxivMetadata(xml) {
-  const out = [];
-  const re = /<entry>([\s\S]*?)<\/entry>/g;
-  let m;
-  while ((m = re.exec(xml)) !== null) {
-    const meta = parseArxivEntry(m[1], null);
-    // arXiv returns a placeholder error <entry> for unknown ids — skip those.
-    if (meta && meta.arxivId && meta.title !== 'Error') out.push(meta);
-  }
-  return out;
 }
 
 // Shared throttled arXiv GET with 429 retry/backoff. Serialised through
@@ -359,7 +293,6 @@ app.get('/api/arxiv-metadata-batch', async (req, res) => {
 });
 
 // Build an arXiv search_query from a mode + value (+ optional date window).
-const ARXIV_CAT_RE = /^[a-z][a-z-]*(\.[A-Za-z-]+)?$/; // cs.LG, math.AP, hep-th
 function buildArxivSearchQuery({ mode, value, from, to }) {
   const v = String(value).trim();
   const field = mode === 'category' ? `cat:${v}`
@@ -947,6 +880,43 @@ async function resolveRequestUser(req) {
 }
 
 app.get('/api/db/status', (_req, res) => res.json({ enabled: db.enabled }));
+
+// ---------- durable source ingestion jobs ----------
+app.get('/api/db/ingest/jobs', (req, res) => withUser(req, res, async (uid) => {
+  res.json({ jobs: await db.listIngestJobs(uid) });
+}));
+
+app.post('/api/db/ingest/jobs', (req, res) => {
+  const sourceId = String(req.body?.sourceId ?? 'arxiv');
+  const source = getSourcePlugin(sourceId);
+  if (!source) return res.status(400).json({ error: `Source plugin "${sourceId}" is not installed.` });
+  let planned;
+  try {
+    planned = source.plan(req.body ?? {});
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
+  }
+  return withUser(req, res, async (uid) => {
+    const job = await db.createIngestJob(uid, source.id, planned.config, planned.slices.length);
+    res.status(201).json({ job });
+  });
+});
+
+app.get('/api/db/ingest/jobs/:id', (req, res) => withUser(req, res, async (uid) => {
+  const job = await db.getIngestJob(uid, req.params.id);
+  if (!job) return res.status(404).json({ error: 'Import job not found.' });
+  res.json({ job });
+}));
+
+app.post('/api/db/ingest/jobs/:id/:action', (req, res) => withUser(req, res, async (uid) => {
+  const { action } = req.params;
+  if (!['pause', 'resume', 'cancel'].includes(action)) {
+    return res.status(400).json({ error: 'Action must be pause, resume, or cancel.' });
+  }
+  const job = await db.updateIngestJobState(uid, req.params.id, action);
+  if (!job) return res.status(404).json({ error: 'Import job not found.' });
+  res.json({ job });
+}));
 
 // ---------- accounts (email + password) ----------
 const LOGIN_WINDOW_MS = 5 * 60_000;
@@ -1896,6 +1866,9 @@ app.listen(PORT, async () => {
         console.error('[auth] seed account failed:', e.message);
       }
     }
+    const recoveredJobs = await db.recoverInterruptedIngestJobs();
+    if (recoveredJobs > 0) console.log(`[ingest] recovered ${recoveredJobs} interrupted job(s)`);
+    startIngestionWorker({ db, request: arxivSearchFetch });
   }
   startMagazineScheduler();
 });

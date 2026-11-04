@@ -375,6 +375,53 @@ export async function apiGetStats(): Promise<PaperStats> {
   return call<PaperStats>('/api/db/stats');
 }
 
+// ---------- durable source ingestion jobs ----------
+
+export type IngestJobStatus = 'queued' | 'running' | 'paused' | 'completed' | 'failed' | 'cancelled';
+
+export interface IngestJob {
+  id: string;
+  sourceId: string;
+  config: { categories: string[]; fromYear: number; toYear: number };
+  status: IngestJobStatus;
+  sliceIndex: number;
+  pageStart: number;
+  totalSlices: number;
+  currentSlice: string;
+  papersFound: number;
+  papersAdded: number;
+  papersSkipped: number;
+  error: string | null;
+  createdAt: number;
+  updatedAt: number;
+  completedAt: number | null;
+}
+
+export async function apiListIngestJobs(): Promise<IngestJob[]> {
+  const { jobs } = await call<{ jobs: IngestJob[] }>('/api/db/ingest/jobs');
+  return jobs ?? [];
+}
+
+export async function apiCreateArxivHistoryJob(config: {
+  categories: string[];
+  fromYear: number;
+  toYear: number;
+}): Promise<IngestJob> {
+  const { job } = await call<{ job: IngestJob }>('/api/db/ingest/jobs', {
+    method: 'POST',
+    body: JSON.stringify(config),
+  });
+  return job;
+}
+
+export async function apiControlIngestJob(id: string, action: 'pause' | 'resume' | 'cancel'): Promise<IngestJob> {
+  const { job } = await call<{ job: IngestJob }>(
+    `/api/db/ingest/jobs/${encodeURIComponent(id)}/${action}`,
+    { method: 'POST' },
+  );
+  return job;
+}
+
 export async function apiExistingArxivIds(arxivIds: string[]): Promise<string[]> {
   const { arxivIds: found } = await call<{ arxivIds: string[] }>('/api/db/papers/existing', {
     method: 'POST',

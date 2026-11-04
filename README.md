@@ -47,6 +47,8 @@ everything else is built on top.
 - arXiv is supported today. Other publishing sites (OpenReview, ACL Anthology,
   PMLR, bioRxiv, PubMed, DOI/URL import, …) are planned — see
   [docs/PARSERS.md](docs/PARSERS.md) for the parser contract and roadmap.
+- Long-running arXiv history pulls (category + year range from 2000) run as
+  resumable server jobs; see [docs/INGESTION.md](docs/INGESTION.md).
 
 **Login**
 - **Email + password** accounts stored in Postgres (scrypt hashes, 30-day

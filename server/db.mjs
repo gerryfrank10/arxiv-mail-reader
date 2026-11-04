@@ -88,6 +88,36 @@ export const db = {
           CREATE INDEX IF NOT EXISTS idx_paper_comments_user_paper
             ON paper_comments (user_id, paper_id, created_at)
         `);
+        await pool.query(`
+          CREATE TABLE IF NOT EXISTS ingest_jobs (
+            id               UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+            user_id          UUID         NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            source_id        TEXT         NOT NULL,
+            config           JSONB        NOT NULL,
+            status           TEXT         NOT NULL DEFAULT 'queued'
+                             CHECK (status IN ('queued','running','paused','completed','failed','cancelled')),
+            slice_index      INTEGER      NOT NULL DEFAULT 0,
+            page_start       INTEGER      NOT NULL DEFAULT 0,
+            total_slices     INTEGER      NOT NULL DEFAULT 0,
+            current_slice    TEXT         NOT NULL DEFAULT '',
+            papers_found     BIGINT       NOT NULL DEFAULT 0,
+            papers_added     BIGINT       NOT NULL DEFAULT 0,
+            papers_skipped   BIGINT       NOT NULL DEFAULT 0,
+            error            TEXT,
+            created_at       TIMESTAMPTZ  NOT NULL DEFAULT now(),
+            updated_at       TIMESTAMPTZ  NOT NULL DEFAULT now(),
+            completed_at     TIMESTAMPTZ
+          )
+        `);
+        await pool.query(`
+          CREATE INDEX IF NOT EXISTS idx_ingest_jobs_user_recent
+            ON ingest_jobs (user_id, created_at DESC)
+        `);
+        await pool.query(`
+          CREATE INDEX IF NOT EXISTS idx_ingest_jobs_worker
+            ON ingest_jobs (status, created_at ASC)
+            WHERE status IN ('queued','running')
+        `);
         return true;
       }
     } catch (e) {
@@ -378,6 +408,185 @@ export const db = {
       `UPDATE papers SET abstract=$3 WHERE user_id=$1 AND id=$2`,
       [userId, paperId, abstract],
     );
+  },
+
+  // ----- durable source ingestion jobs -----
+
+  async createIngestJob(userId, sourceId, config, totalSlices) {
+    const { rows } = await pool.query(
+      `INSERT INTO ingest_jobs (user_id, source_id, config, total_slices)
+       VALUES ($1,$2,$3,$4) RETURNING *`,
+      [userId, sourceId, config, totalSlices],
+    );
+    return rowToIngestJob(rows[0]);
+  },
+
+  async listIngestJobs(userId, limit = 20) {
+    const { rows } = await pool.query(
+      `SELECT * FROM ingest_jobs WHERE user_id=$1
+       ORDER BY created_at DESC LIMIT $2`,
+      [userId, Math.max(1, Math.min(100, Number(limit) || 20))],
+    );
+    return rows.map(rowToIngestJob);
+  },
+
+  async getIngestJob(userId, id) {
+    const { rows } = await pool.query(
+      `SELECT * FROM ingest_jobs WHERE user_id=$1 AND id=$2`,
+      [userId, id],
+    );
+    return rows[0] ? rowToIngestJob(rows[0]) : null;
+  },
+
+  async getIngestJobForWorker(id) {
+    const { rows } = await pool.query(`SELECT * FROM ingest_jobs WHERE id=$1`, [id]);
+    return rows[0] ? rowToIngestJob(rows[0]) : null;
+  },
+
+  async claimNextIngestJob() {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const { rows } = await client.query(
+        `SELECT * FROM ingest_jobs WHERE status='queued'
+         ORDER BY created_at ASC FOR UPDATE SKIP LOCKED LIMIT 1`,
+      );
+      if (!rows[0]) {
+        await client.query('COMMIT');
+        return null;
+      }
+      const result = await client.query(
+        `UPDATE ingest_jobs SET status='running', error=NULL, updated_at=now()
+         WHERE id=$1 RETURNING *`,
+        [rows[0].id],
+      );
+      await client.query('COMMIT');
+      return rowToIngestJob(result.rows[0]);
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  },
+
+  // Persist one source page and its cursor in the same transaction. On a
+  // restart the worker either sees both the papers and next cursor, or neither.
+  async commitIngestPage(jobId, papers, { sliceDone, nextStart, sliceLabel, totalSlices }) {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const locked = await client.query(
+        `SELECT status, slice_index FROM ingest_jobs WHERE id=$1 FOR UPDATE`,
+        [jobId],
+      );
+      if (!locked.rows[0] || ['cancelled', 'completed', 'failed'].includes(locked.rows[0].status)) {
+        await client.query('COMMIT');
+        return { inserted: 0, skipped: papers.length };
+      }
+
+      let inserted = 0;
+      if (papers.length) {
+        const params = [];
+        const values = papers.map(p => {
+          const b = params.length;
+          params.push(
+            p.id, p.userId, p.arxivId, p.title ?? '', p.authors ?? '', p.authorList ?? [], p.categories ?? [],
+            p.abstract ?? '', p.comments ?? '', p.url ?? '', p.pdfUrl ?? '', p.size ?? '', p.date ?? '',
+            p.emailId ?? '', p.digestSubject ?? '', p.digestDate ?? new Date().toISOString(), p.source ?? 'import',
+          );
+          return `($${b+1},$${b+2},$${b+3},$${b+4},$${b+5},$${b+6},$${b+7},$${b+8},$${b+9},$${b+10},$${b+11},$${b+12},$${b+13},$${b+14},$${b+15},$${b+16},$${b+17})`;
+        });
+        const result = await client.query(
+          `INSERT INTO papers (
+             id,user_id,arxiv_id,title,authors,author_list,categories,abstract,comments,
+             url,pdf_url,size,date,email_id,digest_subject,digest_date,source
+           ) VALUES ${values.join(',')}
+           ON CONFLICT DO NOTHING RETURNING id`,
+          params,
+        );
+        inserted = result.rowCount ?? 0;
+      }
+
+      const current = locked.rows[0];
+      const nextSliceIndex = Number(current.slice_index) + (sliceDone ? 1 : 0);
+      const finished = nextSliceIndex >= totalSlices;
+      await client.query(
+        `UPDATE ingest_jobs SET
+           slice_index=$2,
+           page_start=$3,
+           current_slice=$4,
+           papers_found=papers_found+$5,
+           papers_added=papers_added+$6,
+           papers_skipped=papers_skipped+$7,
+           total_slices=$8,
+           status=CASE WHEN $9 THEN 'completed' ELSE status END,
+           completed_at=CASE WHEN $9 THEN now() ELSE completed_at END,
+           updated_at=now()
+         WHERE id=$1`,
+        [
+          jobId,
+          nextSliceIndex,
+          sliceDone ? 0 : nextStart,
+          sliceLabel,
+          papers.length,
+          inserted,
+          papers.length - inserted,
+          totalSlices,
+          finished,
+        ],
+      );
+      await client.query('COMMIT');
+      return { inserted, skipped: papers.length - inserted };
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  },
+
+  async completeIngestJob(id) {
+    await pool.query(
+      `UPDATE ingest_jobs SET status='completed', completed_at=now(), updated_at=now()
+       WHERE id=$1 AND status='running'`,
+      [id],
+    );
+  },
+
+  async failIngestJob(id, message) {
+    await pool.query(
+      `UPDATE ingest_jobs SET status='failed', error=$2, updated_at=now()
+       WHERE id=$1 AND status='running'`,
+      [id, String(message ?? 'Import failed').slice(0, 2000)],
+    );
+  },
+
+  async updateIngestJobState(userId, id, action) {
+    const transitions = {
+      pause:   { from: ['queued', 'running'], to: 'paused' },
+      resume:  { from: ['paused', 'failed'], to: 'queued' },
+      cancel:  { from: ['queued', 'running', 'paused', 'failed'], to: 'cancelled' },
+    };
+    const transition = transitions[action];
+    if (!transition) return null;
+    const { rows } = await pool.query(
+      `UPDATE ingest_jobs SET status=$4, error=CASE WHEN $4='queued' THEN NULL ELSE error END,
+         updated_at=now()
+       WHERE user_id=$1 AND id=$2 AND status=ANY($3::text[])
+       RETURNING *`,
+      [userId, id, transition.from, transition.to],
+    );
+    if (rows[0]) return rowToIngestJob(rows[0]);
+    return this.getIngestJob(userId, id);
+  },
+
+  async recoverInterruptedIngestJobs() {
+    const result = await pool.query(
+      `UPDATE ingest_jobs SET status='queued', updated_at=now()
+       WHERE status='running'`,
+    );
+    return result.rowCount ?? 0;
   },
 
   async getPaper(userId, id) {
@@ -1382,6 +1591,27 @@ async function upsertPapersPerRow(client, userId, papers) {
     }
   }
   return { inserted, skipped };
+}
+
+function rowToIngestJob(r) {
+  return {
+    id: r.id,
+    userId: r.user_id,
+    sourceId: r.source_id,
+    config: r.config ?? {},
+    status: r.status,
+    sliceIndex: Number(r.slice_index ?? 0),
+    pageStart: Number(r.page_start ?? 0),
+    totalSlices: Number(r.total_slices ?? 0),
+    currentSlice: r.current_slice ?? '',
+    papersFound: Number(r.papers_found ?? 0),
+    papersAdded: Number(r.papers_added ?? 0),
+    papersSkipped: Number(r.papers_skipped ?? 0),
+    error: r.error ?? null,
+    createdAt: r.created_at ? new Date(r.created_at).getTime() : Date.now(),
+    updatedAt: r.updated_at ? new Date(r.updated_at).getTime() : Date.now(),
+    completedAt: r.completed_at ? new Date(r.completed_at).getTime() : null,
+  };
 }
 
 function rowToPaper(r) {
