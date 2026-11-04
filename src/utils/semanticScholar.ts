@@ -1,8 +1,9 @@
 import { S2Paper, S2AuthorProfile, Settings } from '../types';
+import { authHeaders } from './researchApi';
 
 // Pull the optional API key from settings so the server can use it for higher rate limits
 function headersFromSettings(settings?: Settings): HeadersInit {
-  const h: Record<string, string> = { Accept: 'application/json' };
+  const h: Record<string, string> = { ...(authHeaders() as Record<string, string>), Accept: 'application/json' };
   if (settings?.s2ApiKey) h['x-s2-api-key'] = settings.s2ApiKey;
   return h;
 }

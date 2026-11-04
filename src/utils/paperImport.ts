@@ -1,4 +1,5 @@
 import { Paper } from '../types';
+import { authHeaders } from './researchApi';
 
 // =========================================================================
 // arXiv ID extraction
@@ -58,7 +59,7 @@ interface ArxivMetadata {
  * not just the abstract.
  */
 export async function fetchArxivMetadata(arxivId: string, signal?: AbortSignal): Promise<ArxivMetadata> {
-  const resp = await fetch(`/api/arxiv-metadata?id=${encodeURIComponent(arxivId)}`, { signal });
+  const resp = await fetch(`/api/arxiv-metadata?id=${encodeURIComponent(arxivId)}`, { signal, headers: authHeaders() });
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({})) as { error?: string };
     throw new Error(err.error ?? `Failed to fetch ${arxivId} (HTTP ${resp.status})`);
@@ -108,7 +109,7 @@ export interface BatchMetadataResult {
 export async function fetchArxivMetadataBatch(arxivIds: string[], signal?: AbortSignal): Promise<BatchMetadataResult> {
   if (arxivIds.length === 0) return { results: {}, errors: {} };
   const url = `/api/arxiv-metadata-batch?ids=${encodeURIComponent(arxivIds.join(','))}`;
-  const resp = await fetch(url, { signal });
+  const resp = await fetch(url, { signal, headers: authHeaders() });
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({})) as { error?: string };
     throw new Error(err.error ?? `Batch fetch failed (HTTP ${resp.status})`);
@@ -143,7 +144,7 @@ export async function fetchArxivBySearch(
   const params = new URLSearchParams({ mode: p.mode, value: p.value, max: String(p.max ?? 100) });
   if (p.from) params.set('from', p.from);
   if (p.to)   params.set('to', p.to);
-  const resp = await fetch(`/api/arxiv-search?${params.toString()}`, { signal });
+  const resp = await fetch(`/api/arxiv-search?${params.toString()}`, { signal, headers: authHeaders() });
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({})) as { error?: string };
     throw new Error(err.error ?? `arXiv search failed (HTTP ${resp.status})`);

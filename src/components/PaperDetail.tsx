@@ -14,7 +14,7 @@ import PaperDiscoveryPanel from './PaperDiscoveryPanel';
 import CrossRefsPanel from './CrossRefsPanel';
 import SimilarPapersPanel from './SimilarPapersPanel';
 import { aiChat, hasAI, resolveAIConfig, providerLabel } from '../utils/aiProvider';
-import { paperFileUrl, cachePaperFile, getPaperFullText } from '../utils/researchApi';
+import { paperFileUrl, cachePaperFile, getPaperFullText, authHeaders } from '../utils/researchApi';
 import { ArrowLeft } from 'lucide-react';
 
 interface Props {
@@ -143,7 +143,7 @@ export default function PaperDetail({ paper }: Props) {
     const timeoutId = setTimeout(() => ctrl.abort(), 30_000);
     (async () => {
       try {
-        const resp = await fetch(`/api/arxiv-abstract?id=${encodeURIComponent(paper.arxivId)}`, { signal: ctrl.signal });
+        const resp = await fetch(`/api/arxiv-abstract?id=${encodeURIComponent(paper.arxivId)}`, { signal: ctrl.signal, headers: authHeaders() });
         if (cancelled) return;
         const data = await resp.json().catch(() => ({})) as { abstract?: string; error?: string; retryAfter?: number };
         if (!resp.ok || !data.abstract) {

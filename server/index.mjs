@@ -53,6 +53,30 @@ const PRESETS = {
   yahoo:   { host: 'imap.mail.yahoo.com',      port: 993 },
 };
 
+// ---------------------------- access control ----------------------------
+// Every API route needs a logged-in session, except the ones used to sign in
+// and to detect server health. /api/db routes run their own check in
+// withUser(); everything else (arXiv/S2/IMAP/AI/source proxies) is gated here
+// so anonymous visitors can't use this server as an open network proxy or
+// burn its third-party API quota. Local development without a database has no
+// accounts, so it stays open.
+const PUBLIC_APIS = new Set(['/api/health', '/api/presets', '/api/db/status']);
+
+app.use('/api', async (req, res, next) => {
+  if (req.method === 'OPTIONS') return next();
+  const path = req.originalUrl.split('?')[0];
+  if (PUBLIC_APIS.has(path)) return next();
+  if (path.startsWith('/api/auth/') || path.startsWith('/api/db/')) return next();
+  if (!db.enabled) return next();
+  try {
+    const who = await resolveRequestUser(req);
+    if (!who) return res.status(401).json({ error: 'Unauthorized — please sign in.' });
+    next();
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get('/api/presets', (_req, res) => res.json(PRESETS));
 app.get('/api/health',  (_req, res) => res.json({ ok: true }));
 
@@ -778,7 +802,6 @@ function resolveUpstreamBase(baseUrl) {
 // Browser → /api/ai/chat → upstream. Lets us avoid CORS on localhost (Ollama)
 // and on any OpenAI-compatible endpoint the user configures.
 app.post('/api/ai/chat', async (req, res) => {
-  if (!(await requireSession(req, res))) return;
   const { provider, baseUrl, apiKey, model, messages, maxTokens = 1024, temperature = 0.4 } = req.body || {};
   if (!baseUrl || !model || !Array.isArray(messages)) {
     return res.status(400).json({ error: 'baseUrl, model and messages are required' });
@@ -819,7 +842,6 @@ app.post('/api/ai/chat', async (req, res) => {
 });
 
 app.post('/api/fetch-imap-emails', async (req, res) => {
-  if (!(await requireSession(req, res))) return;
   const { host, port = 993, username, password, senderEmail, maxEmails = 30 } = req.body;
 
   if (!host || !username || !password || !senderEmail) {
@@ -921,19 +943,6 @@ async function resolveRequestUser(req) {
     }
   }
   return null;
-}
-
-// Routes that proxy to the network or handle credentials (IMAP, AI) must not
-// be usable by anonymous visitors. With no database there are no accounts, so
-// local development without DATABASE_URL stays open.
-async function requireSession(req, res) {
-  if (!db.enabled) return { id: null, email: null };
-  const who = await resolveRequestUser(req);
-  if (!who) {
-    res.status(401).json({ error: 'Unauthorized — please sign in.' });
-    return null;
-  }
-  return who;
 }
 
 app.get('/api/db/status', (_req, res) => res.json({ enabled: db.enabled }));
