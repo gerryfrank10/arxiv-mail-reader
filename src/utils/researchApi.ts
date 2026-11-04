@@ -461,6 +461,23 @@ export async function apiUpdatePaperAbstract(id: string, abstract: string): Prom
   });
 }
 
+/** Generate (once) and fetch a first-page embedded-image preview, if present. */
+export async function apiGetPaperThumbnail(paperId: string): Promise<{ hasImage: boolean; blob?: Blob }> {
+  const r = await fetch(`/api/db/papers/${encodeURIComponent(paperId)}/thumbnail`, {
+    method: 'POST',
+    headers: authHeaders(),
+  });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({})) as { error?: string };
+    throw new Error(err.error ?? `Preview request failed (HTTP ${r.status})`);
+  }
+  if ((r.headers.get('content-type') ?? '').toLowerCase().startsWith('image/')) {
+    return { hasImage: true, blob: await r.blob() };
+  }
+  const data = await r.json().catch(() => ({ hasImage: false })) as { hasImage?: boolean };
+  return { hasImage: !!data.hasImage };
+}
+
 // ---------- Paper comments ----------
 
 export async function apiGetPaperComments(paperId: string): Promise<PaperComment[]> {

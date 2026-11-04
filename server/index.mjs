@@ -18,9 +18,10 @@ import {
 } from './ingestion/sources/arxiv.mjs';
 import { startIngestionWorker } from './ingestion/worker.mjs';
 import { getSourcePlugin } from './ingestion/registry.mjs';
-import { timingSafeEqual } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { db } from './db.mjs';
 import { fetchSources, buildNewsQuery } from './sources.mjs';
+import { createFirstPageImageThumbnail } from './paperThumbnail.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -1432,6 +1433,7 @@ const extractionCooldown = new Map();
 // bulk warm-up and several open papers, parallel calls intermittently hang
 // forever and leave papers stuck as "text pending". Serialise the work.
 let extractionQueue = Promise.resolve();
+const thumbnailInFlight = new Map();
 function enqueueExtraction(fn) {
   const run = extractionQueue.then(fn);
   extractionQueue = run.then(() => {}, () => {});
@@ -1515,6 +1517,66 @@ function paperCachePath(req, paperId) {
   mkdirSync(dir, { recursive: true });
   return join(dir, `${paperId}.pdf`);
 }
+
+function paperThumbnailPath(userId, paperId) {
+  const dir = join(UPLOAD_ROOT, 'paper-thumbnails', String(userId));
+  mkdirSync(dir, { recursive: true });
+  const key = createHash('sha256').update(String(paperId)).digest('hex');
+  return join(dir, `${key}.jpg`);
+}
+
+async function generatePaperThumbnail(userId, paper, req) {
+  const meta = await db.getPaperThumbnail(userId, paper.id);
+  if (meta?.checked && !meta.hasImage) return null;
+  if (meta?.hasImage && meta.path && existsSync(meta.path)) return readFileSync(meta.path);
+
+  const cachedPath = resolvePaperFilePath(paper, req.get('x-user-email') || '');
+  let pdfBuffer;
+  if (cachedPath) {
+    pdfBuffer = readFileSync(cachedPath);
+  } else if (/^(\d{4}\.\d{4,5}|[a-z-]+(?:\.[a-z-]+)?\/\d{7})(v\d+)?$/i.test(String(paper.arxivId ?? ''))) {
+    // Reuse the shared PDF queue/rate limit. The PDF buffer is temporary: only
+    // the small extracted image is retained unless the user separately caches
+    // the whole PDF.
+    pdfBuffer = await enqueuePdfFetch(() => downloadArxivPdf(paper.arxivId));
+  } else {
+    await db.setPaperThumbnail(userId, paper.id, { path: null, hasImage: false });
+    return null;
+  }
+
+  const thumbnail = await enqueueExtraction(() => withTimeout(
+    createFirstPageImageThumbnail(pdfBuffer),
+    45_000,
+    'first-page image extraction timed out',
+  ));
+  if (!thumbnail) {
+    await db.setPaperThumbnail(userId, paper.id, { path: null, hasImage: false });
+    return null;
+  }
+
+  const path = paperThumbnailPath(userId, paper.id);
+  writeFileSync(path, thumbnail);
+  await db.setPaperThumbnail(userId, paper.id, { path, hasImage: true });
+  return thumbnail;
+}
+
+app.post('/api/db/papers/:id/thumbnail', (req, res) => withUser(req, res, async (uid) => {
+  const paper = await db.getPaper(uid, req.params.id);
+  if (!paper) return res.status(404).json({ error: 'paper not found' });
+  const key = `${uid}:${paper.id}`;
+  let pending = thumbnailInFlight.get(key);
+  if (!pending) {
+    pending = generatePaperThumbnail(uid, paper, req);
+    thumbnailInFlight.set(key, pending);
+    pending.finally(() => thumbnailInFlight.delete(key)).catch(() => {});
+  }
+  const thumbnail = await pending;
+  if (!thumbnail) return res.json({ hasImage: false });
+  res.status(200)
+    .type('image/jpeg')
+    .set('Cache-Control', 'private, max-age=86400')
+    .send(thumbnail);
+}));
 
 app.post('/api/db/papers/:id/cache-file', (req, res) => withUser(req, res, async (uid) => {
   const paper = await db.getPaper(uid, req.params.id);

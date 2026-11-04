@@ -5,9 +5,9 @@ import { computeAssessment, ASSESSMENT_BADGE } from '../utils/assessment';
 import { CATEGORY_COLORS_LIGHT } from '../utils/categories';
 import { computeAuthorStats, groupByVenue, detectVenue, type AuthorStat, type VenueGroup, FEATURED_AUTHORS } from '../utils/conferences';
 import { publisherOf } from '../utils/publisher';
-import { apiGetPaperComments, apiAddPaperComment, apiDeletePaperComment, apiGetCommentCounts, apiGetOrganizations } from '../utils/researchApi';
+import { apiGetPaperComments, apiAddPaperComment, apiDeletePaperComment, apiGetCommentCounts, apiGetOrganizations, apiGetPaperThumbnail } from '../utils/researchApi';
 import { format, formatDistanceToNow } from 'date-fns';
-import { BookOpen, Users, Presentation, ChevronRight, ArrowUpDown, Award, Rss, Heart, Bookmark, BookmarkCheck, MessageCircle, ExternalLink, Loader2 } from 'lucide-react';
+import { BookOpen, Users, Presentation, ChevronRight, ArrowUpDown, Award, Rss, Heart, Bookmark, BookmarkCheck, MessageCircle, ExternalLink, Loader2, Image as ImageIcon } from 'lucide-react';
 import { usePagination } from '../hooks/usePagination';
 import Pager from './Pager';
 import type { Paper, PaperComment } from '../types';
@@ -120,7 +120,7 @@ function localCommentsFor(paperId: string): PaperComment[] {
 }
 
 function FeedTab() {
-  const { papers, stats, readIds, setSelectedPaper, markRead, markUnread, storageMode } = usePapers();
+  const { papers, stats, readIds, setSelectedPaper, markRead, markUnread, storageMode, updatePaperMeta } = usePapers();
   const {
     isLiked, likePaper, unlikePaper, isSaved, savePaper, unsavePaper,
     likedCount, savedCount,
@@ -360,6 +360,8 @@ function FeedTab() {
                   <p className="mt-2.5 text-[12.5px] text-slate-400">No abstract yet. Open the paper to fetch it.</p>
                 )}
 
+                <PaperImagePreview paper={paper} storageMode={storageMode} updatePaperMeta={updatePaperMeta} />
+
                 {paper.categories.length > 0 && (
                   <div className="mt-2.5 flex flex-wrap gap-x-3 gap-y-1 font-mono text-[11px] text-slate-400">
                     {paper.categories.slice(0, 5).map(cat => <span key={cat}>{cat}</span>)}
@@ -434,6 +436,102 @@ function FeedTab() {
         </div>
       )}
       </section>
+    </div>
+  );
+}
+
+function PaperImagePreview({ paper, storageMode, updatePaperMeta }: {
+  paper: Paper;
+  storageMode: 'idb' | 'server';
+  updatePaperMeta: (id: string, patch: Partial<Paper>) => void;
+}) {
+  const hostRef = useRef<HTMLDivElement>(null);
+  const requested = useRef(false);
+  const [retry, setRetry] = useState(0);
+  const [state, setState] = useState<'idle' | 'loading' | 'image' | 'none' | 'error'>(
+    paper.thumbnailChecked && !paper.thumbnailAvailable ? 'none' : 'idle',
+  );
+  const [imageUrl, setImageUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (storageMode !== 'server' || (paper.thumbnailChecked && !paper.thumbnailAvailable)) {
+      if (paper.thumbnailChecked && !paper.thumbnailAvailable) setState('none');
+      return;
+    }
+    if (requested.current) return;
+    const host = hostRef.current;
+    if (!host) return;
+    let cancelled = false;
+
+    const load = async () => {
+      if (requested.current || cancelled) return;
+      requested.current = true;
+      setState('loading');
+      try {
+        const result = await apiGetPaperThumbnail(paper.id);
+        if (cancelled) return;
+        if (result.hasImage && result.blob) {
+          setImageUrl(URL.createObjectURL(result.blob));
+          setState('image');
+          updatePaperMeta(paper.id, { thumbnailChecked: true, thumbnailAvailable: true });
+        } else {
+          setState('none');
+          updatePaperMeta(paper.id, { thumbnailChecked: true, thumbnailAvailable: false });
+        }
+      } catch (e) {
+        if (cancelled) return;
+        setState('error');
+        console.warn(`[feed] first-page image preview failed for ${paper.arxivId}:`, e);
+      }
+    };
+
+    if (typeof IntersectionObserver === 'undefined') {
+      void load();
+      return () => { cancelled = true; };
+    }
+    const observer = new IntersectionObserver(entries => {
+      if (entries.some(entry => entry.isIntersecting)) {
+        observer.disconnect();
+        void load();
+      }
+    }, { rootMargin: '180px 0px' });
+    observer.observe(host);
+    return () => {
+      cancelled = true;
+      observer.disconnect();
+    };
+  }, [paper.id, paper.arxivId, paper.thumbnailChecked, paper.thumbnailAvailable, storageMode, retry, updatePaperMeta]);
+
+  useEffect(() => () => {
+    if (imageUrl) URL.revokeObjectURL(imageUrl);
+  }, [imageUrl]);
+
+  if (state === 'none' || storageMode !== 'server') return null;
+
+  return (
+    <div ref={hostRef} className="mt-3">
+      {state === 'image' && imageUrl ? (
+        <div className="overflow-hidden rounded-xl border border-[#e7e5df] bg-white">
+          <img
+            src={imageUrl}
+            alt={`Image from the first page of ${paper.title}`}
+            loading="lazy"
+            className="block w-full max-h-[420px] object-contain"
+          />
+          <p className="px-3 py-1.5 border-t border-[#eeede8] text-[10px] text-slate-400">First-page figure</p>
+        </div>
+      ) : state === 'loading' ? (
+        <div className="flex items-center gap-2 py-1 text-[11px] text-slate-400">
+          <Loader2 size={12} className="animate-spin" /> Checking first page for an image…
+        </div>
+      ) : state === 'error' ? (
+        <button
+          onClick={() => { requested.current = false; setRetry(n => n + 1); }}
+          className="inline-flex items-center gap-1.5 text-[11px] text-slate-400 hover:text-slate-700"
+        >
+          <ImageIcon size={12} /> Preview unavailable · retry
+        </button>
+      ) : null}
     </div>
   );
 }

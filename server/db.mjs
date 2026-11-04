@@ -42,7 +42,10 @@ export const db = {
             ADD COLUMN IF NOT EXISTS full_text_chars   integer,
             ADD COLUMN IF NOT EXISTS full_text_at      timestamptz,
             ADD COLUMN IF NOT EXISTS organization            text,
-            ADD COLUMN IF NOT EXISTS organization_checked_at timestamptz
+            ADD COLUMN IF NOT EXISTS organization_checked_at timestamptz,
+            ADD COLUMN IF NOT EXISTS thumbnail_path           text,
+            ADD COLUMN IF NOT EXISTS thumbnail_checked_at     timestamptz,
+            ADD COLUMN IF NOT EXISTS thumbnail_has_image      boolean
         `);
         await pool.query(`
           CREATE INDEX IF NOT EXISTS idx_papers_user_file
@@ -247,10 +250,12 @@ export const db = {
     const cols = `id, arxiv_id, title, authors, author_list, categories,
               abstract, comments, url, pdf_url, size, date, email_id,
               digest_subject, digest_date, source,
-              file_path, file_size, mime_type, original_filename, uploaded_at,
-              (full_text IS NOT NULL) AS has_full_text,
-              COALESCE(full_text_chars, 0) AS full_text_chars,
-              organization`;
+               file_path, file_size, mime_type, original_filename, uploaded_at,
+               (full_text IS NOT NULL) AS has_full_text,
+               COALESCE(full_text_chars, 0) AS full_text_chars,
+              organization,
+              (thumbnail_checked_at IS NOT NULL) AS thumbnail_checked,
+              COALESCE(thumbnail_has_image, false) AS thumbnail_has_image`;
     const lim = Math.trunc(Number(limit) || 0);
     const off = Math.max(0, Math.trunc(Number(offset) || 0));
 
@@ -612,7 +617,9 @@ export const db = {
               file_path, file_size, mime_type, original_filename, uploaded_at,
               (full_text IS NOT NULL) AS has_full_text,
               COALESCE(full_text_chars, 0) AS full_text_chars,
-              organization
+              organization,
+              (thumbnail_checked_at IS NOT NULL) AS thumbnail_checked,
+              COALESCE(thumbnail_has_image, false) AS thumbnail_has_image
        FROM papers WHERE user_id=$1 AND id=$2`,
       [userId, id],
     );
@@ -653,6 +660,29 @@ export const db = {
       [userId, id, body, chars, detectOrganization(body)],
     );
     return chars;
+  },
+
+  async getPaperThumbnail(userId, id) {
+    const { rows } = await pool.query(
+      `SELECT thumbnail_path, thumbnail_has_image,
+              (thumbnail_checked_at IS NOT NULL) AS checked
+       FROM papers WHERE user_id=$1 AND id=$2`,
+      [userId, id],
+    );
+    if (!rows[0]) return null;
+    return {
+      path: rows[0].thumbnail_path ?? null,
+      hasImage: !!rows[0].thumbnail_has_image,
+      checked: !!rows[0].checked,
+    };
+  },
+
+  async setPaperThumbnail(userId, id, { path, hasImage }) {
+    await pool.query(
+      `UPDATE papers SET thumbnail_path=$3, thumbnail_has_image=$4, thumbnail_checked_at=now()
+       WHERE user_id=$1 AND id=$2`,
+      [userId, id, path ?? null, !!hasImage],
+    );
   },
 
   // Organization lookups (company/lab from the PDF's first page). A paper is
@@ -1659,6 +1689,8 @@ function rowToPaper(r) {
     fullTextChars:    Number(r.full_text_chars ?? 0),
     // Company or lab from the PDF's affiliations (null = unknown / not read yet)
     organization:     r.organization ?? null,
+    thumbnailChecked: !!r.thumbnail_checked,
+    thumbnailAvailable: !!r.thumbnail_has_image,
   };
 }
 

@@ -33,6 +33,9 @@ export interface Paper {
   // Company or research lab that wrote the paper (e.g. "Google DeepMind"),
   // read from the PDF's affiliations. null = not known yet.
   organization?: string | null;
+  // First-page embedded image preview, generated lazily for feed-visible papers.
+  thumbnailChecked?: boolean;
+  thumbnailAvailable?: boolean;
 }
 
 // A user's own note/comment on a paper (dashboard feed).

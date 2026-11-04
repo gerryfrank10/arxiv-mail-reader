@@ -17,7 +17,9 @@ everything else is built on top.
 - **LaTeX rendering** — inline and display math via [KaTeX](https://katex.org/)
 - **Offline full text** — with server storage, a paper's PDF is downloaded once, stored in `uploads/papers/`, and its text is extracted into Postgres. Every later open is instant; no arxiv.org round-trip
 - **Search & filter** — full-text search, category and author filters, assessment filter
-- **Dashboard** — stats cards, category distribution, papers-over-time timeline
+- **Dashboard feed** — chronological paper posts with abstracts, likes,
+  comments, saves, and a lazy first-page image preview when a PDF contains an
+  embedded figure (cached without retaining the PDF just for the preview)
 
 **Library & discovery**
 - **Library** — bookmark papers into a personal collection
