@@ -1,11 +1,11 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { usePapers } from '../contexts/PapersContext';
 import { useLibrary } from '../contexts/LibraryContext';
 import { computeAssessment, ASSESSMENT_BADGE } from '../utils/assessment';
 import { CATEGORY_COLORS_LIGHT } from '../utils/categories';
 import { computeAuthorStats, groupByVenue, detectVenue, type AuthorStat, type VenueGroup, FEATURED_AUTHORS } from '../utils/conferences';
 import { publisherOf } from '../utils/publisher';
-import { apiGetPaperComments, apiAddPaperComment, apiDeletePaperComment, apiGetCommentCounts } from '../utils/researchApi';
+import { apiGetPaperComments, apiAddPaperComment, apiDeletePaperComment, apiGetCommentCounts, apiGetOrganizations } from '../utils/researchApi';
 import { format, formatDistanceToNow } from 'date-fns';
 import { BookOpen, Users, Presentation, ChevronRight, ArrowUpDown, Award, Rss, Heart, Bookmark, BookmarkCheck, MessageCircle, ExternalLink, Loader2 } from 'lucide-react';
 import { usePagination } from '../hooks/usePagination';
@@ -152,6 +152,32 @@ function FeedTab() {
   const pagination = usePagination(filtered, 25);
   const pageKey = pagination.slice.map(p => p.id).join(',');
 
+  // Companies/labs come from each paper's PDF, which the server reads in the
+  // background. Poll the visible page while some are still pending.
+  const [orgMap, setOrgMap] = useState<Record<string, string | null>>({});
+  const [orgTick, setOrgTick] = useState(0);
+  const orgPolls = useRef(0);
+  useEffect(() => { orgPolls.current = 0; setOrgTick(0); }, [pageKey]);
+  useEffect(() => {
+    if (storageMode !== 'server' || !pageKey) return;
+    let cancelled = false;
+    let timer: number | undefined;
+    apiGetOrganizations(pageKey.split(','))
+      .then(({ organizations, pending }) => {
+        if (cancelled) return;
+        setOrgMap(prev => ({ ...prev, ...organizations }));
+        if (pending.length > 0 && orgPolls.current < 12) {
+          orgPolls.current += 1;
+          timer = window.setTimeout(() => setOrgTick(t => t + 1), 15_000);
+        }
+      })
+      .catch(e => console.warn('[feed] organization lookup failed', e));
+    return () => {
+      cancelled = true;
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [pageKey, storageMode, orgTick]);
+
   useEffect(() => {
     if (!pageKey) return;
     let cancelled = false;
@@ -264,7 +290,11 @@ function FeedTab() {
             const abstract = paper.abstract?.trim() ?? '';
             const longAbstract = abstract.length > 280;
             const openHref = paper.url || (paper.arxivId ? `https://arxiv.org/abs/${paper.arxivId}` : '');
-            const handle = pub.key.replace(/[^a-z0-9]+/g, '');
+            // The company/lab is the headline when we know it; the venue
+            // (arXiv, OpenReview, …) moves to a small "via" note.
+            const org = orgMap[paper.id] !== undefined ? orgMap[paper.id] : (paper.organization ?? null);
+            const headline = org ?? pub.name;
+            const handle = headline.toLowerCase().replace(/[^a-z0-9]+/g, '');
 
             return (
               <article key={paper.id} className="group relative py-5 pl-5 pr-1 hover:bg-slate-50/70 transition-colors">
@@ -273,7 +303,7 @@ function FeedTab() {
 
                 {/* Header: publisher as handle */}
                 <header className="flex items-baseline gap-2 text-[13px]">
-                  <span className="font-semibold text-slate-900">{pub.name}</span>
+                  <span className="font-semibold text-slate-900">{headline}</span>
                   <span className="text-slate-400 truncate">@{handle || 'source'}</span>
                   <span className="text-slate-300">·</span>
                   <time
@@ -283,8 +313,11 @@ function FeedTab() {
                   >
                     {formatDistanceToNow(paper.digestDate, { addSuffix: false })}
                   </time>
-                  {paper.arxivId && (
-                    <span className="ml-auto font-mono text-[11px] text-slate-400 shrink-0">{paper.arxivId}</span>
+                  {(org || paper.arxivId) && (
+                    <span className="ml-auto flex items-baseline gap-2 font-mono text-[11px] text-slate-400 shrink-0">
+                      {org && <span className="font-sans">via {pub.name}</span>}
+                      {paper.arxivId && <span>{paper.arxivId}</span>}
+                    </span>
                   )}
                 </header>
 

@@ -415,6 +415,20 @@ export async function apiDeletePaperComment(commentId: string): Promise<void> {
   await call(`/api/db/comments/${encodeURIComponent(commentId)}`, { method: 'DELETE' });
 }
 
+// Returns organizations already known for these papers, and the ids the server
+// has queued to read from their PDFs (poll again later to pick those up).
+export async function apiGetOrganizations(paperIds: string[]): Promise<{
+  organizations: Record<string, string | null>;
+  pending: string[];
+}> {
+  if (paperIds.length === 0) return { organizations: {}, pending: [] };
+  const res = await call<{ organizations: Record<string, string | null>; pending: string[] }>(
+    '/api/db/organizations',
+    { method: 'POST', body: JSON.stringify({ ids: paperIds }) },
+  );
+  return { organizations: res.organizations ?? {}, pending: res.pending ?? [] };
+}
+
 export async function apiGetCommentCounts(paperIds: string[]): Promise<Record<string, number>> {
   if (paperIds.length === 0) return {};
   const { counts } = await call<{ counts: Record<string, number> }>(

@@ -8,6 +8,7 @@
 
 import pg from 'pg';
 import { hashPassword, verifyPassword, newSessionToken, hashSessionToken } from './auth.mjs';
+import { detectOrganization } from './organizations.mjs';
 
 const { Pool } = pg;
 
@@ -39,7 +40,9 @@ export const db = {
             ADD COLUMN IF NOT EXISTS uploaded_at       timestamptz,
             ADD COLUMN IF NOT EXISTS full_text         text,
             ADD COLUMN IF NOT EXISTS full_text_chars   integer,
-            ADD COLUMN IF NOT EXISTS full_text_at      timestamptz
+            ADD COLUMN IF NOT EXISTS full_text_at      timestamptz,
+            ADD COLUMN IF NOT EXISTS organization            text,
+            ADD COLUMN IF NOT EXISTS organization_checked_at timestamptz
         `);
         await pool.query(`
           CREATE INDEX IF NOT EXISTS idx_papers_user_file
@@ -214,7 +217,8 @@ export const db = {
               digest_subject, digest_date, source,
               file_path, file_size, mime_type, original_filename, uploaded_at,
               (full_text IS NOT NULL) AS has_full_text,
-              COALESCE(full_text_chars, 0) AS full_text_chars`;
+              COALESCE(full_text_chars, 0) AS full_text_chars,
+              organization`;
     const lim = Math.trunc(Number(limit) || 0);
     const off = Math.max(0, Math.trunc(Number(offset) || 0));
 
@@ -383,7 +387,8 @@ export const db = {
               digest_subject, digest_date, source,
               file_path, file_size, mime_type, original_filename, uploaded_at,
               (full_text IS NOT NULL) AS has_full_text,
-              COALESCE(full_text_chars, 0) AS full_text_chars
+              COALESCE(full_text_chars, 0) AS full_text_chars,
+              organization
        FROM papers WHERE user_id=$1 AND id=$2`,
       [userId, id],
     );
@@ -417,11 +422,39 @@ export const db = {
     const chars = body.length;
     await pool.query(
       `UPDATE papers
-       SET full_text=$3, full_text_chars=$4, full_text_at=now()
+       SET full_text=$3, full_text_chars=$4, full_text_at=now(),
+           organization=COALESCE(organization, $5),
+           organization_checked_at=COALESCE(organization_checked_at, now())
        WHERE user_id=$1 AND id=$2`,
-      [userId, id, body, chars],
+      [userId, id, body, chars, detectOrganization(body)],
     );
     return chars;
+  },
+
+  // Organization lookups (company/lab from the PDF's first page). A paper is
+  // "checked" once we've read its first page, even if no company was found, so
+  // it isn't downloaded again.
+  async getOrganizations(userId, ids) {
+    if (!Array.isArray(ids) || ids.length === 0) return [];
+    const { rows } = await pool.query(
+      `SELECT id, arxiv_id, organization, organization_checked_at
+       FROM papers WHERE user_id=$1 AND id = ANY($2::text[])`,
+      [userId, ids],
+    );
+    return rows.map(r => ({
+      id: r.id,
+      arxivId: r.arxiv_id,
+      organization: r.organization ?? null,
+      checked: !!r.organization_checked_at,
+    }));
+  },
+
+  async setOrganization(userId, id, organization) {
+    await pool.query(
+      `UPDATE papers SET organization=$3, organization_checked_at=now()
+       WHERE user_id=$1 AND id=$2`,
+      [userId, id, organization ?? null],
+    );
   },
 
   async getPaperFullText(userId, id) {
@@ -1378,6 +1411,8 @@ function rowToPaper(r) {
     // Extracted full text lives in the DB, but only as a flag in list payloads
     hasFullText:      !!r.has_full_text,
     fullTextChars:    Number(r.full_text_chars ?? 0),
+    // Company or lab from the PDF's affiliations (null = unknown / not read yet)
+    organization:     r.organization ?? null,
   };
 }
 

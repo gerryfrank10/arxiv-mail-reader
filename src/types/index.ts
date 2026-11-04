@@ -30,6 +30,9 @@ export interface Paper {
   // Importers set this when they know it; otherwise publisherOf() infers it
   // from the URL/arxiv id. Kept optional for backward compatibility.
   publisher?: string;
+  // Company or research lab that wrote the paper (e.g. "Google DeepMind"),
+  // read from the PDF's affiliations. null = not known yet.
+  organization?: string | null;
 }
 
 // A user's own note/comment on a paper (dashboard feed).

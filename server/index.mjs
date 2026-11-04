@@ -9,6 +9,7 @@ import { mkdirSync, unlinkSync, existsSync, statSync, writeFileSync, readFileSyn
 import multer from 'multer';
 import 'dotenv/config';
 import { extractText as extractPdfTextRaw } from 'unpdf';
+import { detectOrganization } from './organizations.mjs';
 import { timingSafeEqual } from 'node:crypto';
 import { db } from './db.mjs';
 import { fetchSources, buildNewsQuery } from './sources.mjs';
@@ -1082,6 +1083,53 @@ app.delete('/api/db/comments/:id', (req, res) => withUser(req, res, async (uid) 
 }));
 app.post('/api/db/comments/counts', (req, res) => withUser(req, res, async (uid) => {
   res.json({ counts: await db.getCommentCounts(uid, req.body.ids ?? []) });
+}));
+
+// ---------- organization lookup (company / lab per paper) ----------
+// arXiv metadata has no affiliations, so the company behind a paper is read
+// from the first page of its PDF, one paper at a time through the same
+// politeness queue as PDF caching. Results are stored, so each paper is read
+// once. The feed polls this for the papers on screen.
+const orgInFlight = new Set();
+
+function resolveOrganizations(userId, rows) {
+  for (const row of rows) {
+    const key = `${userId}:${row.id}`;
+    if (orgInFlight.has(key)) continue;
+    const bare = String(row.arxivId ?? '').trim().replace(/v\d+$/i, '');
+    if (!/^(\d{4}\.\d{4,5}|[a-z-]+(\.[A-Z]{2})?\/\d{7})$/i.test(bare)) {
+      // Not an arXiv id (local upload, malformed import): nothing to read.
+      db.setOrganization(userId, row.id, null).catch(() => {});
+      continue;
+    }
+    orgInFlight.add(key);
+    enqueuePdfFetch(async () => {
+      try {
+        const buf = await downloadArxivPdf(bare);
+        const text = await withTimeout(extractPaperText(buf), 45_000, 'organization read timed out');
+        await db.setOrganization(userId, row.id, detectOrganization(text));
+      } catch (e) {
+        // Mark it checked so a broken PDF isn't retried on every poll.
+        console.warn(`[organizations] ${bare}: ${e.message}`);
+        await db.setOrganization(userId, row.id, null).catch(() => {});
+      } finally {
+        orgInFlight.delete(key);
+      }
+    });
+  }
+}
+
+app.post('/api/db/organizations', (req, res) => withUser(req, res, async (uid) => {
+  const ids = (Array.isArray(req.body.ids) ? req.body.ids : []).slice(0, 100).map(String);
+  const rows = await db.getOrganizations(uid, ids);
+  const organizations = {};
+  const pending = [];
+  for (const r of rows) {
+    if (r.checked) organizations[r.id] = r.organization;
+    else pending.push(r);
+  }
+  resolveOrganizations(uid, pending);
+  res.json({ organizations, pending: pending.map(r => r.id) });
 }));
 
 // library
