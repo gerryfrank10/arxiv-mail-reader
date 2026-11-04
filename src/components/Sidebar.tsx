@@ -55,7 +55,7 @@ export default function Sidebar({ activeView }: Props) {
 
 function InboxPane() {
   const {
-    filteredPapers, papers, loading, progress, error,
+    filteredPapers, papers, totalPapers, loading, progress, error,
     setSelectedPaper,
     searchQuery, setSearchQuery,
     selectedCategory, setSelectedCategory,
@@ -106,7 +106,12 @@ function InboxPane() {
 
   return (
     <>
-      <PaneHeader title="Inbox" subtitle={lastSynced ? `synced ${formatDistanceToNow(lastSynced, { addSuffix: true })}` : 'never synced'} />
+      <PaneHeader
+        title="Inbox"
+        subtitle={lastSynced
+          ? `synced ${formatDistanceToNow(lastSynced, { addSuffix: true })}`
+          : totalPapers > 0 ? `${totalPapers.toLocaleString()} papers indexed` : 'not synced yet'}
+      />
 
       {loading && (
         <div className="h-0.5 bg-slate-800">

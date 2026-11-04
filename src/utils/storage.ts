@@ -26,7 +26,11 @@ const MODE_KEY = 'arxiv_storage_mode';
 const STORAGE_MODE_EVENT = 'arxiv-storage-mode-changed';
 
 export function getStorageMode(): StorageMode {
-  return localStorage.getItem(MODE_KEY) === 'server' ? 'server' : 'idb';
+  // Signed-in accounts have a server-side library. Use it on a fresh browser
+  // unless the user has explicitly chosen a mode; otherwise a new login looks
+  // like an empty inbox even though the account already has papers in Postgres.
+  const saved = localStorage.getItem(MODE_KEY);
+  return saved === 'idb' ? 'idb' : 'server';
 }
 
 export function setStorageMode(mode: StorageMode): void {

@@ -39,40 +39,45 @@ export default function Dashboard() {
   }
 
   return (
-    <div className="h-full overflow-y-auto main-scroll bg-slate-50">
+    <div className="h-full overflow-y-auto main-scroll bg-[#f6f6f3]">
       {/* ── Page header with tabs ── */}
-      <div className="bg-white border-b border-slate-200 px-8 pt-6 pb-0">
-        <div className="max-w-3xl mx-auto">
-          <div className="flex items-start justify-between mb-4">
-            <div>
-              <h1 className="text-2xl font-bold text-slate-900">Research Feed</h1>
-              <p className="text-sm text-slate-500 mt-0.5">
-                Latest papers from every source you follow
-                {stats && (
-                  <span className="text-slate-400">
-                    {' · '}
-                    {(stats.total - readIds.size).toLocaleString()} unread
-                    {' · '}{stats.saved.toLocaleString()} saved
-                  </span>
-                )}
+      <div className="bg-white border-b border-[#e8e6e0] px-5 pt-7">
+        <div className="max-w-[780px] mx-auto">
+          <div className="flex items-end justify-between gap-6 pb-5">
+            <div className="min-w-0">
+              <p className="text-[10px] font-semibold tracking-[0.18em] uppercase text-slate-400 mb-2">Your research desk</p>
+              <h1 className="font-serif text-[32px] leading-none tracking-tight text-slate-900">Research feed</h1>
+              <p className="mt-2 text-[13px] text-slate-500">
+                New work from your sources
+                {stats && <span className="text-slate-400"> · {(stats.total - readIds.size).toLocaleString()} to review</span>}
               </p>
             </div>
-            {/* Tab bar */}
-            <div className="flex gap-1 bg-slate-100 rounded-lg p-1">
-              {TABS.map(t => (
-                <button
-                  key={t.value}
-                  onClick={() => setTab(t.value)}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
-                    tab === t.value ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'
-                  }`}
-                >
-                  {t.icon}
-                  {t.label}
-                </button>
-              ))}
-            </div>
+            {stats && (
+              <div className="hidden sm:block text-right shrink-0 pb-0.5">
+                <p className="font-serif text-[24px] leading-none tabular-nums text-slate-800">{stats.total.toLocaleString()}</p>
+                <p className="mt-1.5 text-[9px] font-semibold uppercase tracking-[0.16em] text-slate-400">papers collected</p>
+              </div>
+            )}
           </div>
+
+          <nav className="flex items-center gap-7 border-t border-[#efeee9]" aria-label="Dashboard sections">
+            {TABS.map(t => (
+              <button
+                key={t.value}
+                onClick={() => setTab(t.value)}
+                aria-current={tab === t.value ? 'page' : undefined}
+                className={`relative flex items-center gap-2 py-3 text-[12px] transition-colors ${
+                  tab === t.value
+                    ? 'font-semibold text-slate-900'
+                    : 'font-medium text-slate-400 hover:text-slate-700'
+                }`}
+              >
+                {t.icon}
+                {t.label}
+                {tab === t.value && <span className="absolute inset-x-0 bottom-0 h-[2px] bg-slate-900" />}
+              </button>
+            ))}
+          </nav>
         </div>
       </div>
 
@@ -222,22 +227,23 @@ function FeedTab() {
   });
 
   return (
-    <div className="max-w-[640px] mx-auto px-4 py-6">
+    <div className="max-w-[780px] mx-auto px-5 sm:px-0 py-6">
+      <section className="overflow-hidden rounded-xl border border-[#e7e5df] bg-white shadow-[0_1px_2px_rgba(25,25,20,0.04)]">
       {/* Filter tabs */}
-      <div className="flex items-end gap-5 border-b border-slate-200 mb-2">
+      <div className="flex items-end gap-6 border-b border-[#eeede8] px-5 pt-4">
         {filters.map(f => {
           const active = filter === f.value;
           return (
             <button
               key={f.value}
               onClick={() => setFilter(f.value)}
-              className={`relative pb-2.5 text-[13px] font-medium transition-colors ${
-                active ? 'text-slate-900' : 'text-slate-400 hover:text-slate-600'
+              className={`relative pb-3 text-[12px] transition-colors ${
+                active ? 'font-semibold text-slate-900' : 'font-medium text-slate-500 hover:text-slate-800'
               }`}
             >
               {f.label}
-              <span className="ml-1.5 text-[11px] tabular-nums text-slate-400">{f.count.toLocaleString()}</span>
-              {active && <span className="absolute left-0 right-0 -bottom-px h-[2px] bg-slate-900 rounded-full" />}
+              <span className={`ml-1.5 text-[10px] tabular-nums ${active ? 'text-slate-500' : 'text-slate-400'}`}>{f.count.toLocaleString()}</span>
+              {active && <span className="absolute left-0 right-0 -bottom-px h-[2px] bg-slate-900" />}
             </button>
           );
         })}
@@ -245,10 +251,10 @@ function FeedTab() {
 
       {/* Category filter */}
       {catCounts.length > 0 && (
-        <div className="flex items-center gap-3 overflow-x-auto hide-scrollbar py-3 text-[12px]">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-[#eeede8] px-5 py-3 text-[11px]">
           <button
             onClick={() => setCategory('')}
-            className={`shrink-0 ${!category ? 'text-slate-900 font-semibold' : 'text-slate-400 hover:text-slate-600'}`}
+            className={`shrink-0 ${!category ? 'text-slate-900 font-semibold' : 'text-slate-500 hover:text-slate-800'}`}
           >
             Everything
           </button>
@@ -258,7 +264,7 @@ function FeedTab() {
               <button
                 key={cat}
                 onClick={() => setCategory(active ? '' : cat)}
-                className={`shrink-0 font-mono ${active ? 'text-slate-900 font-semibold underline underline-offset-4 decoration-2' : 'text-slate-400 hover:text-slate-600'}`}
+                className={`shrink-0 font-mono ${active ? 'text-slate-900 font-semibold underline underline-offset-4 decoration-2' : 'text-slate-500 hover:text-slate-800'}`}
               >
                 {cat}
               </button>
@@ -269,16 +275,17 @@ function FeedTab() {
 
       {/* Stream */}
       {filtered.length === 0 ? (
-        <div className="py-20 text-center">
-          <p className="text-[13px] text-slate-400">
+        <div className="py-20 px-6 text-center">
+          <p className="font-serif text-xl text-slate-700">
             {filter === 'unread' ? 'Nothing unread. You are caught up.'
               : filter === 'liked' ? 'No liked papers yet.'
               : filter === 'saved' ? 'Nothing saved yet.'
               : 'No papers match this filter.'}
           </p>
+          <p className="mt-2 text-[12px] text-slate-500">Try another view or clear the category filter.</p>
         </div>
       ) : (
-        <div className="divide-y divide-slate-200 border-t border-slate-200">
+        <div className="divide-y divide-[#eeede8]">
           {pagination.slice.map(paper => {
             const pub = publisherOf(paper);
             const read = readIds.has(paper.id);
@@ -294,28 +301,26 @@ function FeedTab() {
             // (arXiv, OpenReview, …) moves to a small "via" note.
             const org = orgMap[paper.id] !== undefined ? orgMap[paper.id] : (paper.organization ?? null);
             const headline = org ?? pub.name;
-            const handle = headline.toLowerCase().replace(/[^a-z0-9]+/g, '');
 
             return (
-              <article key={paper.id} className="group relative py-5 pl-5 pr-1 hover:bg-slate-50/70 transition-colors">
+              <article key={paper.id} className="group relative px-5 sm:px-6 py-5 hover:bg-[#fcfcfa] transition-colors">
                 {/* Unread marker */}
-                {!read && <span className="absolute left-1.5 top-7 w-1.5 h-1.5 rounded-full bg-blue-500" title="Unread" />}
+                {!read && <span className="absolute left-2 top-7 w-1.5 h-1.5 rounded-full bg-blue-600" title="Unread" />}
 
-                {/* Header: publisher as handle */}
-                <header className="flex items-baseline gap-2 text-[13px]">
-                  <span className="font-semibold text-slate-900">{headline}</span>
-                  <span className="text-slate-400 truncate">@{handle || 'source'}</span>
-                  <span className="text-slate-300">·</span>
+                {/* Source and provenance */}
+                <header className="flex items-center gap-2 text-[12px] min-w-0">
+                  <span className="font-semibold text-slate-900 truncate">{headline}</span>
+                  {org && <span className="text-slate-400 shrink-0">via {pub.name}</span>}
+                  <span className="text-slate-300 shrink-0">·</span>
                   <time
                     dateTime={paper.digestDate.toISOString()}
                     title={format(paper.digestDate, 'PPpp')}
-                    className="text-slate-400 whitespace-nowrap"
+                    className="text-slate-500 whitespace-nowrap"
                   >
-                    {formatDistanceToNow(paper.digestDate, { addSuffix: false })}
+                    {formatDistanceToNow(paper.digestDate, { addSuffix: false }).replace(/^about /, '').replace(/^less than a minute$/, 'now')}
                   </time>
                   {(org || paper.arxivId) && (
-                    <span className="ml-auto flex items-baseline gap-2 font-mono text-[11px] text-slate-400 shrink-0">
-                      {org && <span className="font-sans">via {pub.name}</span>}
+                    <span className="ml-auto flex items-baseline gap-2 font-mono text-[10px] text-slate-400 shrink-0">
                       {paper.arxivId && <span>{paper.arxivId}</span>}
                     </span>
                   )}
@@ -326,20 +331,20 @@ function FeedTab() {
                   onClick={() => { markRead(paper.id); setSelectedPaper(paper); }}
                   className="block text-left mt-1.5 w-full"
                 >
-                  <h3 className={`text-[16px] leading-snug group-hover:underline decoration-slate-300 underline-offset-2 ${
-                    read ? 'font-medium text-slate-700' : 'font-semibold text-slate-900'
+                  <h3 className={`text-[17px] leading-[1.35] tracking-[-0.015em] group-hover:underline decoration-slate-300 underline-offset-2 ${
+                    read ? 'font-medium text-slate-700' : 'font-semibold text-slate-950'
                   }`}>
                     {paper.title}
                   </h3>
                 </button>
-                <p className="mt-0.5 text-[12.5px] text-slate-500 truncate">
+                <p className="mt-1 text-[12px] text-slate-500 truncate">
                   {paper.authors || paper.authorList.join(', ')}
                 </p>
 
                 {/* Abstract */}
                 {abstract ? (
                   <div className="mt-2.5">
-                    <p className={`text-[14px] leading-[1.65] text-slate-600 ${expanded ? '' : 'line-clamp-3'}`}>
+                    <p className={`text-[14px] leading-[1.7] text-slate-600 ${expanded ? '' : 'line-clamp-3'}`}>
                       {abstract}
                     </p>
                     {longAbstract && (
@@ -362,7 +367,7 @@ function FeedTab() {
                 )}
 
                 {/* Actions */}
-                <div className="mt-3 flex items-center gap-6 text-[12px] text-slate-400">
+                <div className="mt-4 flex items-center gap-6 text-[12px] text-slate-500">
                   <button
                     onClick={() => (liked ? unlikePaper(paper.id) : likePaper(paper))}
                     className={`flex items-center gap-1.5 transition-colors ${liked ? 'text-rose-600' : 'hover:text-rose-600'}`}
@@ -390,7 +395,7 @@ function FeedTab() {
                   <div className="ml-auto flex items-center gap-4">
                     <button
                       onClick={() => (read ? markUnread(paper.id) : markRead(paper.id))}
-                      className="hover:text-slate-700"
+                      className="hover:text-slate-950"
                       title={read ? 'Mark as unread' : 'Mark as read'}
                     >
                       {read ? 'Mark unread' : 'Mark read'}
@@ -401,7 +406,7 @@ function FeedTab() {
                         target="_blank"
                         rel="noreferrer"
                         onClick={() => markRead(paper.id)}
-                        className="flex items-center gap-1 hover:text-slate-700"
+                        className="flex items-center gap-1 hover:text-slate-950"
                         title={`Open on ${pub.name}`}
                       >
                         <ExternalLink size={13} />
@@ -424,10 +429,11 @@ function FeedTab() {
       )}
 
       {filtered.length > 0 && (
-        <div className="mt-6">
+        <div className="border-t border-[#eeede8]">
           <Pager pagination={pagination} variant="light" size="sm" label="papers" pageSizes={[25, 50, 100]} />
         </div>
       )}
+      </section>
     </div>
   );
 }
