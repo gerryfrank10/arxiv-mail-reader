@@ -140,10 +140,19 @@ async function arxivGetWithRetry(url) {
   const isRetryable = (status) => status === 429 || status >= 500;
   let lastErr;
   let pendingBackoff = 0;
+  let lastStatus = null;
+  let finalRetryAfterMs = 0;
+  const retryDelaysMs = [];
+  const retryDelaySources = [];
+  let attempts = 0;
   for (let attempt = 0; attempt <= BACKOFFS.length; attempt++) {
+    attempts = attempt + 1;
     if (attempt > 0) {
+      const usedRetryAfter = pendingBackoff > 0;
       const backoff = pendingBackoff || BACKOFFS[attempt - 1];
       console.warn(`[arxiv] ${lastErr?.message ?? 'transient error'} — backing off ${backoff}ms (retry ${attempt}/${BACKOFFS.length})`);
+      retryDelaysMs.push(backoff);
+      retryDelaySources.push(usedRetryAfter ? 'Retry-After header' : 'configured exponential backoff');
       await new Promise(r => setTimeout(r, backoff));
       pendingBackoff = 0;
     }
@@ -160,12 +169,21 @@ async function arxivGetWithRetry(url) {
     }
     const text = await r.text();
     if (r.status === 200) return text;
+    lastStatus = r.status;
     lastErr = new Error(`arXiv ${r.status}`);
     if (!isRetryable(r.status)) break;
     // Prefer the server's Retry-After when it tells us how long to wait.
     pendingBackoff = retryAfterMs(r);
+    finalRetryAfterMs = pendingBackoff;
   }
-  throw lastErr ?? new Error('arXiv request failed');
+  const error = new Error(lastStatus ? `arXiv returned HTTP ${lastStatus}.` : (lastErr?.message ?? 'arXiv request failed.'));
+  error.provider = 'arXiv';
+  error.status = lastStatus;
+  error.attempts = attempts;
+  error.retryDelaysMs = retryDelaysMs;
+  error.retryDelaySources = retryDelaySources;
+  error.retryAfterMs = finalRetryAfterMs;
+  throw error;
 }
 
 // Throttled arXiv *search* query (the search_query API, not id_list). Same
@@ -915,6 +933,13 @@ app.post('/api/db/ingest/jobs/:id/:action', (req, res) => withUser(req, res, asy
   }
   const job = await db.updateIngestJobState(uid, req.params.id, action);
   if (!job) return res.status(404).json({ error: 'Import job not found.' });
+  if (action === 'resume' && job.status === 'failed' && job.errorDetails?.resumeAfter) {
+    const resumeAfter = Date.parse(job.errorDetails.resumeAfter);
+    if (Number.isFinite(resumeAfter) && resumeAfter > Date.now()) {
+      const waitMinutes = Math.ceil((resumeAfter - Date.now()) / 60_000);
+      return res.status(429).json({ error: `This rate-limited job can be resumed in about ${waitMinutes} minute${waitMinutes === 1 ? '' : 's'}.` });
+    }
+  }
   res.json({ job });
 }));
 

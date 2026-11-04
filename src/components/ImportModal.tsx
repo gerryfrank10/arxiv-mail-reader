@@ -560,8 +560,8 @@ export default function ImportModal({ onClose }: Props) {
         )}
 
         {tab === 'history' && (
-          <div className="space-y-5">
-            <section className="rounded-xl border border-slate-200 bg-slate-50/70 p-4">
+          <div className="flex flex-col gap-5">
+            <section className="order-2 rounded-xl border border-slate-200 bg-slate-50/70 p-4">
               <div className="flex items-start gap-3 mb-4">
                 <div className="w-8 h-8 rounded-lg bg-slate-900 text-white flex items-center justify-center shrink-0">
                   <History size={15} />
@@ -636,7 +636,7 @@ export default function ImportModal({ onClose }: Props) {
               </div>
             )}
 
-            <section>
+            <section className="order-1">
               <div className="flex items-baseline justify-between mb-2">
                 <h3 className="text-sm font-semibold text-slate-800">Import jobs</h3>
                 <span className="text-[11px] text-slate-400">Refreshes automatically</span>
@@ -647,10 +647,28 @@ export default function ImportModal({ onClose }: Props) {
                   <p className="text-[11px] text-slate-400 mt-1">Your job will keep running even after you close this dialog.</p>
                 </div>
               ) : (
-                <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
+                <div className="space-y-2 pr-1">
                   {historyJobs.map(job => {
                     const percent = job.status === 'completed' ? 100
                       : job.totalSlices > 0 ? Math.floor(100 * job.sliceIndex / job.totalSlices) : 0;
+                    const rateLimited = job.errorDetails?.status === 429 || /\b429\b/.test(job.error ?? '');
+                    const errorSlice = job.errorDetails?.currentSlice || job.currentSlice;
+                    const resumeWaitMs = job.errorDetails?.resumeAfter
+                      ? Math.max(0, Date.parse(job.errorDetails.resumeAfter) - Date.now())
+                      : 0;
+                    const resumeBlocked = job.status === 'failed' && resumeWaitMs > 0;
+                    const resumeWaitLabel = resumeWaitMs >= 60_000
+                      ? `${Math.ceil(resumeWaitMs / 60_000)}m`
+                      : `${Math.ceil(resumeWaitMs / 1000)}s`;
+                    const retryWaits = (job.errorDetails?.retryDelaysMs ?? [])
+                      .map((ms, i) => {
+                        const delay = ms >= 1000 ? `${Math.round(ms / 1000)}s` : `${ms}ms`;
+                        const source = job.errorDetails?.retryDelaySources?.[i];
+                        if (source === 'Retry-After header') return `${delay} (server Retry-After)`;
+                        if (source === 'configured exponential backoff') return `${delay} (app backoff)`;
+                        return delay;
+                      })
+                      .join(' → ');
                     const statusClass = job.status === 'completed' ? 'text-emerald-700 bg-emerald-50'
                       : job.status === 'failed' ? 'text-red-700 bg-red-50'
                       : job.status === 'paused' ? 'text-amber-700 bg-amber-50'
@@ -666,13 +684,13 @@ export default function ImportModal({ onClose }: Props) {
                             </div>
                             <p className="mt-1 text-[11px] text-slate-500">
                               {job.status === 'completed' ? 'Complete'
-                                : job.status === 'failed' ? 'Stopped with an error'
+                                : job.status === 'failed' ? `Stopped at ${errorSlice || 'saved checkpoint'}`
                                 : job.status === 'cancelled' ? 'Cancelled'
                                 : job.currentSlice || (job.status === 'paused' ? 'Paused' : 'Waiting for worker')}
                             </p>
                           </div>
                           <span className={`shrink-0 rounded-full px-2 py-1 text-[10px] font-semibold capitalize ${statusClass}`}>
-                            {job.status}
+                            {rateLimited && job.status === 'failed' ? 'Rate limited' : job.status}
                           </span>
                         </div>
                         <div className="mt-2.5 h-1.5 bg-slate-100 rounded-full overflow-hidden">
@@ -692,8 +710,9 @@ export default function ImportModal({ onClose }: Props) {
                               </button>
                             )}
                             {(job.status === 'paused' || job.status === 'failed') && (
-                              <button onClick={() => void controlHistoryJob(job.id, 'resume')} title="Resume import" className="p-1.5 rounded-md text-slate-400 hover:text-emerald-700 hover:bg-emerald-50">
-                                <Play size={13} />
+                              <button onClick={() => void controlHistoryJob(job.id, 'resume')} disabled={resumeBlocked} title={resumeBlocked ? `Rate-limit cooldown: ${resumeWaitLabel} remaining` : 'Resume import from the saved checkpoint'} className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-semibold transition-colors disabled:cursor-not-allowed disabled:text-slate-400 disabled:bg-slate-100 ${job.status === 'failed' && !resumeBlocked ? 'text-emerald-800 bg-emerald-50 hover:bg-emerald-100' : 'text-slate-500 hover:text-emerald-700 hover:bg-emerald-50'}`}>
+                                <Play size={12} />
+                                {resumeBlocked ? `Resume in ${resumeWaitLabel}` : job.status === 'failed' ? 'Resume checkpoint' : 'Resume'}
                               </button>
                             )}
                             {['queued', 'running', 'paused', 'failed'].includes(job.status) && (
@@ -703,7 +722,37 @@ export default function ImportModal({ onClose }: Props) {
                             )}
                           </div>
                         </div>
-                        {job.error && <p className="mt-2 text-[11px] text-red-600 break-words">{job.error}</p>}
+                        {job.error && (
+                          <div role="alert" className="mt-3 rounded-lg border border-red-200 bg-red-50 p-3 text-red-900">
+                            <div className="flex items-start gap-2">
+                              <AlertCircle size={15} className="mt-0.5 shrink-0 text-red-600" />
+                              <div className="min-w-0">
+                                <p className="text-xs font-bold">
+                                  {rateLimited
+                                    ? `${job.errorDetails?.provider ?? 'arXiv'} rate limit${job.errorDetails?.status ? ` (HTTP ${job.errorDetails.status})` : ' (HTTP 429)'}`
+                                    : 'Import failed'}
+                                </p>
+                                <p className="mt-1 text-xs leading-relaxed break-words">{job.error}</p>
+                              </div>
+                            </div>
+                            <p className="mt-3 border-t border-red-200 pt-2.5 text-[11px] leading-relaxed text-red-800">
+                              {job.errorDetails?.recommendation ?? (rateLimited
+                                ? 'Completed windows and saved papers are safe. Wait at least 15 minutes, then Resume checkpoint retries this window; existing papers are deduplicated.'
+                                : 'Completed windows are safe. Resume checkpoint retries from the last saved page.')}
+                            </p>
+                            {job.errorDetails && (
+                              <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 border-t border-red-200 pt-2.5 text-[11px]">
+                                <div><dt className="text-red-700/70">Provider</dt><dd className="font-medium">{job.errorDetails.provider ?? job.sourceId}</dd></div>
+                                <div><dt className="text-red-700/70">Attempts</dt><dd className="font-medium">{job.errorDetails.attempts ?? '—'}</dd></div>
+                                <div><dt className="text-red-700/70">Failed window</dt><dd className="font-medium">{errorSlice || '—'}</dd></div>
+                                <div><dt className="text-red-700/70">Page offset</dt><dd className="font-medium tabular-nums">{(job.errorDetails.pageStart ?? job.pageStart).toLocaleString()}</dd></div>
+                                {retryWaits && <div className="col-span-2"><dt className="text-red-700/70">Retry waits</dt><dd className="font-medium font-mono">{retryWaits}</dd></div>}
+                                <div><dt className="text-red-700/70">Saved so far</dt><dd className="font-medium tabular-nums">{(job.errorDetails.papersAdded ?? job.papersAdded).toLocaleString()} added · {(job.errorDetails.papersSkipped ?? job.papersSkipped).toLocaleString()} existing</dd></div>
+                                <div><dt className="text-red-700/70">Checkpoint</dt><dd className="font-medium tabular-nums">{(job.errorDetails.sliceIndex ?? job.sliceIndex).toLocaleString()} / {(job.errorDetails.totalSlices ?? job.totalSlices).toLocaleString()} windows</dd></div>
+                              </dl>
+                            )}
+                          </div>
+                        )}
                       </article>
                     );
                   })}

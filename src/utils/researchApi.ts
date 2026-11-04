@@ -379,6 +379,25 @@ export async function apiGetStats(): Promise<PaperStats> {
 
 export type IngestJobStatus = 'queued' | 'running' | 'paused' | 'completed' | 'failed' | 'cancelled';
 
+export interface IngestErrorDetails {
+  provider?: string;
+  status?: number | null;
+  code?: string | null;
+  attempts?: number;
+  retryDelaysMs?: number[];
+  retryDelaySources?: string[];
+  retryAfterMs?: number | null;
+  currentSlice?: string;
+  pageStart?: number;
+  sliceIndex?: number;
+  totalSlices?: number;
+  papersAdded?: number;
+  papersSkipped?: number;
+  failedAt?: string;
+  resumeAfter?: string | null;
+  recommendation?: string;
+}
+
 export interface IngestJob {
   id: string;
   sourceId: string;
@@ -392,6 +411,7 @@ export interface IngestJob {
   papersAdded: number;
   papersSkipped: number;
   error: string | null;
+  errorDetails: IngestErrorDetails | null;
   createdAt: number;
   updatedAt: number;
   completedAt: number | null;

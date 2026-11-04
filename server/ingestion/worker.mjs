@@ -33,13 +33,26 @@ export function startIngestionWorker({ db, request }) {
       }
 
       const slice = slices[job.sliceIndex];
-      const page = await source.fetchPage({
-        slice,
-        start: job.pageStart,
-        pageSize: PAGE_SIZE,
-        jobId: job.id,
-        request,
-      });
+      if (!await db.setIngestJobCurrentSlice(job.id, slice.label)) return;
+      let page;
+      try {
+        page = await source.fetchPage({
+          slice,
+          start: job.pageStart,
+          pageSize: PAGE_SIZE,
+          jobId: job.id,
+          request,
+        });
+      } catch (cause) {
+        const error = cause instanceof Error ? cause : new Error(String(cause));
+        error.ingestContext = {
+          sliceLabel: slice.label,
+          pageStart: job.pageStart,
+          sliceIndex: job.sliceIndex,
+          totalSlices: slices.length,
+        };
+        throw error;
+      }
       const sliceDone = !page.hasMore;
       await db.commitIngestPage(job.id, page.papers.map(paper => ({ ...paper, userId: job.userId })), {
         sliceDone,
@@ -59,7 +72,30 @@ export function startIngestionWorker({ db, request }) {
         try {
           await processJob(job);
         } catch (error) {
-          await db.failIngestJob(job.id, error?.message ?? 'Import failed');
+          const state = await db.getIngestJobForWorker(job.id).catch(() => null);
+          const context = error?.ingestContext ?? {};
+          const status = error?.status ?? null;
+          const details = {
+            provider: error?.provider ?? job.sourceId,
+            status,
+            code: error?.code ?? null,
+            attempts: error?.attempts ?? 1,
+            retryDelaysMs: error?.retryDelaysMs ?? [],
+            retryDelaySources: error?.retryDelaySources ?? [],
+            retryAfterMs: error?.retryAfterMs ?? null,
+            currentSlice: context.sliceLabel ?? state?.currentSlice ?? '',
+            pageStart: context.pageStart ?? state?.pageStart ?? 0,
+            sliceIndex: context.sliceIndex ?? state?.sliceIndex ?? 0,
+            totalSlices: context.totalSlices ?? state?.totalSlices ?? job.totalSlices,
+            papersAdded: state?.papersAdded ?? 0,
+            papersSkipped: state?.papersSkipped ?? 0,
+            failedAt: new Date().toISOString(),
+            resumeAfter: status === 429 ? new Date(Date.now() + 15 * 60_000).toISOString() : null,
+            recommendation: status === 429
+              ? 'Wait at least 15 minutes before resuming. Previously committed windows remain saved; resume retries from this page.'
+              : 'Resume retries from the saved page checkpoint; previously committed windows remain saved.',
+          };
+          await db.failIngestJob(job.id, error?.message ?? 'Import failed', details);
           console.error(`[ingest] job ${job.id} failed:`, error?.message ?? error);
         }
       }

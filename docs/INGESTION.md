@@ -13,6 +13,14 @@ stops future pages; papers already committed remain in the library. Each result
 page and its cursor are written in one transaction, so a crash cannot checkpoint
 past papers that were not saved.
 
+If arXiv returns HTTP 429 after the retry schedule is exhausted, the job stops
+as failed and keeps the failing month/page cursor. Its diagnostic panel records
+the provider, HTTP status, attempt count, retry waits (and whether each came
+from `Retry-After` or the app's backoff), failed window, page offset, and saved
+totals. The server enforces a 15-minute cooldown before a rate-limited job can
+resume. Resume retries the saved page and does not remove or duplicate
+committed papers.
+
 The importer fetches metadata and abstracts only. PDFs are still fetched on
 demand, avoiding a huge and unnecessary download job. Existing papers are
 deduplicated by the current per-user arXiv id key, including overlap between

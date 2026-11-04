@@ -104,11 +104,13 @@ export const db = {
             papers_added     BIGINT       NOT NULL DEFAULT 0,
             papers_skipped   BIGINT       NOT NULL DEFAULT 0,
             error            TEXT,
+            error_details    JSONB,
             created_at       TIMESTAMPTZ  NOT NULL DEFAULT now(),
             updated_at       TIMESTAMPTZ  NOT NULL DEFAULT now(),
             completed_at     TIMESTAMPTZ
           )
         `);
+        await pool.query(`ALTER TABLE ingest_jobs ADD COLUMN IF NOT EXISTS error_details jsonb`);
         await pool.query(`
           CREATE INDEX IF NOT EXISTS idx_ingest_jobs_user_recent
             ON ingest_jobs (user_id, created_at DESC)
@@ -443,6 +445,15 @@ export const db = {
     return rows[0] ? rowToIngestJob(rows[0]) : null;
   },
 
+  async setIngestJobCurrentSlice(id, label) {
+    const result = await pool.query(
+      `UPDATE ingest_jobs SET current_slice=$2, updated_at=now()
+       WHERE id=$1 AND status='running'`,
+      [id, String(label ?? '').slice(0, 200)],
+    );
+    return (result.rowCount ?? 0) > 0;
+  },
+
   async claimNextIngestJob() {
     const client = await pool.connect();
     try {
@@ -554,11 +565,11 @@ export const db = {
     );
   },
 
-  async failIngestJob(id, message) {
+  async failIngestJob(id, message, details = null) {
     await pool.query(
-      `UPDATE ingest_jobs SET status='failed', error=$2, updated_at=now()
+      `UPDATE ingest_jobs SET status='failed', error=$2, error_details=$3, updated_at=now()
        WHERE id=$1 AND status='running'`,
-      [id, String(message ?? 'Import failed').slice(0, 2000)],
+      [id, String(message ?? 'Import failed').slice(0, 2000), details],
     );
   },
 
@@ -571,9 +582,13 @@ export const db = {
     const transition = transitions[action];
     if (!transition) return null;
     const { rows } = await pool.query(
-      `UPDATE ingest_jobs SET status=$4, error=CASE WHEN $4='queued' THEN NULL ELSE error END,
+      `UPDATE ingest_jobs SET status=$4,
+         error=CASE WHEN $4='queued' THEN NULL ELSE error END,
+         error_details=CASE WHEN $4='queued' THEN NULL ELSE error_details END,
          updated_at=now()
        WHERE user_id=$1 AND id=$2 AND status=ANY($3::text[])
+         AND ($4 <> 'queued' OR status <> 'failed'
+              OR COALESCE((error_details->>'resumeAfter')::timestamptz, now()) <= now())
        RETURNING *`,
       [userId, id, transition.from, transition.to],
     );
@@ -1608,6 +1623,7 @@ function rowToIngestJob(r) {
     papersAdded: Number(r.papers_added ?? 0),
     papersSkipped: Number(r.papers_skipped ?? 0),
     error: r.error ?? null,
+    errorDetails: r.error_details ?? null,
     createdAt: r.created_at ? new Date(r.created_at).getTime() : Date.now(),
     updatedAt: r.updated_at ? new Date(r.updated_at).getTime() : Date.now(),
     completedAt: r.completed_at ? new Date(r.completed_at).getTime() : null,
