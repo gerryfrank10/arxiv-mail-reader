@@ -19,6 +19,7 @@ export function isParallaxPublicRead(req) {
   if (/^\/api\/v1\/public\/papers\/[^/]+$/.test(path)) return true;
   if (/^\/api\/v1\/public\/papers\/[^/]+\/figures$/.test(path)) return true;
   if (/^\/api\/v1\/public\/papers\/[^/]+\/figures\/[^/]+$/.test(path)) return true;
+  if (/^\/api\/v1\/public\/papers\/[^/]+\/engagement$/.test(path)) return true;
   return false;
 }
 
