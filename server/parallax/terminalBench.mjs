@@ -1,0 +1,142 @@
+const SOURCES = {
+  index: 'https://www.tbench.ai/benchmarks',
+  release40: 'https://github.com/harbor-framework/terminal-bench/releases/tag/v4.0.0',
+  article40: 'https://www.tbench.ai/news/terminal-bench-4-0',
+  hub40: 'https://hub.harborframework.com/datasets/terminal-bench/terminal-bench/latest?tab=leaderboard&leaderboard=4-0-0',
+  article30: 'https://www.tbench.ai/news/terminal-bench-3-0',
+};
+
+const terminalBench = {
+  id: 'terminal-bench',
+  name: 'Terminal-Bench',
+  family: 'AI agent terminal tasks',
+  sourceSnapshotAt: '2026-11-04',
+  currentVersion: '4.0.0',
+  sources: {
+    versionIndex: SOURCES.index,
+    currentRelease: SOURCES.release40,
+    currentArticle: SOURCES.article40,
+  },
+  versions: [
+    {
+      version: '4.0.0',
+      title: 'Terminal-Bench 4.0',
+      releaseDate: '2026-08-26',
+      listedDate: '2026-08-28',
+      datasetId: 'terminal-bench/terminal-bench',
+      datasetVersion: '4.0.0',
+      datasetUrl: 'https://hub.harborframework.com/datasets/terminal-bench/terminal-bench/4',
+      taskSetId: 'terminal-bench/terminal-bench@4.0.0',
+      taskCount: null,
+      leaderboardUrl: SOURCES.hub40,
+      metric: {
+        id: 'resolution_rate',
+        label: 'Resolution rate',
+        unit: 'percent',
+        direction: 'higher-is-better',
+        definition: 'Official site label; exact denominator and aggregation details must be read from the official leaderboard/report when a documented public result interface is available.',
+        confidenceInterval: 'The official overview describes 95% confidence-interval whiskers.',
+      },
+      protocolNotes: [
+        'The official release article states an 8-hour agent timeout for every task.',
+        'The 4.0 release removed 8 tasks and fixed 19; task and resource changes require version-specific reruns.',
+      ],
+      resultStatus: 'not-ingested',
+      results: [],
+      resultNote: 'No Terminal-Bench 4.0 score rows have been validated through a documented public read API. See the official leaderboard.',
+      sourceUrl: SOURCES.article40,
+    },
+    {
+      version: '3.0.0',
+      title: 'Terminal-Bench 3.0',
+      releaseDate: '2026-07-30',
+      listedDate: '2026-07-30',
+      datasetId: 'terminal-bench/terminal-bench',
+      datasetVersion: '3.0.0',
+      datasetUrl: 'https://hub.harborframework.com/datasets/terminal-bench/terminal-bench/1',
+      taskSetId: 'terminal-bench/terminal-bench@3.0.0',
+      taskCount: null,
+      leaderboardUrl: 'https://hub.harborframework.com/datasets/terminal-bench/terminal-bench/latest?tab=leaderboard',
+      metric: {
+        id: 'pass_rate',
+        label: 'Pass rate',
+        unit: 'percent',
+        direction: 'higher-is-better',
+        definition: 'Percentage values as published in the Terminal-Bench 3.0 maintainer article; the cited table does not give per-row run dates or trial counts.',
+        confidenceInterval: null,
+      },
+      resultStatus: 'maintainer-published-snapshot',
+      results: [
+        result('gpt-5-6-sol-codex', 'GPT-5.6 Sol', 'Codex', 34.4),
+        result('fable-5-claude-code', 'Fable 5', 'Claude Code', 33.8),
+        result('opus-4-8-claude-code', 'Opus 4.8', 'Claude Code', 21.1),
+        result('gpt-5-6-terra-codex', 'GPT-5.6 Terra', 'Codex', 20.8),
+        result('grok-4-5-cursor-cli', 'Grok 4.5', 'Cursor CLI', 17.8, {
+          note: 'The source notes a cost-reporting issue for this model/agent in a separate cost chart; no cost is included here.',
+        }),
+        result('sonnet-5-claude-code', 'Sonnet 5', 'Claude Code', 14.6),
+        result('gpt-5-6-luna-codex', 'GPT-5.6 Luna', 'Codex', 14.3),
+        result('glm-5-2-claude-code', 'GLM 5.2', 'Claude Code', 5.1),
+      ],
+      resultNote: 'The official article gives publication date but not run dates or exact provider/agent build identifiers. Display source labels as published; do not infer missing versions.',
+      sourceUrl: SOURCES.article30,
+    },
+    {
+      version: '2.1',
+      title: 'Terminal-Bench 2.1',
+      releaseDate: '2026-05-06',
+      sourceUrl: 'https://www.tbench.ai/news/terminal-bench-2-1',
+      datasetUrl: 'https://hub.harborframework.com/datasets/terminal-bench/terminal-bench-2-1/latest',
+    },
+    {
+      version: '2.0',
+      title: 'Terminal-Bench 2.0',
+      releaseDate: '2025-11-07',
+      sourceUrl: 'https://www.tbench.ai/news/announcement-2-0',
+      datasetUrl: 'https://hub.harborframework.com/datasets/terminal-bench/terminal-bench-2/latest',
+    },
+    {
+      version: '1.0',
+      title: 'Terminal-Bench 1.0',
+      releaseDate: '2025-05-19',
+      sourceUrl: 'https://www.tbench.ai/news/announcement',
+      datasetUrl: 'https://github.com/harbor-framework/terminal-bench-1',
+    },
+  ],
+};
+
+function result(id, modelLabel, agentLabel, value, extra = {}) {
+  return {
+    id: `terminal-bench-3.0.0:${id}`,
+    benchmarkId: 'terminal-bench',
+    benchmarkVersion: '3.0.0',
+    scope: 'suite-aggregate',
+    taskId: null,
+    datasetId: 'terminal-bench/terminal-bench',
+    datasetVersion: '3.0.0',
+    modelLabel,
+    modelVersion: null,
+    agentLabel,
+    agentVersion: null,
+    metricId: 'pass_rate',
+    value,
+    unit: 'percent',
+    evaluatedAt: null,
+    publishedAt: '2026-07-30',
+    paperUrl: null,
+    codeUrl: 'https://github.com/harbor-framework/terminal-bench/releases/tag/v3.0.0',
+    verification: 'maintainer-published',
+    reproducibilityStatus: 'not-reproduced-by-parallax',
+    warnings: [
+      'The source gives a publication date, not an evaluation run date.',
+      'The source display name does not identify an exact provider model build or agent release.',
+      'Do not compare this Terminal-Bench 3.0 pass rate directly with another benchmark version.',
+    ],
+    sourceUrl: SOURCES.article30,
+    ...extra,
+  };
+}
+
+export function getTerminalBenchCatalog() {
+  return structuredClone(terminalBench);
+}

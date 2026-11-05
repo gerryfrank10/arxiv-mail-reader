@@ -22,6 +22,7 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import { db } from './db.mjs';
 import { fetchSources, buildNewsQuery } from './sources.mjs';
 import { createFirstPageImageThumbnail } from './paperThumbnail.mjs';
+import { isParallaxPublicRead, isParallaxPublicWrite, registerParallaxPublicApi } from './parallax/publicApi.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -75,7 +76,7 @@ const PUBLIC_APIS = new Set(['/api/health', '/api/presets', '/api/db/status']);
 app.use('/api', async (req, res, next) => {
   if (req.method === 'OPTIONS') return next();
   const path = req.originalUrl.split('?')[0];
-  if (PUBLIC_APIS.has(path)) return next();
+  if (PUBLIC_APIS.has(path) || isParallaxPublicRead(req) || isParallaxPublicWrite(req)) return next();
   if (path.startsWith('/api/auth/') || path.startsWith('/api/db/')) return next();
   if (!db.enabled) return next();
   try {
@@ -89,6 +90,9 @@ app.use('/api', async (req, res, next) => {
 
 app.get('/api/presets', (_req, res) => res.json(PRESETS));
 app.get('/api/health',  (_req, res) => res.json({ ok: true }));
+registerParallaxPublicApi(app, {
+  pilotFixtureEnabled: !isProd || process.env.PARALLAX_ENABLE_PILOT_FIXTURE === '1',
+});
 
 // Proxy arXiv API to avoid CORS issues in the browser
 // Abstract fetch with arXiv -> Semantic Scholar fallback.

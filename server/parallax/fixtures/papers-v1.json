@@ -1,0 +1,112 @@
+[
+  {
+    "id": "2401.00014",
+    "arxivId": "2401.00014",
+    "title": "Resource-Limited Automated Ki67 Index Estimation in Breast Cancer",
+    "authors": ["J. Gliozzo", "G. Marinò", "A. Bonometti", "M. Frasca", "D. Malchiodi"],
+    "categories": ["q-bio.QM", "cs.CV", "cs.LG", "eess.IV"],
+    "abstractExcerpt": "The prediction of tumor progression and chemotherapy response has been recently tackled exploiting Tumor Infiltrating Lymphocytes (TILs) and the nuclear protein Ki67 as prognostic factors. Recently, deep neural networks (DNNs) have been shown to achieve top results in estimating Ki67 expression and simultaneous determination of intratumoral TILs score in breast cancer cells. …",
+    "submittedAt": "2023-12-22T16:33:03Z",
+    "source": "arXiv",
+    "sourceUrl": "https://arxiv.org/abs/2401.00014"
+  },
+  {
+    "id": "2401.00036",
+    "arxivId": "2401.00036",
+    "title": "Discrete Distribution Networks",
+    "authors": ["Lei Yang"],
+    "categories": ["cs.CV", "cs.LG"],
+    "abstractExcerpt": "We introduce a novel generative model, the Discrete Distribution Networks (DDN), that approximates data distribution using hierarchical discrete distributions. We posit that since the features within a network inherently capture distributional information, enabling the network to generate multiple samples simultaneously, rather than a single output, may offer an effective way to represent distributions. …",
+    "submittedAt": "2023-12-29T18:35:04Z",
+    "source": "arXiv",
+    "sourceUrl": "https://arxiv.org/abs/2401.00036"
+  },
+  {
+    "id": "2401.00057",
+    "arxivId": "2401.00057",
+    "title": "Generalization properties of contrastive world models",
+    "authors": ["Kandan Ramakrishnan", "R. James Cotton", "Xaq Pitkow", "Andreas S. Tolias"],
+    "categories": ["cs.LG", "cs.CV"],
+    "abstractExcerpt": "Recent work on object-centric world models aim to factorize representations in terms of objects in a completely unsupervised or self-supervised manner. Such world models are hypothesized to be a key component to address the generalization problem. While self-supervision has shown improved performance however, OOD generalization has not been systematically and explicitly tested. …",
+    "submittedAt": "2023-12-29T19:25:34Z",
+    "source": "arXiv",
+    "sourceUrl": "https://arxiv.org/abs/2401.00057"
+  },
+  {
+    "id": "2401.00065",
+    "arxivId": "2401.00065",
+    "title": "Accelerating Process Development for 3D Printing of New Metal Alloys",
+    "authors": ["David Guirguis", "Conrad Tucker", "Jack Beuth"],
+    "categories": ["cond-mat.mtrl-sci", "cs.CV", "cs.LG"],
+    "abstractExcerpt": "Addressing the uncertainty and variability in the quality of 3D printed metals can further the wide spread use of this technology. Process mapping for new alloys is crucial for determining optimal process parameters that consistently produce acceptable printing quality. …",
+    "submittedAt": "2023-12-29T19:46:18Z",
+    "source": "arXiv",
+    "sourceUrl": "https://arxiv.org/abs/2401.00065"
+  },
+  {
+    "id": "2401.00110",
+    "arxivId": "2401.00110",
+    "title": "Diffusion Model with Perceptual Loss",
+    "authors": ["Shanchuan Lin", "Xiao Yang"],
+    "categories": ["cs.CV", "cs.AI", "cs.LG"],
+    "abstractExcerpt": "Diffusion models without guidance generate very unrealistic samples. Guidance is used ubiquitously, and previous research has attributed its effect to low-temperature sampling that improves quality by trading off diversity. However, this perspective is incomplete. …",
+    "submittedAt": "2023-12-30T01:24:25Z",
+    "source": "arXiv",
+    "sourceUrl": "https://arxiv.org/abs/2401.00110"
+  },
+  {
+    "id": "2401.00125",
+    "arxivId": "2401.00125",
+    "title": "LLM-Assist: Enhancing Closed-Loop Planning with Language-Based Reasoning",
+    "authors": ["S P Sharan", "Francesco Pittaluga", "Vijay Kumar B G", "Manmohan Chandraker"],
+    "categories": ["cs.AI", "cs.CV"],
+    "abstractExcerpt": "Although planning is a crucial component of the autonomous driving stack, researchers have yet to develop robust planning algorithms that are capable of safely handling the diverse range of possible driving scenarios. Learning-based planners suffer from overfitting and poor long-tail performance. …",
+    "submittedAt": "2023-12-30T02:53:45Z",
+    "source": "arXiv",
+    "sourceUrl": "https://arxiv.org/abs/2401.00125"
+  },
+  {
+    "id": "2401.00128",
+    "arxivId": "2401.00128",
+    "title": "Quantifying intra-tumoral genetic heterogeneity of glioblastoma toward precision medicine using MRI and a data-inclusive machine learning algorithm",
+    "authors": ["Lujia Wang", "Hairong Wang", "Fulvio D'Angelo", "Lee Curtin", "Christopher P. Sereduk", "Gustavo De Leon", "Kyle W. Singleton", "Javier Urcuyo", "Andrea Hawkins-Daarud", "Pamela R. Jackson", "Chandan Krishna", "Richard S. Zimmerman", "Devi P. Patra", "Bernard R. Bendok", "Kris A. Smith", "Peter Nakaji", "Kliment Donev", "Leslie C. Baxter", "Maciej M. Mrugała", "Michele Ceccarelli", "Antonio Iavarone", "Kristin R. Swanson", "Nhan L. Tran", "Leland S. Hu", "Jing Li"],
+    "categories": ["cs.LG", "cs.CV", "math.OC"],
+    "abstractExcerpt": "Glioblastoma (GBM) is one of the most aggressive and lethal human cancers. Intra-tumoral genetic heterogeneity poses a significant challenge for treatment. Biopsy is invasive, which motivates the development of non-invasive, MRI-based machine learning (ML) models to quantify intra-tumoral genetic heterogeneity for each patient. …",
+    "submittedAt": "2023-12-30T03:28:51Z",
+    "source": "arXiv",
+    "sourceUrl": "https://arxiv.org/abs/2401.00128"
+  },
+  {
+    "id": "2401.00139",
+    "arxivId": "2401.00139",
+    "title": "Enhancing Causal Reasoning in Large Language Models: A Causal Attribution Model for Precision Fine-Tuning",
+    "authors": ["Hengrui Cai", "Shengjie Liu", "Rui Song"],
+    "categories": ["cs.AI", "cs.CL", "cs.LG", "stat.ME"],
+    "abstractExcerpt": "This paper introduces a causal attribution model to enhance the interpretability of large language models (LLMs) and improve their causal reasoning abilities via precise fine-tuning. Despite LLMs' proficiency in diverse tasks, their reasoning processes often remain black box, and thus restrict targeted enhancement. …",
+    "submittedAt": "2023-12-30T04:51:46Z",
+    "source": "arXiv",
+    "sourceUrl": "https://arxiv.org/abs/2401.00139"
+  },
+  {
+    "id": "2401.00248",
+    "arxivId": "2401.00248",
+    "title": "Promoting Segment Anything Model towards Highly Accurate Dichotomous Image Segmentation",
+    "authors": ["Xianjie Liu", "Keren Fu", "Yao Jiang", "Qijun Zhao"],
+    "categories": ["cs.CV", "cs.AI"],
+    "abstractExcerpt": "The Segment Anything Model (SAM) represents a significant breakthrough into foundation models for computer vision, providing a large-scale segmentation model. However, despite its zero-shot performance, its segmentation masks lack fine-grained details, particularly in accurately delineating object boundaries. …",
+    "submittedAt": "2023-12-30T14:24:33Z",
+    "source": "arXiv",
+    "sourceUrl": "https://arxiv.org/abs/2401.00248"
+  },
+  {
+    "id": "2401.00275",
+    "arxivId": "2401.00275",
+    "title": "An $\\ell^1$-Plug-and-Play Approach for MPI Using a Zero Shot Denoiser with Evaluation on the 3D Open MPI Dataset",
+    "authors": ["Vladyslav Gapyak", "Corinna Rentschler", "Thomas März", "Andreas Weinmann"],
+    "categories": ["eess.IV", "cs.CV", "cs.LG", "math.NA"],
+    "abstractExcerpt": "Objective: Magnetic particle imaging (MPI) is an emerging medical imaging modality which has gained increasing interest in recent years. Among the benefits of MPI are its high temporal resolution, and the fact that it does not expose the specimen to ionizing radiation. …",
+    "submittedAt": "2023-12-30T16:27:43Z",
+    "source": "arXiv",
+    "sourceUrl": "https://arxiv.org/abs/2401.00275"
+  }
+]

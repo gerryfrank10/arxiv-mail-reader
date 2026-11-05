@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "arxivId": "2401.00036",
+  "status": "ready",
+  "figures": [
+    {
+      "file": "f01.jpg",
+      "kind": "raster",
+      "width": 640,
+      "height": 640
+    },
+    {
+      "file": "f02.jpg",
+      "kind": "raster",
+      "width": 640,
+      "height": 640
+    },
+    {
+      "file": "f03.jpg",
+      "kind": "raster",
+      "width": 320,
+      "height": 320
+    },
+    {
+      "file": "f04.jpg",
+      "kind": "raster",
+      "width": 320,
+      "height": 320
+    },
+    {
+      "file": "f05.jpg",
+      "kind": "raster",
+      "width": 800,
+      "height": 800
+    }
+  ],
+  "generatedAt": "2026-11-05T09:16:46.807Z"
+}

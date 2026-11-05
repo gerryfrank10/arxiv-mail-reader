@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "arxivId": "2401.00014",
+  "status": "ready",
+  "figures": [
+    {
+      "file": "f01.jpg",
+      "kind": "raster",
+      "width": 362,
+      "height": 260
+    }
+  ],
+  "generatedAt": "2026-11-05T09:16:39.401Z"
+}
