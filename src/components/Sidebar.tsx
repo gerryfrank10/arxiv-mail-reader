@@ -10,13 +10,14 @@ import { useMagazine } from '../contexts/MagazineContext';
 import { useConfirm } from '../contexts/ConfirmContext';
 import { TRACKER_COLOR_CLASSES } from '../utils/trackerScoring';
 import { usePagination } from '../hooks/usePagination';
+import { apiSearchPapers } from '../utils/researchApi';
 import Pager from './Pager';
 import { getCategoryLabel } from '../utils/categories';
-import { ASSESSMENT_BADGE, AssessmentLabel } from '../utils/assessment';
+import { ASSESSMENT_BADGE, AssessmentLabel, computeAssessment } from '../utils/assessment';
 import PaperCard from './PaperCard';
 import ImportModal from './ImportModal';
 import { ActiveView } from './AppLayout';
-import { SortField } from '../types';
+import { Paper, SortField } from '../types';
 import { formatDistanceToNow, format } from 'date-fns';
 
 interface Props {
@@ -56,6 +57,7 @@ export default function Sidebar({ activeView }: Props) {
 function InboxPane() {
   const {
     filteredPapers, papers, totalPapers, loading, progress, error,
+    storageMode,
     setSelectedPaper,
     searchQuery, setSearchQuery,
     selectedCategory, setSelectedCategory,
@@ -75,6 +77,14 @@ function InboxPane() {
   const [likedOnly,   setLikedOnly]   = useState(false);
   const searchRef    = useRef<HTMLDivElement>(null);
   const moreMenuRef  = useRef<HTMLDivElement>(null);
+  const serverSearchRequest = useRef(0);
+  const [serverSearch, setServerSearch] = useState<{ query: string; papers: Paper[]; total: number; hasMore: boolean }>({
+    query: '', papers: [], total: 0, hasMore: false,
+  });
+  const [serverSearchLoading, setServerSearchLoading] = useState(false);
+  const [serverSearchError, setServerSearchError] = useState<string | null>(null);
+  const normalizedSearchQuery = searchQuery.trim();
+  const shouldSearchServer = storageMode === 'server' && normalizedSearchQuery.length >= 2;
 
   useEffect(() => {
     function onMouseDown(e: MouseEvent) {
@@ -85,15 +95,101 @@ function InboxPane() {
     return () => document.removeEventListener('mousedown', onMouseDown);
   }, []);
 
+  useEffect(() => {
+    if (!shouldSearchServer) {
+      serverSearchRequest.current++;
+      setServerSearch({ query: '', papers: [], total: 0, hasMore: false });
+      setServerSearchLoading(false);
+      setServerSearchError(null);
+      return;
+    }
+
+    const query = normalizedSearchQuery;
+    const request = ++serverSearchRequest.current;
+    setServerSearch({ query, papers: [], total: 0, hasMore: false });
+    setServerSearchLoading(true);
+    setServerSearchError(null);
+    const timer = window.setTimeout(() => {
+      apiSearchPapers(query, { limit: 100, offset: 0 })
+        .then(result => {
+          if (serverSearchRequest.current === request) {
+            setServerSearch({ query, ...result });
+          }
+        })
+        .catch(e => {
+          if (serverSearchRequest.current === request) {
+            setServerSearchError(e instanceof Error ? e.message : 'Inbox search failed.');
+          }
+        })
+        .finally(() => {
+          if (serverSearchRequest.current === request) setServerSearchLoading(false);
+        });
+    }, 180);
+    return () => {
+      window.clearTimeout(timer);
+      if (serverSearchRequest.current === request) serverSearchRequest.current++;
+    };
+  }, [shouldSearchServer, normalizedSearchQuery]);
+
+  const loadMoreSearchResults = async () => {
+    const query = normalizedSearchQuery;
+    const offset = serverSearch.papers.length;
+    const request = serverSearchRequest.current;
+    if (!serverSearch.hasMore || serverSearchLoading || serverSearch.query !== query) return;
+    setServerSearchLoading(true);
+    setServerSearchError(null);
+    try {
+      const result = await apiSearchPapers(query, { limit: 100, offset });
+      if (serverSearchRequest.current === request) {
+        setServerSearch(prev => ({
+          query,
+          papers: [...prev.papers, ...result.papers],
+          total: result.total,
+          hasMore: result.hasMore,
+        }));
+      }
+    } catch (e) {
+      if (serverSearchRequest.current === request) {
+        setServerSearchError(e instanceof Error ? e.message : 'Inbox search failed.');
+      }
+    } finally {
+      if (serverSearchRequest.current === request) setServerSearchLoading(false);
+    }
+  };
+
+  const remoteFilteredPapers = useMemo(() => {
+    if (!shouldSearchServer || serverSearch.query !== normalizedSearchQuery) return [];
+    const author = authorFilter.toLowerCase().trim();
+    const result = serverSearch.papers.filter(paper =>
+      (!selectedCategory || paper.categories.includes(selectedCategory)) &&
+      (!author || paper.authorList.some(name => name.toLowerCase().includes(author)) || paper.authors.toLowerCase().includes(author)) &&
+      (!assessmentFilter || computeAssessment(paper).label === assessmentFilter),
+    );
+    result.sort((a, b) => {
+      let cmp = 0;
+      switch (sortBy) {
+        case 'date':    cmp = a.digestDate.getTime() - b.digestDate.getTime(); break;
+        case 'title':   cmp = a.title.localeCompare(b.title); break;
+        case 'authors': cmp = (a.authorList[0] ?? '').localeCompare(b.authorList[0] ?? ''); break;
+        case 'score':   cmp = computeAssessment(a).score - computeAssessment(b).score; break;
+      }
+      return sortDir === 'asc' ? cmp : -cmp;
+    });
+    return result;
+  }, [shouldSearchServer, serverSearch, normalizedSearchQuery, authorFilter, selectedCategory, assessmentFilter, sortBy, sortDir]);
+
   const suggestions = useMemo(() => {
-    const q = searchQuery.toLowerCase().trim();
+    const q = normalizedSearchQuery.toLowerCase();
     if (q.length < 2) return { authors: [], papers: [], categories: [] };
+    const paperSource = shouldSearchServer && serverSearch.query === normalizedSearchQuery
+      ? serverSearch.papers
+      : papers;
     return {
       authors:    allAuthors   .filter(a => a.toLowerCase().includes(q)).slice(0, 5),
-      papers:     papers       .filter(p => p.title.toLowerCase().includes(q)).slice(0, 4),
+      papers:     paperSource  .filter(p => p.title.toLowerCase().includes(q)).slice(0, 4),
       categories: allCategories.filter(c => c.toLowerCase().includes(q) || getCategoryLabel(c).toLowerCase().includes(q)).slice(0, 3),
     };
-  }, [searchQuery, papers, allAuthors, allCategories]);
+  }, [normalizedSearchQuery, shouldSearchServer, serverSearch, papers, allAuthors, allCategories]);
 
   const hasSuggestions = suggestions.authors.length + suggestions.papers.length + suggestions.categories.length > 0;
 
@@ -273,7 +369,11 @@ function InboxPane() {
 
       {/* Toolbar: counts + bulk actions */}
       <div className="px-3 py-2 border-b border-slate-800 flex items-center gap-1.5">
-        <p className="text-[11px] text-slate-500 truncate flex-1">{filteredPapers.length} of {papers.length} · {unreadCount} unread</p>
+        <p className="text-[11px] text-slate-500 truncate flex-1">
+          {shouldSearchServer && serverSearch.query === normalizedSearchQuery
+            ? `${remoteFilteredPapers.length} shown · ${serverSearch.total} matches`
+            : `${filteredPapers.length} of ${papers.length}`} · {unreadCount} unread
+        </p>
         <button onClick={() => setShowImport(true)} title="Import papers"
           className="p-1.5 rounded-md text-slate-500 hover:text-blue-400 hover:bg-slate-800 transition-all"><Upload size={12} /></button>
         <button onClick={() => markManyRead(filteredPapers.map(p => p.id))} title="Mark visible as read" disabled={filteredPapers.length === 0}
@@ -298,22 +398,46 @@ function InboxPane() {
       </div>
 
       {/* Paper list */}
-      <InboxList loading={loading} likedOnly={likedOnly} />
+      {serverSearchError && <p className="px-3 py-2 text-[11px] text-red-400">Search failed: {serverSearchError}</p>}
+      <InboxList
+        key={shouldSearchServer ? normalizedSearchQuery : 'local-inbox'}
+        loading={loading}
+        likedOnly={likedOnly}
+        papersOverride={shouldSearchServer ? remoteFilteredPapers : undefined}
+        searchLoading={shouldSearchServer && serverSearchLoading}
+        hasMoreSearch={shouldSearchServer && serverSearch.query === normalizedSearchQuery && serverSearch.hasMore}
+        onLoadMoreSearch={loadMoreSearchResults}
+      />
 
       {showImport && <ImportModal onClose={() => setShowImport(false)} />}
     </>
   );
 }
 
-function InboxList({ loading, likedOnly = false }: { loading: boolean; likedOnly?: boolean }) {
+function InboxList({
+  loading,
+  likedOnly = false,
+  papersOverride,
+  searchLoading = false,
+  hasMoreSearch = false,
+  onLoadMoreSearch,
+}: {
+  loading: boolean;
+  likedOnly?: boolean;
+  papersOverride?: Paper[];
+  searchLoading?: boolean;
+  hasMoreSearch?: boolean;
+  onLoadMoreSearch?: () => void;
+}) {
   const {
     filteredPapers, papers, selectedPaper, setSelectedPaper, readIds,
     hasMorePapers, totalPapers, loadingMore, loadMorePapers,
   } = usePapers();
   const { isSaved, isLiked } = useLibrary();
+  const sourcePapers = papersOverride ?? filteredPapers;
   const visible = useMemo(
-    () => likedOnly ? filteredPapers.filter(p => isLiked(p.id)) : filteredPapers,
-    [filteredPapers, likedOnly, isLiked],
+    () => likedOnly ? sourcePapers.filter(p => isLiked(p.id)) : sourcePapers,
+    [sourcePapers, likedOnly, isLiked],
   );
   const pager = usePagination(visible, 50);
 
@@ -321,7 +445,8 @@ function InboxList({ loading, likedOnly = false }: { loading: boolean; likedOnly
     <>
       <div className="flex-1 overflow-y-auto custom-scroll">
         {loading && visible.length === 0 && <div className="px-4 py-8 text-center text-slate-500 text-xs">Loading papers…</div>}
-        {!loading && visible.length === 0 && papers.length > 0 && (
+        {searchLoading && visible.length === 0 && <div className="px-4 py-8 text-center text-slate-500 text-xs">Searching all papers…</div>}
+        {!loading && !searchLoading && visible.length === 0 && papers.length > 0 && (
           <div className="px-4 py-8 text-center text-slate-500 text-xs">{likedOnly ? 'No liked papers match your filters.' : 'No papers match your filters.'}</div>
         )}
         {pager.slice.map(paper => (
@@ -336,7 +461,17 @@ function InboxList({ loading, likedOnly = false }: { loading: boolean; likedOnly
         ))}
       </div>
       <Pager pagination={pager} variant="dark" size="sm" label="papers" pageSizes={[25, 50, 100, 250]} />
-      {hasMorePapers && (
+      {hasMoreSearch && (
+        <button
+          type="button"
+          onClick={onLoadMoreSearch}
+          disabled={searchLoading}
+          className="w-full px-4 py-2 text-[11px] text-slate-400 hover:text-slate-200 hover:bg-slate-800/60 border-t border-slate-700/60 disabled:opacity-60 disabled:cursor-wait"
+        >
+          {searchLoading ? 'Searching…' : 'Load more search results'}
+        </button>
+      )}
+      {hasMorePapers && papersOverride === undefined && (
         <button
           type="button"
           onClick={loadMorePapers}

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Search, X, Quote, BookOpen, FileText, FolderOpen, Newspaper, Loader2 } from 'lucide-react';
-import { apiGlobalSearch, SearchResult, SearchResultKind } from '../utils/researchApi';
+import { apiGetPaper, apiGlobalSearch, SearchResult, SearchResultKind } from '../utils/researchApi';
 import { usePapers } from '../contexts/PapersContext';
 import { useBooks } from '../contexts/BooksContext';
 import { useWriter } from '../contexts/WriterContext';
@@ -34,7 +34,9 @@ export default function SearchOverlay({ onClose, setActiveView }: Props) {
   const [loading, setLoading]   = useState(false);
   const [error, setError]       = useState<string | null>(null);
   const [activeIdx, setActive]  = useState(0);
+  const [openingId, setOpeningId] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const requestId = useRef(0);
 
   const { papers, setSelectedPaper } = usePapers();
   const { setActiveId: setWriterDocId } = useWriter();
@@ -49,24 +51,52 @@ export default function SearchOverlay({ onClose, setActiveView }: Props) {
 
   // Debounced search
   useEffect(() => {
-    if (query.trim().length < 2) { setResults([]); return; }
+    const q = query.trim();
+    if (q.length < 2) {
+      requestId.current++;
+      setResults([]);
+      setLoading(false);
+      setError(null);
+      return;
+    }
+    const id = ++requestId.current;
     const handle = setTimeout(async () => {
       setLoading(true);
       setError(null);
-      try { setResults(await apiGlobalSearch(query.trim())); setActive(0); }
-      catch (e) { setError(e instanceof Error ? e.message : 'Search failed'); }
-      finally  { setLoading(false); }
+      try {
+        const next = await apiGlobalSearch(q);
+        if (requestId.current === id) { setResults(next); setActive(0); }
+      } catch (e) {
+        if (requestId.current === id) setError(e instanceof Error ? e.message : 'Search failed');
+      } finally {
+        if (requestId.current === id) setLoading(false);
+      }
     }, 180);
-    return () => clearTimeout(handle);
+    return () => {
+      clearTimeout(handle);
+      if (requestId.current === id) requestId.current++;
+    };
   }, [query]);
 
-  function activate(r: SearchResult) {
+  async function activate(r: SearchResult) {
     switch (r.kind) {
       case 'paper': {
         const p = papers.find(x => x.id === r.id || x.arxivId === r.sub);
-        if (p) setSelectedPaper(p);
-        else   setActiveView('inbox');
-        break;
+        if (p) {
+          setSelectedPaper(p);
+          onClose();
+          return;
+        }
+        setOpeningId(r.id);
+        try {
+          const fullPaper = await apiGetPaper(r.id);
+          setSelectedPaper(fullPaper);
+          onClose();
+        } catch (e) {
+          setOpeningId(null);
+          setError(e instanceof Error ? e.message : 'Could not open this paper.');
+        }
+        return;
       }
       case 'book':       setActiveView('books');       break;
       case 'document':   setActiveView('writer');      setWriterDocId(r.id); break;
@@ -83,7 +113,7 @@ export default function SearchOverlay({ onClose, setActiveView }: Props) {
       if (e.key === 'ArrowUp')   { e.preventDefault(); setActive(i => Math.max(0, i - 1)); return; }
       if (e.key === 'Enter' && results[activeIdx]) {
         e.preventDefault();
-        activate(results[activeIdx]);
+        void activate(results[activeIdx]);
       }
     }
     document.addEventListener('keydown', onKey);
@@ -147,7 +177,7 @@ export default function SearchOverlay({ onClose, setActiveView }: Props) {
                   return (
                     <button
                       key={`${it.kind}-${it.id}`}
-                      onClick={() => activate(it)}
+                      onClick={() => void activate(it)}
                       onMouseEnter={() => setActive(flatIdx)}
                       className={`w-full text-left px-4 py-2.5 flex items-start gap-3 transition-colors ${
                         isActive ? 'bg-blue-50' : 'hover:bg-slate-50'
@@ -162,7 +192,7 @@ export default function SearchOverlay({ onClose, setActiveView }: Props) {
                         {it.sub && <p className="text-[10px] text-slate-400 mt-0.5">{it.sub}</p>}
                       </div>
                       <span className={`text-[10px] uppercase tracking-wider font-semibold px-1.5 py-0.5 rounded ${KIND_ACCENT[it.kind]} shrink-0`}>
-                        {KIND_LABEL[it.kind]}
+                        {openingId === it.id ? <Loader2 size={11} className="animate-spin" /> : KIND_LABEL[it.kind]}
                       </span>
                     </button>
                   );

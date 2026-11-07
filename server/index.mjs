@@ -1098,6 +1098,18 @@ app.get('/api/db/papers', (req, res) => withUser(req, res, async (uid) => {
   const { papers, total } = await db.getPapers(uid, { limit, offset });
   res.json({ papers, total, hasMore: limit > 0 && offset + papers.length < total });
 }));
+app.get('/api/db/papers/search', (req, res) => withUser(req, res, async (uid) => {
+  const query = String(req.query.q ?? '').trim();
+  const limit = Math.min(250, Math.max(1, Math.trunc(Number(req.query.limit) || 100)));
+  const offset = Math.max(0, Math.trunc(Number(req.query.offset) || 0));
+  const { papers, total } = await db.searchPapers(uid, query, { limit, offset });
+  res.json({ papers, total, hasMore: offset + papers.length < total });
+}));
+app.get('/api/db/papers/:id', (req, res) => withUser(req, res, async (uid) => {
+  const paper = await db.getPaper(uid, req.params.id);
+  if (!paper) return res.status(404).json({ error: 'Paper not found.' });
+  res.json({ paper });
+}));
 app.get('/api/db/stats', (req, res) => withUser(req, res, async (uid) => {
   res.json(await db.getStats(uid));
 }));

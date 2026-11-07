@@ -462,7 +462,7 @@ export function PapersProvider({ children }: { children: React.ReactNode }) {
   );
 
   const filteredPapers = useMemo(() => {
-    const q  = searchQuery.toLowerCase();
+    const q  = searchQuery.toLowerCase().trim();
     const af = authorFilter.toLowerCase();
 
     const filtered = papers.filter(p => {
@@ -470,7 +470,7 @@ export function PapersProvider({ children }: { children: React.ReactNode }) {
         p.title.toLowerCase().includes(q) ||
         p.authors.toLowerCase().includes(q) ||
         p.abstract.toLowerCase().includes(q) ||
-        p.arxivId.includes(q);
+        p.arxivId.toLowerCase().includes(q);
 
       const matchesCat = !selectedCategory || p.categories.includes(selectedCategory);
 

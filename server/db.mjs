@@ -643,6 +643,42 @@ export const db = {
     return rows[0] ? rowToPaper(rows[0]) : null;
   },
 
+  async searchPapers(userId, query, { limit = 100, offset = 0 } = {}) {
+    const q = String(query ?? '').trim().toLowerCase();
+    if (q.length < 2) return { papers: [], total: 0 };
+    const lim = Math.max(1, Math.min(250, Math.trunc(Number(limit) || 100)));
+    const off = Math.max(0, Math.trunc(Number(offset) || 0));
+    const where = `user_id=$1 AND (
+      strpos(lower(title), $2) > 0 OR
+      strpos(lower(authors), $2) > 0 OR
+      EXISTS (SELECT 1 FROM unnest(author_list) AS authors(author) WHERE strpos(lower(author), $2) > 0) OR
+      strpos(lower(abstract), $2) > 0 OR
+      strpos(lower(arxiv_id), $2) > 0
+    )`;
+    const [countResult, papersResult] = await Promise.all([
+      pool.query(`SELECT count(*)::int AS total FROM papers WHERE ${where}`, [userId, q]),
+      pool.query(
+        `SELECT id, arxiv_id, title, authors, author_list, categories,
+                abstract, comments, url, pdf_url, size, date, email_id,
+                digest_subject, digest_date, source,
+                file_path, file_size, mime_type, original_filename, uploaded_at,
+                (full_text IS NOT NULL) AS has_full_text,
+                COALESCE(full_text_chars, 0) AS full_text_chars,
+                organization,
+                (thumbnail_figures IS NOT NULL) AS thumbnail_checked,
+                COALESCE(jsonb_array_length(thumbnail_figures), 0) > 0 AS thumbnail_has_image
+         FROM papers WHERE ${where}
+         ORDER BY digest_date DESC, id DESC
+         LIMIT $3 OFFSET $4`,
+        [userId, q, lim, off],
+      ),
+    ]);
+    return {
+      papers: papersResult.rows.map(rowToPaper),
+      total: countResult.rows[0]?.total ?? 0,
+    };
+  },
+
   async attachFileToPaper(userId, id, file) {
     await pool.query(
       `UPDATE papers
