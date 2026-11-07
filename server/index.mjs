@@ -21,7 +21,7 @@ import { getSourcePlugin } from './ingestion/registry.mjs';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { db } from './db.mjs';
 import { fetchSources, buildNewsQuery } from './sources.mjs';
-import { createFirstPageImageThumbnail } from './paperThumbnail.mjs';
+import { createPaperFigureThumbnails } from './paperThumbnail.mjs';
 import { isParallaxPublicRead, isParallaxPublicWrite, registerParallaxPublicApi } from './parallax/publicApi.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -799,7 +799,29 @@ app.post('/api/ai/chat', async (req, res) => {
 });
 
 app.post('/api/fetch-imap-emails', async (req, res) => {
-  const { host, port = 993, username, password, senderEmail, maxEmails = 30 } = req.body;
+  const { senderEmail, maxEmails = 30 } = req.body ?? {};
+  let imapConfig;
+
+  if (db.enabled) {
+    try {
+      const who = await resolveRequestUser(req);
+      if (!who) return res.status(401).json({ error: 'Unauthorized — please sign in.' });
+      imapConfig = await db.getImapConfig(who.id);
+    } catch (err) {
+      console.error('[imap] could not load saved mailbox credentials:', err.message);
+      return res.status(500).json({ error: 'Could not load saved mailbox credentials.' });
+    }
+    if (!imapConfig) {
+      return res.status(400).json({ error: 'Add your mailbox credentials in Settings → Email & sync.' });
+    }
+  } else {
+    // Keep the no-database development mode working; signed-in accounts always
+    // use the encrypted credentials stored on their user row above.
+    const { host, port = 993, username, password } = req.body ?? {};
+    imapConfig = { host, port, username, password };
+  }
+
+  const { host, port = 993, username, password } = imapConfig;
 
   if (!host || !username || !password || !senderEmail) {
     return res.status(400).json({ error: 'host, username, password, and senderEmail are required.' });
@@ -903,6 +925,29 @@ async function resolveRequestUser(req) {
 }
 
 app.get('/api/db/status', (_req, res) => res.json({ enabled: db.enabled }));
+
+app.get('/api/db/mailbox-config', (req, res) => withUser(req, res, async (uid) => {
+  res.json({ imapConfig: await db.getImapConfig(uid) });
+}));
+
+app.put('/api/db/mailbox-config', (req, res) => withUser(req, res, async (uid) => {
+  const config = req.body?.imapConfig;
+  if (config === null) {
+    await db.saveImapConfig(uid, null);
+    return res.json({ ok: true });
+  }
+
+  const host = String(config?.host ?? '').trim();
+  const username = String(config?.username ?? '').trim();
+  const password = String(config?.password ?? '');
+  const port = Number(config?.port);
+  if (!host || !username || !password || !Number.isInteger(port) || port < 1 || port > 65535) {
+    return res.status(400).json({ error: 'Valid host, port, username, and password are required.' });
+  }
+
+  await db.saveImapConfig(uid, { host, port, username, password });
+  res.json({ ok: true });
+}));
 
 // ---------- durable source ingestion jobs ----------
 app.get('/api/db/ingest/jobs', (req, res) => withUser(req, res, async (uid) => {
@@ -1522,17 +1567,28 @@ function paperCachePath(req, paperId) {
   return join(dir, `${paperId}.pdf`);
 }
 
-function paperThumbnailPath(userId, paperId) {
+function paperFigurePath(userId, paperId, index) {
   const dir = join(UPLOAD_ROOT, 'paper-thumbnails', String(userId));
   mkdirSync(dir, { recursive: true });
-  const key = createHash('sha256').update(String(paperId)).digest('hex');
+  const key = createHash('sha256').update(`${paperId}:${index}`).digest('hex');
   return join(dir, `${key}.jpg`);
 }
 
-async function generatePaperThumbnail(userId, paper, req) {
+function resolvePaperFigurePath(userId, figure) {
+  if (!figure?.file) return null;
+  const file = basename(String(figure.file));
+  if (!/^[a-f0-9]{64}\.jpg$/i.test(file)) return null;
+  const path = join(UPLOAD_ROOT, 'paper-thumbnails', String(userId), file);
+  return existsSync(path) ? path : null;
+}
+
+async function generatePaperFigures(userId, paper, req) {
   const meta = await db.getPaperThumbnail(userId, paper.id);
-  if (meta?.checked && !meta.hasImage) return null;
-  if (meta?.hasImage && meta.path && existsSync(meta.path)) return readFileSync(meta.path);
+  if (meta?.checked) {
+    const figures = Array.isArray(meta.figures) ? meta.figures : [];
+    if (figures.length === 0) return figures;
+    if (figures.every(figure => resolvePaperFigurePath(userId, figure))) return figures;
+  }
 
   const cachedPath = resolvePaperFilePath(paper, req.get('x-user-email') || '');
   let pdfBuffer;
@@ -1540,46 +1596,80 @@ async function generatePaperThumbnail(userId, paper, req) {
     pdfBuffer = readFileSync(cachedPath);
   } else if (/^(\d{4}\.\d{4,5}|[a-z-]+(?:\.[a-z-]+)?\/\d{7})(v\d+)?$/i.test(String(paper.arxivId ?? ''))) {
     // Reuse the shared PDF queue/rate limit. The PDF buffer is temporary: only
-    // the small extracted image is retained unless the user separately caches
+    // extracted figure images are retained unless the user separately caches
     // the whole PDF.
     pdfBuffer = await enqueuePdfFetch(() => downloadArxivPdf(paper.arxivId));
   } else {
-    await db.setPaperThumbnail(userId, paper.id, { path: null, hasImage: false });
-    return null;
+    await db.setPaperThumbnail(userId, paper.id, []);
+    return [];
   }
 
-  const thumbnail = await enqueueExtraction(() => withTimeout(
-    createFirstPageImageThumbnail(pdfBuffer),
-    45_000,
-    'first-page image extraction timed out',
+  const extracted = await enqueueExtraction(() => withTimeout(
+    createPaperFigureThumbnails(pdfBuffer),
+    180_000,
+    'paper figure extraction timed out',
   ));
-  if (!thumbnail) {
-    await db.setPaperThumbnail(userId, paper.id, { path: null, hasImage: false });
-    return null;
+
+  const figures = [];
+  for (let index = 0; index < extracted.length; index++) {
+    const figure = extracted[index];
+    const path = paperFigurePath(userId, paper.id, index);
+    writeFileSync(path, figure.buffer);
+    figures.push({
+      index,
+      pageNumber: figure.pageNumber,
+      width: figure.width,
+      height: figure.height,
+      file: basename(path),
+    });
   }
 
-  const path = paperThumbnailPath(userId, paper.id);
-  writeFileSync(path, thumbnail);
-  await db.setPaperThumbnail(userId, paper.id, { path, hasImage: true });
-  return thumbnail;
+  await db.setPaperThumbnail(userId, paper.id, figures);
+  return figures;
 }
 
-app.post('/api/db/papers/:id/thumbnail', (req, res) => withUser(req, res, async (uid) => {
-  const paper = await db.getPaper(uid, req.params.id);
-  if (!paper) return res.status(404).json({ error: 'paper not found' });
+async function getOrGeneratePaperFigures(uid, paper, req) {
   const key = `${uid}:${paper.id}`;
   let pending = thumbnailInFlight.get(key);
   if (!pending) {
-    pending = generatePaperThumbnail(uid, paper, req);
+    pending = generatePaperFigures(uid, paper, req);
     thumbnailInFlight.set(key, pending);
     pending.finally(() => thumbnailInFlight.delete(key)).catch(() => {});
   }
-  const thumbnail = await pending;
-  if (!thumbnail) return res.json({ hasImage: false });
+  return pending;
+}
+
+app.post('/api/db/papers/:id/figures', (req, res) => withUser(req, res, async (uid) => {
+  const paper = await db.getPaper(uid, req.params.id);
+  if (!paper) return res.status(404).json({ error: 'paper not found' });
+  const figures = await getOrGeneratePaperFigures(uid, paper, req);
+  res.json({ figures: figures.map(({ index, pageNumber, width, height }) => ({ index, pageNumber, width, height })) });
+}));
+
+app.get('/api/db/papers/:id/figures/:index', (req, res) => withUser(req, res, async (uid) => {
+  const index = Number(req.params.index);
+  if (!Number.isInteger(index) || index < 0) return res.status(400).json({ error: 'Invalid figure index.' });
+  const meta = await db.getPaperThumbnail(uid, req.params.id);
+  const figure = meta?.figures?.find(item => item.index === index);
+  const path = resolvePaperFigurePath(uid, figure);
+  if (!path) return res.status(404).json({ error: 'Paper figure not found.' });
   res.status(200)
     .type('image/jpeg')
     .set('Cache-Control', 'private, max-age=86400')
-    .send(thumbnail);
+    .send(readFileSync(path));
+}));
+
+// Keep the old single-thumbnail endpoint compatible with already-open clients.
+app.post('/api/db/papers/:id/thumbnail', (req, res) => withUser(req, res, async (uid) => {
+  const paper = await db.getPaper(uid, req.params.id);
+  if (!paper) return res.status(404).json({ error: 'paper not found' });
+  const figures = await getOrGeneratePaperFigures(uid, paper, req);
+  const path = resolvePaperFigurePath(uid, figures[0]);
+  if (!path) return res.json({ hasImage: false });
+  res.status(200)
+    .type('image/jpeg')
+    .set('Cache-Control', 'private, max-age=86400')
+    .send(readFileSync(path));
 }));
 
 app.post('/api/db/papers/:id/cache-file', (req, res) => withUser(req, res, async (uid) => {

@@ -5,7 +5,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { AI_DEFAULTS, AI_PROVIDERS, listAvailableModels, resolveAIConfig } from '../utils/aiProvider';
 import { AIProvider, AIConfig, AIPurpose, AIProfileSlot, Settings } from '../types';
 import { dbExportAll } from '../utils/paperDb';
-import { getDbStatus, migrateFromIdb } from '../utils/researchApi';
+import { apiSaveMailboxConfig, getDbStatus, migrateFromIdb } from '../utils/researchApi';
 import { getStorageMode, setStorageMode } from '../utils/storage';
 import { useConfirm } from '../contexts/ConfirmContext';
 
@@ -27,6 +27,8 @@ export default function SettingsModal({ onClose }: Props) {
   const [imapUser, setImapUser] = useState(settings.imapConfig?.username ?? '');
   const [imapPass, setImapPass] = useState(settings.imapConfig?.password ?? '');
   const [showImapPass, setShowImapPass] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   // ----- Account / password -----
   const [currentPassword, setCurrentPassword] = useState('');
@@ -189,7 +191,23 @@ export default function SettingsModal({ onClose }: Props) {
     }
   }
 
-  function handleSave() {
+  async function handleSave() {
+    setSaving(true);
+    setSaveError(null);
+    const imapConfig = imapHost.trim() && imapUser.trim() && imapPass
+      ? { host: imapHost.trim(), port: Number(imapPort) || 993, username: imapUser.trim(), password: imapPass }
+      : undefined;
+
+    try {
+      // Saving settings is the explicit update action for mailbox credentials.
+      // The backend encrypts them and stores them against this account.
+      if (user) await apiSaveMailboxConfig(imapConfig ?? null);
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : 'Could not save mailbox credentials.');
+      setSaving(false);
+      return;
+    }
+
     const ai: AIConfig | undefined = provider === 'none'
       ? { provider: 'none' }
       : {
@@ -216,9 +234,7 @@ export default function SettingsModal({ onClose }: Props) {
     updateSettings({
       senderEmail,
       maxEmails,
-      imapConfig: imapHost.trim() && imapUser.trim() && imapPass
-        ? { host: imapHost.trim(), port: Number(imapPort) || 993, username: imapUser.trim(), password: imapPass }
-        : undefined,
+      imapConfig,
       // Keep legacy field in sync when user is on Claude (so older code paths work)
       claudeApiKey: provider === 'claude' && apiKey.trim() ? apiKey.trim() : undefined,
       s2ApiKey:     s2Key.trim() || undefined,
@@ -227,7 +243,7 @@ export default function SettingsModal({ onClose }: Props) {
       aiRouting:    Object.keys(routing).length > 0 ? routing : undefined,
     });
     onClose();
-    if (imapHost.trim() && imapUser.trim() && imapPass) {
+    if (imapConfig) {
       setTimeout(() => sync(true), 100);
     }
   }
@@ -371,8 +387,8 @@ export default function SettingsModal({ onClose }: Props) {
                 <span className="text-xs font-semibold text-slate-700">Mailbox (IMAP)</span>
               </div>
               <p className="text-[11px] text-slate-500 leading-relaxed">
-                Used to fetch your arXiv digest emails. Credentials are stored only in this browser
-                and sent to your local backend when syncing.
+                Used to fetch your arXiv digest emails. For signed-in accounts, credentials are encrypted
+                and saved to your account in the database. They stay saved until you update or clear them.
               </p>
               <div className="flex gap-2">
                 <input
@@ -724,16 +740,17 @@ export default function SettingsModal({ onClose }: Props) {
         </div>
 
         <div className="mt-7 flex gap-3">
-          <button onClick={onClose}
+          <button onClick={onClose} disabled={saving}
             className="flex-1 px-4 py-2.5 border border-slate-200 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors">
             Cancel
           </button>
-          <button onClick={handleSave}
-            className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-blue-600 rounded-lg text-sm font-medium text-white hover:bg-blue-700 transition-colors">
-            <RefreshCw size={14} />
-            Save & Sync
+          <button onClick={() => void handleSave()} disabled={saving}
+            className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-blue-600 rounded-lg text-sm font-medium text-white hover:bg-blue-700 transition-colors disabled:opacity-50">
+            {saving ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+            {saving ? 'Saving…' : 'Save & Sync'}
           </button>
         </div>
+        {saveError && <p className="mt-2 text-xs text-red-600">{saveError}</p>}
       </div>
     </div>
   );

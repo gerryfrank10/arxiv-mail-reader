@@ -5,7 +5,9 @@ import { computeAssessment } from '../utils/assessment';
 import { useAuth } from './AuthContext';
 import { AssessmentLabel } from '../utils/assessment';
 import { papersStore, readStore, metaStore, onStorageModeChange, getStorageMode } from '../utils/storage';
-import { apiExistingArxivIds, apiMarkAllRead } from '../utils/researchApi';
+import {
+  apiExistingArxivIds, apiGetMailboxConfig, apiMarkAllRead, apiSaveMailboxConfig, getDbStatus,
+} from '../utils/researchApi';
 import type { PaperStats } from '../utils/researchApi';
 
 const SETTINGS_KEY = 'arxiv_reader_settings';
@@ -22,9 +24,8 @@ function loadSettings(): Settings {
     if (s) stored = JSON.parse(s) as Settings;
   } catch { /* ignore */ }
   const base: Settings = stored ?? { senderEmail: 'no-reply@arxiv.org', maxEmails: 30 };
-  // Older builds kept IMAP credentials on the login session. AuthContext
-  // stashes them under arxiv_imap_config when it discards a legacy session, so
-  // adopt them here (until the user saves Settings, which persists them).
+  // Older builds kept IMAP credentials in the login session or this browser.
+  // Adopt them for one-time migration into the signed-in account's database.
   if (!base.imapConfig) {
     try {
       const legacy = localStorage.getItem('arxiv_imap_config');
@@ -90,6 +91,11 @@ export function PapersProvider({ children }: { children: React.ReactNode }) {
   const [progress, setProgress]           = useState(0);
   const [error, setError]                 = useState<string | null>(null);
   const [settings, setSettings]           = useState<Settings>(loadSettings);
+  // Older installs kept mailbox credentials in browser storage. Migrate them
+  // to the first signed-in account once, then keep credentials account-scoped.
+  const legacyImapConfig = useRef(settings.imapConfig);
+  const legacyImapMigrationAttempted = useRef(false);
+  const [mailboxReadyFor, setMailboxReadyFor] = useState<string | null>(null);
   const [_selectedPaper, _setSelectedPaper] = useState<Paper | null>(null);
   const selectedPaper = _selectedPaper;
   const [searchQuery, setSearchQuery]     = useState('');
@@ -148,6 +154,67 @@ export function PapersProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => { loadAll(); }, [loadAll]);
 
+  // Mail credentials belong to the signed-in account, not this browser or the
+  // previous account that happened to use it. Fetch them before auto-syncing.
+  useEffect(() => {
+    const accountEmail = user?.email;
+    if (!accountEmail) {
+      setMailboxReadyFor(null);
+      setSettings(prev => prev.imapConfig ? { ...prev, imapConfig: undefined } : prev);
+      return;
+    }
+
+    let cancelled = false;
+    setMailboxReadyFor(null);
+    setSettings(prev => prev.imapConfig ? { ...prev, imapConfig: undefined } : prev);
+
+    async function loadMailboxConfig() {
+      try {
+        const status = await getDbStatus();
+        if (!status.enabled) {
+          if (!cancelled) setSettings(prev => ({ ...prev, imapConfig: legacyImapConfig.current }));
+          return;
+        }
+
+        const result = await apiGetMailboxConfig();
+        let config = result.imapConfig;
+        if (!config && !legacyImapMigrationAttempted.current && legacyImapConfig.current) {
+          config = legacyImapConfig.current;
+          await apiSaveMailboxConfig(config);
+        }
+        legacyImapMigrationAttempted.current = true;
+        if (cancelled) return;
+
+        setSettings(prev => ({ ...prev, imapConfig: config ?? undefined }));
+        // The server is now the source of truth; don't leave a prior account's
+        // secret in shared browser storage where a different login could use it.
+        try {
+          const raw = localStorage.getItem(SETTINGS_KEY);
+          if (raw) {
+            const local = JSON.parse(raw) as Settings;
+            delete local.imapConfig;
+            localStorage.setItem(SETTINGS_KEY, JSON.stringify(local));
+          }
+          localStorage.removeItem('arxiv_imap_config');
+        } catch { /* local cleanup is best-effort */ }
+      } catch (e) {
+        if (!cancelled) {
+          setError(e instanceof Error ? e.message : 'Could not load saved mailbox credentials.');
+          // Keep a legacy config visible if migration could not reach the DB;
+          // syncing itself will still use the server-side value when available.
+          if (!legacyImapMigrationAttempted.current && legacyImapConfig.current) {
+            setSettings(prev => ({ ...prev, imapConfig: legacyImapConfig.current }));
+          }
+        }
+      } finally {
+        if (!cancelled) setMailboxReadyFor(accountEmail!);
+      }
+    }
+
+    void loadMailboxConfig();
+    return () => { cancelled = true; };
+  }, [user?.email]);
+
   // Append the next window of papers. Local IndexedDB returns the whole set on
   // the first page, so this only does real work in server mode.
   const loadMorePapers = useCallback(async () => {
@@ -183,6 +250,7 @@ export function PapersProvider({ children }: { children: React.ReactNode }) {
 
   const sync = useCallback(async (force = false) => {
     if (!user || (!dbReady && !force)) return;
+    if (mailboxReadyFor !== user.email) return;
     if (!navigator.onLine) {
       setError('You are offline. Showing cached papers.');
       return;
@@ -226,13 +294,13 @@ export function PapersProvider({ children }: { children: React.ReactNode }) {
       setLoading(false);
       setProgress(100);
     }
-  }, [user, settings, dbReady]);
+  }, [user, settings, dbReady, mailboxReadyFor]);
 
   // Auto-sync when user logs in and DB is ready — only when mail credentials
   // are configured, otherwise every login would show a "no credentials" error.
   useEffect(() => {
-    if (user && dbReady && settings.imapConfig) sync();
-  }, [user?.email, dbReady]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (user && dbReady && mailboxReadyFor === user.email && settings.imapConfig) sync();
+  }, [user?.email, dbReady, mailboxReadyFor, settings.imapConfig]);
 
   // Persist read state through the active storage adapter. Incremental calls
   // (add/remove) keep a single click O(1); the full set is only used when
@@ -376,10 +444,12 @@ export function PapersProvider({ children }: { children: React.ReactNode }) {
   const updateSettings = useCallback((updates: Partial<Settings>) => {
     setSettings(prev => {
       const next = { ...prev, ...updates };
-      localStorage.setItem(SETTINGS_KEY, JSON.stringify(next));
+      const local = { ...next };
+      if (user) delete local.imapConfig;
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify(local));
       return next;
     });
-  }, []);
+  }, [user]);
 
   const allCategories = useMemo(
     () => [...new Set(papers.flatMap(p => p.categories))].sort(),

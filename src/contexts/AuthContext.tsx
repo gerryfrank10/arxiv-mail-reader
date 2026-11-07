@@ -42,7 +42,7 @@ function loadSession(): AuthUser | null {
     if (!raw) return null;
     const user = JSON.parse(raw) as AuthUser;
     // Sessions from the old Google/IMAP login can't authenticate against the
-    // API any more. Preserve the IMAP credentials so Settings can pick them up.
+    // API any more. Preserve the credentials for one-time account migration.
     if (user.provider !== 'server') {
       if (user.imapConfig) {
         try { localStorage.setItem(LEGACY_IMAP_KEY, JSON.stringify(user.imapConfig)); } catch { /* ignore */ }

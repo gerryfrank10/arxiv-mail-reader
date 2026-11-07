@@ -9,6 +9,7 @@
 import pg from 'pg';
 import { hashPassword, verifyPassword, newSessionToken, hashSessionToken } from './auth.mjs';
 import { detectOrganization } from './organizations.mjs';
+import { decryptImapConfig, encryptImapConfig } from './imapCredentials.mjs';
 
 const { Pool } = pg;
 
@@ -45,7 +46,8 @@ export const db = {
             ADD COLUMN IF NOT EXISTS organization_checked_at timestamptz,
             ADD COLUMN IF NOT EXISTS thumbnail_path           text,
             ADD COLUMN IF NOT EXISTS thumbnail_checked_at     timestamptz,
-            ADD COLUMN IF NOT EXISTS thumbnail_has_image      boolean
+            ADD COLUMN IF NOT EXISTS thumbnail_has_image      boolean,
+            ADD COLUMN IF NOT EXISTS thumbnail_figures         jsonb
         `);
         await pool.query(`
           CREATE INDEX IF NOT EXISTS idx_papers_user_file
@@ -66,6 +68,7 @@ export const db = {
         // Accounts: passwords live on the user row; sessions are opaque bearer
         // tokens stored as SHA-256 hashes with an expiry.
         await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash text`);
+        await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS imap_config jsonb`);
         await pool.query(`
           CREATE TABLE IF NOT EXISTS sessions (
             token_hash TEXT        PRIMARY KEY,
@@ -226,6 +229,20 @@ export const db = {
     await pool.query(`DELETE FROM sessions WHERE token_hash=$1`, [hashSessionToken(token)]);
   },
 
+  async getImapConfig(userId) {
+    const { rows } = await pool.query(`SELECT imap_config FROM users WHERE id=$1`, [userId]);
+    const encrypted = rows[0]?.imap_config;
+    return encrypted ? decryptImapConfig(encrypted) : null;
+  },
+
+  async saveImapConfig(userId, config) {
+    const encrypted = config ? encryptImapConfig(config) : null;
+    await pool.query(
+      `UPDATE users SET imap_config=$2::jsonb WHERE id=$1`,
+      [userId, encrypted ? JSON.stringify(encrypted) : null],
+    );
+  },
+
   async userIdForEmail(email) {
     if (!email) throw new Error('email required');
     const e = String(email).trim().toLowerCase();
@@ -254,8 +271,8 @@ export const db = {
                (full_text IS NOT NULL) AS has_full_text,
                COALESCE(full_text_chars, 0) AS full_text_chars,
               organization,
-              (thumbnail_checked_at IS NOT NULL) AS thumbnail_checked,
-              COALESCE(thumbnail_has_image, false) AS thumbnail_has_image`;
+               (thumbnail_figures IS NOT NULL) AS thumbnail_checked,
+               COALESCE(jsonb_array_length(thumbnail_figures), 0) > 0 AS thumbnail_has_image`;
     const lim = Math.trunc(Number(limit) || 0);
     const off = Math.max(0, Math.trunc(Number(offset) || 0));
 
@@ -618,8 +635,8 @@ export const db = {
               (full_text IS NOT NULL) AS has_full_text,
               COALESCE(full_text_chars, 0) AS full_text_chars,
               organization,
-              (thumbnail_checked_at IS NOT NULL) AS thumbnail_checked,
-              COALESCE(thumbnail_has_image, false) AS thumbnail_has_image
+              (thumbnail_figures IS NOT NULL) AS thumbnail_checked,
+              COALESCE(jsonb_array_length(thumbnail_figures), 0) > 0 AS thumbnail_has_image
        FROM papers WHERE user_id=$1 AND id=$2`,
       [userId, id],
     );
@@ -664,24 +681,27 @@ export const db = {
 
   async getPaperThumbnail(userId, id) {
     const { rows } = await pool.query(
-      `SELECT thumbnail_path, thumbnail_has_image,
-              (thumbnail_checked_at IS NOT NULL) AS checked
+      `SELECT thumbnail_figures,
+              (thumbnail_figures IS NOT NULL) AS checked
        FROM papers WHERE user_id=$1 AND id=$2`,
       [userId, id],
     );
     if (!rows[0]) return null;
     return {
-      path: rows[0].thumbnail_path ?? null,
-      hasImage: !!rows[0].thumbnail_has_image,
+      figures: rows[0].thumbnail_figures ?? null,
+      hasImage: Array.isArray(rows[0].thumbnail_figures) && rows[0].thumbnail_figures.length > 0,
       checked: !!rows[0].checked,
     };
   },
 
-  async setPaperThumbnail(userId, id, { path, hasImage }) {
+  async setPaperThumbnail(userId, id, figures) {
+    const list = Array.isArray(figures) ? figures : [];
     await pool.query(
-      `UPDATE papers SET thumbnail_path=$3, thumbnail_has_image=$4, thumbnail_checked_at=now()
+      `UPDATE papers
+       SET thumbnail_path=NULL, thumbnail_figures=$3::jsonb,
+           thumbnail_has_image=$4, thumbnail_checked_at=now()
        WHERE user_id=$1 AND id=$2`,
-      [userId, id, path ?? null, !!hasImage],
+      [userId, id, JSON.stringify(list), list.length > 0],
     );
   },
 

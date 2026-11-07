@@ -5,9 +5,9 @@ import { computeAssessment, ASSESSMENT_BADGE } from '../utils/assessment';
 import { CATEGORY_COLORS_LIGHT } from '../utils/categories';
 import { computeAuthorStats, groupByVenue, detectVenue, type AuthorStat, type VenueGroup, FEATURED_AUTHORS } from '../utils/conferences';
 import { publisherOf } from '../utils/publisher';
-import { apiGetPaperComments, apiAddPaperComment, apiDeletePaperComment, apiGetCommentCounts, apiGetOrganizations, apiGetPaperThumbnail } from '../utils/researchApi';
+import { apiGetPaperComments, apiAddPaperComment, apiDeletePaperComment, apiGetCommentCounts, apiGetOrganizations, apiGetPaperFigure, apiGetPaperFigures } from '../utils/researchApi';
 import { format, formatDistanceToNow } from 'date-fns';
-import { BookOpen, Users, Presentation, ChevronRight, ArrowUpDown, Award, Rss, Heart, Bookmark, BookmarkCheck, MessageCircle, ExternalLink, Loader2, Image as ImageIcon } from 'lucide-react';
+import { BookOpen, Users, Presentation, ChevronLeft, ChevronRight, ArrowUpDown, Award, Rss, Heart, Bookmark, BookmarkCheck, MessageCircle, ExternalLink, Loader2, Image as ImageIcon } from 'lucide-react';
 import { usePagination } from '../hooks/usePagination';
 import Pager from './Pager';
 import type { Paper, PaperComment } from '../types';
@@ -447,10 +447,14 @@ function PaperImagePreview({ paper, storageMode, updatePaperMeta }: {
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const requested = useRef(false);
+  const touchStartX = useRef<number | null>(null);
   const [retry, setRetry] = useState(0);
   const [state, setState] = useState<'idle' | 'loading' | 'image' | 'none' | 'error'>(
     paper.thumbnailChecked && !paper.thumbnailAvailable ? 'none' : 'idle',
   );
+  const [figures, setFigures] = useState<Array<{ index: number; pageNumber: number; width: number; height: number }>>([]);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const [imageLoading, setImageLoading] = useState(false);
   const [imageUrl, setImageUrl] = useState<string | null>(null);
 
   useEffect(() => {
@@ -468,20 +472,22 @@ function PaperImagePreview({ paper, storageMode, updatePaperMeta }: {
       requested.current = true;
       setState('loading');
       try {
-        const result = await apiGetPaperThumbnail(paper.id);
+        const result = await apiGetPaperFigures(paper.id);
         if (cancelled) return;
-        if (result.hasImage && result.blob) {
-          setImageUrl(URL.createObjectURL(result.blob));
+        if (result.length > 0) {
+          setFigures(result);
+          setActiveIndex(0);
           setState('image');
           updatePaperMeta(paper.id, { thumbnailChecked: true, thumbnailAvailable: true });
         } else {
+          setFigures([]);
           setState('none');
           updatePaperMeta(paper.id, { thumbnailChecked: true, thumbnailAvailable: false });
         }
       } catch (e) {
         if (cancelled) return;
         setState('error');
-        console.warn(`[feed] first-page image preview failed for ${paper.arxivId}:`, e);
+        console.warn(`[feed] figure extraction failed for ${paper.arxivId}:`, e);
       }
     };
 
@@ -502,6 +508,27 @@ function PaperImagePreview({ paper, storageMode, updatePaperMeta }: {
     };
   }, [paper.id, paper.arxivId, paper.thumbnailChecked, paper.thumbnailAvailable, storageMode, retry, updatePaperMeta]);
 
+  useEffect(() => {
+    const figure = figures[activeIndex];
+    if (state !== 'image' || !figure) return;
+    let cancelled = false;
+    setImageLoading(true);
+    setImageUrl(null);
+    apiGetPaperFigure(paper.id, figure.index)
+      .then(blob => {
+        if (!cancelled) setImageUrl(URL.createObjectURL(blob));
+      })
+      .catch(e => {
+        if (cancelled) return;
+        setState('error');
+        console.warn(`[feed] figure image failed for ${paper.arxivId}:`, e);
+      })
+      .finally(() => {
+        if (!cancelled) setImageLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [paper.id, paper.arxivId, state, figures, activeIndex]);
+
   useEffect(() => () => {
     if (imageUrl) URL.revokeObjectURL(imageUrl);
   }, [imageUrl]);
@@ -510,19 +537,64 @@ function PaperImagePreview({ paper, storageMode, updatePaperMeta }: {
 
   return (
     <div ref={hostRef} className="mt-3">
-      {state === 'image' && imageUrl ? (
+      {state === 'image' && figures.length > 0 ? (
         <div className="overflow-hidden rounded-xl border border-[#e7e5df] bg-white">
-          <img
-            src={imageUrl}
-            alt={`Image from the first page of ${paper.title}`}
-            loading="lazy"
-            className="block w-full max-h-[420px] object-contain"
-          />
-          <p className="px-3 py-1.5 border-t border-[#eeede8] text-[10px] text-slate-400">First-page figure</p>
+          <div
+            className="relative flex min-h-[140px] items-center justify-center bg-[#fafaf8]"
+            aria-roledescription="carousel"
+            aria-label={`Figures from ${paper.title}`}
+            onTouchStart={event => { touchStartX.current = event.touches[0]?.clientX ?? null; }}
+            onTouchEnd={event => {
+              const start = touchStartX.current;
+              touchStartX.current = null;
+              const end = event.changedTouches[0]?.clientX;
+              if (start === null || end === undefined || figures.length < 2) return;
+              const distance = end - start;
+              if (distance < -40) setActiveIndex(index => (index + 1) % figures.length);
+              if (distance > 40) setActiveIndex(index => (index - 1 + figures.length) % figures.length);
+            }}
+          >
+            {imageUrl ? (
+              <img
+                src={imageUrl}
+                alt={`Figure ${activeIndex + 1} from ${paper.title}, page ${figures[activeIndex].pageNumber}`}
+                draggable={false}
+                className="block w-full max-h-[420px] select-none object-contain"
+              />
+            ) : imageLoading ? (
+              <div className="flex items-center gap-2 py-8 text-[11px] text-slate-400">
+                <Loader2 size={12} className="animate-spin" /> Loading figure…
+              </div>
+            ) : null}
+            {figures.length > 1 && (
+              <>
+                <button
+                  type="button"
+                  aria-label="Previous figure"
+                  onClick={() => setActiveIndex(index => (index - 1 + figures.length) % figures.length)}
+                  className="absolute left-2 top-1/2 -translate-y-1/2 rounded-full border border-white/70 bg-white/90 p-1.5 text-slate-700 shadow hover:bg-white"
+                >
+                  <ChevronLeft size={16} />
+                </button>
+                <button
+                  type="button"
+                  aria-label="Next figure"
+                  onClick={() => setActiveIndex(index => (index + 1) % figures.length)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full border border-white/70 bg-white/90 p-1.5 text-slate-700 shadow hover:bg-white"
+                >
+                  <ChevronRight size={16} />
+                </button>
+              </>
+            )}
+          </div>
+          <div className="flex items-center justify-between gap-3 border-t border-[#eeede8] px-3 py-1.5 text-[10px] text-slate-400">
+            <span>Figure {activeIndex + 1} of {figures.length} · page {figures[activeIndex].pageNumber}</span>
+            {figures.length > 1 && <span className="text-slate-400">Swipe to browse</span>}
+          </div>
         </div>
       ) : state === 'loading' ? (
         <div className="flex items-center gap-2 py-1 text-[11px] text-slate-400">
-          <Loader2 size={12} className="animate-spin" /> Checking first page for an image…
+          <Loader2 size={12} className="animate-spin" /> Finding figures across the paper…
         </div>
       ) : state === 'error' ? (
         <button

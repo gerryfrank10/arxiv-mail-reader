@@ -1,7 +1,7 @@
 import { Paper } from '../types';
 import { ImapConfig } from '../types';
 import { parseArxivEmail } from './emailParser';
-import { authHeaders } from './researchApi';
+import { authHeaders, getDbStatus } from './researchApi';
 
 interface RawEmail {
   id: string;
@@ -30,17 +30,20 @@ export async function fetchArxivPapersImap(
     );
   }
 
+  const { enabled: databaseEnabled } = await getDbStatus();
   const res = await fetch('/api/fetch-imap-emails', {
     method: 'POST',
     headers: authHeaders(),
-    body: JSON.stringify({
-      host: imapConfig.host,
-      port: imapConfig.port,
-      username: imapConfig.username,
-      password: imapConfig.password,
-      senderEmail,
-      maxEmails,
-    }),
+    body: JSON.stringify(databaseEnabled
+      ? { senderEmail, maxEmails }
+      : {
+          host: imapConfig.host,
+          port: imapConfig.port,
+          username: imapConfig.username,
+          password: imapConfig.password,
+          senderEmail,
+          maxEmails,
+        }),
   });
 
   if (!res.ok) {

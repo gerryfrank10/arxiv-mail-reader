@@ -4,7 +4,7 @@
 // isn't enabled, the status endpoint returns { enabled: false } and the
 // client UI shows a setup hint instead of an empty/broken state.
 
-import { Book, Collection, CollectionItem, EntityKind, Link, LinkRel, MagazineDraft, MagazineIssue, MagazineIssueSummary, MagazineSource, Paper, PaperComment, PaperScore, ResearchDocument, Tracker } from '../types';
+import { Book, Collection, CollectionItem, EntityKind, ImapConfig, Link, LinkRel, MagazineDraft, MagazineIssue, MagazineIssueSummary, MagazineSource, Paper, PaperComment, PaperScore, ResearchDocument, Tracker } from '../types';
 
 function userEmailFromLocalStorage(): string | null {
   try {
@@ -93,6 +93,17 @@ async function call<T>(url: string, init?: RequestInit): Promise<T> {
 
 export async function getDbStatus(): Promise<{ enabled: boolean }> {
   return call('/api/db/status');
+}
+
+export async function apiGetMailboxConfig(): Promise<{ imapConfig: ImapConfig | null }> {
+  return call('/api/db/mailbox-config');
+}
+
+export async function apiSaveMailboxConfig(imapConfig: ImapConfig | null): Promise<void> {
+  await call('/api/db/mailbox-config', {
+    method: 'PUT',
+    body: JSON.stringify({ imapConfig }),
+  });
 }
 
 // ---------- Books ----------
@@ -461,7 +472,34 @@ export async function apiUpdatePaperAbstract(id: string, abstract: string): Prom
   });
 }
 
-/** Generate (once) and fetch a first-page embedded-image preview, if present. */
+/** Generate (once) and fetch the embedded figures from every page of a paper. */
+export interface PaperFigure {
+  index: number;
+  pageNumber: number;
+  width: number;
+  height: number;
+}
+
+export async function apiGetPaperFigures(paperId: string): Promise<PaperFigure[]> {
+  const { figures } = await call<{ figures: PaperFigure[] }>(
+    `/api/db/papers/${encodeURIComponent(paperId)}/figures`,
+    { method: 'POST' },
+  );
+  return figures ?? [];
+}
+
+export async function apiGetPaperFigure(paperId: string, index: number): Promise<Blob> {
+  const r = await fetch(`/api/db/papers/${encodeURIComponent(paperId)}/figures/${index}`, {
+    headers: authHeaders(),
+  });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({})) as { error?: string };
+    throw new Error(err.error ?? `Figure request failed (HTTP ${r.status})`);
+  }
+  return r.blob();
+}
+
+/** Legacy single-image endpoint for older feed clients. */
 export async function apiGetPaperThumbnail(paperId: string): Promise<{ hasImage: boolean; blob?: Blob }> {
   const r = await fetch(`/api/db/papers/${encodeURIComponent(paperId)}/thumbnail`, {
     method: 'POST',

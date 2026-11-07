@@ -57,7 +57,9 @@ everything else is built on top.
   sessions). The first account is seeded from `SEED_USER_EMAIL` /
   `SEED_USER_PASSWORD`; anyone else can create their own account and library.
 - **Mailbox credentials** (IMAP host/port/username/app password) are entered
-  after sign-in under **Settings → Email & sync** and stored in that browser.
+  after sign-in under **Settings → Email & sync**, encrypted, and stored on the
+  account in Postgres. They are reused on each sync and remain there until
+  updated or cleared in Settings.
 
 ---
 
@@ -66,6 +68,11 @@ everything else is built on top.
 - **Frontend** — React + TypeScript + Vite + Tailwind
 - **Backend** — Node/Express (`server/index.mjs`) — proxies arXiv/Semantic Scholar/AI calls, fetches IMAP mail, and serves the built frontend in production
 - **Database** — PostgreSQL (optional)
+
+Set `IMAP_CREDENTIALS_KEY` to a stable random secret to encrypt saved mailbox
+credentials at rest (for example, generate one with `openssl rand -hex 32`).
+Keep it backed up and unchanged. If omitted, the server derives a fallback key
+from `APP_AUTH_TOKEN` or `DATABASE_URL`.
 
 Storage has two modes:
 - **Server mode (Postgres, required for accounts)** — set `DATABASE_URL`; login,
@@ -129,6 +136,7 @@ Everything is optional — the app degrades gracefully. Copy `.env.example` to
 | Variable | Purpose |
 | --- | --- |
 | `DATABASE_URL` | Connect Postgres — required for accounts, sessions and all library data. |
+| `IMAP_CREDENTIALS_KEY` | Stable server-side key used to encrypt per-account IMAP credentials. |
 | `SEED_USER_EMAIL` | Owner account created/adopted on first start. |
 | `SEED_USER_PASSWORD` | Password set once, when the owner account has none yet. |
 | `SEED_LEGACY_EMAIL` | Existing user email to rename to `SEED_USER_EMAIL` so its papers stay attached. |
@@ -137,7 +145,7 @@ Everything is optional — the app degrades gracefully. Copy `.env.example` to
 | `OPENALEX_MAILTO` | Polite-pool contact for OpenAlex (and the arXiv User-Agent). |
 | `DISABLE_MAGAZINE_SCHEDULER` | `1` to stop the weekly Magazine worker. |
 
-> Non-`VITE_`-prefixed values (API keys, `DATABASE_URL`) stay on the server and
+> Non-`VITE_`-prefixed values (API keys, `DATABASE_URL`, `IMAP_CREDENTIALS_KEY`) stay on the server and
 > never reach the browser bundle.
 
 ### Accounts and first login

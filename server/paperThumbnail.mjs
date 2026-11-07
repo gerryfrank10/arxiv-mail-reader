@@ -1,16 +1,21 @@
-import { extractImages } from 'unpdf';
+import { extractImages, getDocumentProxy } from 'unpdf';
 
 const MIN_IMAGE_AREA = 8_000;
 const MAX_IMAGE_AREA = 40_000_000;
 const PREVIEW_MAX_EDGE = 960;
 
 export function selectFirstPageImage(images) {
+  return selectPaperFigureImages(images)
+    .sort((a, b) => (b.width * b.height) - (a.width * a.height))[0] ?? null;
+}
+
+/** Keep figure-sized raster images while excluding tiny logos and glyphs. */
+export function selectPaperFigureImages(images) {
   return images
     .filter(img => img.width >= 80 && img.height >= 60
       && img.width * img.height >= MIN_IMAGE_AREA
       && img.width * img.height <= MAX_IMAGE_AREA
-      && [1, 3, 4].includes(img.channels))
-    .sort((a, b) => (b.width * b.height) - (a.width * a.height))[0] ?? null;
+      && [1, 3, 4].includes(img.channels));
 }
 
 export async function encodeImageThumbnail(image) {
@@ -48,10 +53,32 @@ export async function encodeImageThumbnail(image) {
   return canvas.toBuffer('image/jpeg', 82);
 }
 
-/**
- * Extract the largest meaningful raster image embedded on page one and encode
- * a small JPEG for the feed. Returns null for text/vector-only first pages.
- */
+/** Extract all figure-sized raster images from every page of a paper. */
+export async function createPaperFigureThumbnails(pdfBuffer) {
+  const document = await getDocumentProxy(new Uint8Array(pdfBuffer));
+  const figures = [];
+  try {
+    for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber++) {
+      const images = await extractImages(document, pageNumber);
+      for (const image of selectPaperFigureImages(images)) {
+        const thumbnail = await encodeImageThumbnail(image);
+        if (thumbnail) {
+          figures.push({
+            buffer: thumbnail,
+            pageNumber,
+            width: image.width,
+            height: image.height,
+          });
+        }
+      }
+    }
+  } finally {
+    await document.cleanup?.();
+  }
+  return figures;
+}
+
+/** Legacy first-page preview helper retained for callers outside the feed. */
 export async function createFirstPageImageThumbnail(pdfBuffer) {
   const images = await extractImages(new Uint8Array(pdfBuffer), 1);
   return encodeImageThumbnail(selectFirstPageImage(images));

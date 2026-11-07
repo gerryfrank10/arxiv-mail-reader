@@ -33,7 +33,7 @@ export interface Paper {
   // Company or research lab that wrote the paper (e.g. "Google DeepMind"),
   // read from the PDF's affiliations. null = not known yet.
   organization?: string | null;
-  // First-page embedded image preview, generated lazily for feed-visible papers.
+  // Embedded PDF figures, extracted lazily for feed-visible papers.
   thumbnailChecked?: boolean;
   thumbnailAvailable?: boolean;
 }
@@ -84,7 +84,7 @@ export interface AIProfiles {
 export interface Settings {
   senderEmail: string;
   maxEmails: number;
-  // Mailbox credentials used to fetch arXiv digest emails (per browser/user).
+  // Mailbox credentials used to fetch arXiv digest emails (persisted per account).
   imapConfig?: ImapConfig;
   // Legacy single-key fields (kept for backward compat — used as fallback)
   claudeApiKey?: string;
