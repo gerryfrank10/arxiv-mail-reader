@@ -45,6 +45,41 @@ function createPdfWithImages(images) {
   return Buffer.concat(chunks);
 }
 
+function createPdfWithVectorFigure(caption) {
+  const content = Buffer.from(
+    `q 0.12 0.28 0.72 rg 72 480 396 190 re f Q\n`
+      + `q 0 0 0 RG 2 w 72 480 396 190 re S Q\n`
+      + `BT /F1 10 Tf 0 0 0 rg 72 460 Td (${caption}) Tj ET`,
+  );
+  const objects = [
+    null,
+    Buffer.from('<< /Type /Catalog /Pages 2 0 R >>'),
+    Buffer.from('<< /Type /Pages /Kids [3 0 R] /Count 1 >>'),
+    Buffer.from('<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>'),
+    Buffer.concat([
+      Buffer.from(`<< /Length ${content.length} >>\nstream\n`),
+      content,
+      Buffer.from('\nendstream'),
+    ]),
+    Buffer.from('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>'),
+  ];
+  const chunks = [Buffer.from('%PDF-1.4\n')];
+  const offsets = [0];
+  for (let id = 1; id < objects.length; id++) {
+    offsets[id] = Buffer.concat(chunks).length;
+    chunks.push(Buffer.from(`${id} 0 obj\n`), objects[id], Buffer.from('\nendobj\n'));
+  }
+  const xrefOffset = Buffer.concat(chunks).length;
+  const xref = [Buffer.from(`xref\n0 ${objects.length}\n0000000000 65535 f \n`)];
+  for (let id = 1; id < objects.length; id++) {
+    xref.push(Buffer.from(`${String(offsets[id]).padStart(10, '0')} 00000 n \n`));
+  }
+  chunks.push(...xref, Buffer.from(
+    `trailer\n<< /Size ${objects.length} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`,
+  ));
+  return Buffer.concat(chunks);
+}
+
 describe('paper figure previews', () => {
   it('ignores tiny logos and selects the largest meaningful raster image', () => {
     const tinyLogo = { width: 40, height: 30, channels: 3, data: new Uint8Array(40 * 30 * 3) };
@@ -67,7 +102,7 @@ describe('paper figure previews', () => {
     expect(jpeg.length).toBeGreaterThan(100);
   });
 
-  it('extracts figures from later pages as well as the first page', async () => {
+  it('does not mistake unrelated embedded images for figures without captions', async () => {
     const jpeg1 = await encodeImageThumbnail({
       width: 120, height: 80, channels: 3, data: new Uint8Array(120 * 80 * 3).fill(70),
     });
@@ -75,8 +110,20 @@ describe('paper figure previews', () => {
       width: 120, height: 80, channels: 3, data: new Uint8Array(120 * 80 * 3).fill(180),
     });
     const figures = await createPaperFigureThumbnails(createPdfWithImages([jpeg1, jpeg2]));
-    expect(figures).toHaveLength(2);
-    expect(figures.map(figure => figure.pageNumber)).toEqual([1, 2]);
-    expect(figures.every(figure => figure.buffer.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff])))).toBe(true);
+    expect(figures).toHaveLength(0);
+  });
+
+  it('renders captioned vector figures as complete crops with their page dimensions', async () => {
+    const figures = await createPaperFigureThumbnails(createPdfWithVectorFigure('Figure 1. A vector figure.'));
+    expect(figures).toHaveLength(1);
+    expect(figures[0].pageNumber).toBe(1);
+    expect(figures[0].width).toBeGreaterThan(figures[0].height);
+    expect(figures[0].buffer.subarray(0, 3)).toEqual(Buffer.from([0xff, 0xd8, 0xff]));
+    expect(figures[0].buffer.length).toBeGreaterThan(1000);
+  });
+
+  it('does not treat a body reference like “Figure 1 shows …” as a figure caption', async () => {
+    const figures = await createPaperFigureThumbnails(createPdfWithVectorFigure('Figure 1 shows an example.'));
+    expect(figures).toHaveLength(0);
   });
 });

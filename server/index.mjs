@@ -21,7 +21,7 @@ import { getSourcePlugin } from './ingestion/registry.mjs';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { db } from './db.mjs';
 import { fetchSources, buildNewsQuery } from './sources.mjs';
-import { createPaperFigureThumbnails } from './paperThumbnail.mjs';
+import { createPaperFigureThumbnails, FIGURE_CACHE_VERSION } from './paperThumbnail.mjs';
 import { isParallaxPublicRead, isParallaxPublicWrite, registerParallaxPublicApi } from './parallax/publicApi.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -1596,7 +1596,7 @@ function resolvePaperFigurePath(userId, figure) {
 
 async function generatePaperFigures(userId, paper, req) {
   const meta = await db.getPaperThumbnail(userId, paper.id);
-  if (meta?.checked) {
+  if (meta?.checked && meta.version === FIGURE_CACHE_VERSION) {
     const figures = Array.isArray(meta.figures) ? meta.figures : [];
     if (figures.length === 0) return figures;
     if (figures.every(figure => resolvePaperFigurePath(userId, figure))) return figures;
@@ -1612,7 +1612,7 @@ async function generatePaperFigures(userId, paper, req) {
     // the whole PDF.
     pdfBuffer = await enqueuePdfFetch(() => downloadArxivPdf(paper.arxivId));
   } else {
-    await db.setPaperThumbnail(userId, paper.id, []);
+    await db.setPaperThumbnail(userId, paper.id, [], FIGURE_CACHE_VERSION);
     return [];
   }
 
@@ -1636,7 +1636,7 @@ async function generatePaperFigures(userId, paper, req) {
     });
   }
 
-  await db.setPaperThumbnail(userId, paper.id, figures);
+  await db.setPaperThumbnail(userId, paper.id, figures, FIGURE_CACHE_VERSION);
   return figures;
 }
 

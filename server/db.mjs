@@ -47,7 +47,8 @@ export const db = {
             ADD COLUMN IF NOT EXISTS thumbnail_path           text,
             ADD COLUMN IF NOT EXISTS thumbnail_checked_at     timestamptz,
             ADD COLUMN IF NOT EXISTS thumbnail_has_image      boolean,
-            ADD COLUMN IF NOT EXISTS thumbnail_figures         jsonb
+            ADD COLUMN IF NOT EXISTS thumbnail_figures        jsonb,
+            ADD COLUMN IF NOT EXISTS thumbnail_version        integer NOT NULL DEFAULT 0
         `);
         await pool.query(`
           CREATE INDEX IF NOT EXISTS idx_papers_user_file
@@ -270,9 +271,9 @@ export const db = {
                file_path, file_size, mime_type, original_filename, uploaded_at,
                (full_text IS NOT NULL) AS has_full_text,
                COALESCE(full_text_chars, 0) AS full_text_chars,
-              organization,
-               (thumbnail_figures IS NOT NULL) AS thumbnail_checked,
-               COALESCE(jsonb_array_length(thumbnail_figures), 0) > 0 AS thumbnail_has_image`;
+               organization,
+                (thumbnail_figures IS NOT NULL AND thumbnail_version=2) AS thumbnail_checked,
+                (thumbnail_version=2 AND COALESCE(jsonb_array_length(thumbnail_figures), 0) > 0) AS thumbnail_has_image`;
     const lim = Math.trunc(Number(limit) || 0);
     const off = Math.max(0, Math.trunc(Number(offset) || 0));
 
@@ -635,8 +636,8 @@ export const db = {
               (full_text IS NOT NULL) AS has_full_text,
               COALESCE(full_text_chars, 0) AS full_text_chars,
               organization,
-              (thumbnail_figures IS NOT NULL) AS thumbnail_checked,
-              COALESCE(jsonb_array_length(thumbnail_figures), 0) > 0 AS thumbnail_has_image
+              (thumbnail_figures IS NOT NULL AND thumbnail_version=2) AS thumbnail_checked,
+              (thumbnail_version=2 AND COALESCE(jsonb_array_length(thumbnail_figures), 0) > 0) AS thumbnail_has_image
        FROM papers WHERE user_id=$1 AND id=$2`,
       [userId, id],
     );
@@ -665,8 +666,8 @@ export const db = {
                 (full_text IS NOT NULL) AS has_full_text,
                 COALESCE(full_text_chars, 0) AS full_text_chars,
                 organization,
-                (thumbnail_figures IS NOT NULL) AS thumbnail_checked,
-                COALESCE(jsonb_array_length(thumbnail_figures), 0) > 0 AS thumbnail_has_image
+                (thumbnail_figures IS NOT NULL AND thumbnail_version=2) AS thumbnail_checked,
+                (thumbnail_version=2 AND COALESCE(jsonb_array_length(thumbnail_figures), 0) > 0) AS thumbnail_has_image
          FROM papers WHERE ${where}
          ORDER BY digest_date DESC, id DESC
          LIMIT $3 OFFSET $4`,
@@ -717,7 +718,7 @@ export const db = {
 
   async getPaperThumbnail(userId, id) {
     const { rows } = await pool.query(
-      `SELECT thumbnail_figures,
+      `SELECT thumbnail_figures, thumbnail_version,
               (thumbnail_figures IS NOT NULL) AS checked
        FROM papers WHERE user_id=$1 AND id=$2`,
       [userId, id],
@@ -727,17 +728,18 @@ export const db = {
       figures: rows[0].thumbnail_figures ?? null,
       hasImage: Array.isArray(rows[0].thumbnail_figures) && rows[0].thumbnail_figures.length > 0,
       checked: !!rows[0].checked,
+      version: Number(rows[0].thumbnail_version ?? 0),
     };
   },
 
-  async setPaperThumbnail(userId, id, figures) {
+  async setPaperThumbnail(userId, id, figures, version = 2) {
     const list = Array.isArray(figures) ? figures : [];
     await pool.query(
       `UPDATE papers
        SET thumbnail_path=NULL, thumbnail_figures=$3::jsonb,
-           thumbnail_has_image=$4, thumbnail_checked_at=now()
+           thumbnail_has_image=$4, thumbnail_checked_at=now(), thumbnail_version=$5
        WHERE user_id=$1 AND id=$2`,
-      [userId, id, JSON.stringify(list), list.length > 0],
+      [userId, id, JSON.stringify(list), list.length > 0, version],
     );
   },
 

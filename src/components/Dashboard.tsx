@@ -5,9 +5,9 @@ import { computeAssessment, ASSESSMENT_BADGE } from '../utils/assessment';
 import { CATEGORY_COLORS_LIGHT } from '../utils/categories';
 import { computeAuthorStats, groupByVenue, detectVenue, type AuthorStat, type VenueGroup, FEATURED_AUTHORS } from '../utils/conferences';
 import { publisherOf } from '../utils/publisher';
-import { apiGetPaperComments, apiAddPaperComment, apiDeletePaperComment, apiGetCommentCounts, apiGetOrganizations, apiGetPaperFigure, apiGetPaperFigures } from '../utils/researchApi';
+import { apiGetPaperComments, apiAddPaperComment, apiDeletePaperComment, apiGetCommentCounts, apiGetOrganizations, apiGetPaperFigure, apiGetPaperFigures, apiListPapers } from '../utils/researchApi';
 import { format, formatDistanceToNow } from 'date-fns';
-import { BookOpen, Users, Presentation, ChevronLeft, ChevronRight, ArrowUpDown, Award, Rss, Heart, Bookmark, BookmarkCheck, MessageCircle, ExternalLink, Loader2, Image as ImageIcon } from 'lucide-react';
+import { BookOpen, Users, Presentation, ChevronLeft, ChevronRight, ArrowUpDown, Award, Rss, Heart, Bookmark, BookmarkCheck, MessageCircle, ExternalLink, Loader2, Image as ImageIcon, RefreshCw } from 'lucide-react';
 import { usePagination } from '../hooks/usePagination';
 import Pager from './Pager';
 import type { Paper, PaperComment } from '../types';
@@ -21,6 +21,7 @@ const TABS: Array<{ value: Tab; label: string; icon: React.ReactNode }> = [
 ];
 
 type FeedFilter = 'all' | 'unread' | 'liked' | 'saved';
+const FEED_BATCH_SIZE = 10;
 
 export default function Dashboard() {
   const { papers, stats, readIds, setSelectedPaper } = usePapers();
@@ -131,11 +132,15 @@ function FeedTab() {
   const [expandedAbstract, setExpandedAbstract] = useState<Set<string>>(new Set());
   const [openComments, setOpenComments] = useState<Set<string>>(new Set());
   const [commentCounts, setCommentCounts] = useState<Record<string, number>>({});
+  const [refreshedPapers, setRefreshedPapers] = useState<Paper[] | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshError, setRefreshError] = useState('');
 
   const sorted = useMemo(
     () => [...papers].sort((a, b) => b.digestDate.getTime() - a.digestDate.getTime()),
     [papers],
   );
+  const feedCandidates = refreshedPapers ?? sorted;
 
   const catCounts = useMemo<Array<[string, number]>>(() => {
     // Server mode: counts cover the whole library, not just the loaded window.
@@ -146,16 +151,88 @@ function FeedTab() {
   }, [sorted, stats]);
 
   const filtered = useMemo(() => {
-    let result = sorted;
+    let result = feedCandidates;
     if (category) result = result.filter(p => p.categories.includes(category));
     if (filter === 'unread') result = result.filter(p => !readIds.has(p.id));
     if (filter === 'liked') result = result.filter(p => isLiked(p.id));
     if (filter === 'saved') result = result.filter(p => isSaved(p.id));
     return result;
-  }, [sorted, category, filter, readIds, isLiked, isSaved]);
+  }, [feedCandidates, category, filter, readIds, isLiked, isSaved]);
 
-  const pagination = usePagination(filtered, 25);
-  const pageKey = pagination.slice.map(p => p.id).join(',');
+  const displayedPapers = filtered.slice(0, FEED_BATCH_SIZE);
+  const pageKey = displayedPapers.map(p => p.id).join(',');
+
+  useEffect(() => { setRefreshedPapers(null); }, [category, filter]);
+
+  const refreshFeed = async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    setRefreshError('');
+    const currentIds = new Set(displayedPapers.map(paper => paper.id));
+    const totalPapers = stats?.total ?? papers.length;
+    const matchesFilters = (paper: Paper) => (!category || paper.categories.includes(category))
+      && (filter !== 'unread' || !readIds.has(paper.id))
+      && (filter !== 'liked' || isLiked(paper.id))
+      && (filter !== 'saved' || isSaved(paper.id));
+    try {
+      let alternatives: Paper[];
+      if (storageMode === 'server' && totalPapers > FEED_BATCH_SIZE) {
+        // Sample random server offsets so older papers beyond the initial
+        // in-memory window are eligible for this batch too.
+        const sampleSize = Math.min(totalPapers, FEED_BATCH_SIZE * 3);
+        let best: Paper[] = [];
+        for (let attempt = 0; attempt < 6; attempt++) {
+          const maxOffset = Math.max(0, totalPapers - sampleSize);
+          const offset = Math.floor(Math.random() * (maxOffset + 1));
+          const page = await apiListPapers({ limit: sampleSize, offset });
+          const novel = page.papers.filter(paper => !currentIds.has(paper.id) && matchesFilters(paper));
+          if (novel.length > best.length) best = novel;
+          if (best.length >= FEED_BATCH_SIZE) break;
+        }
+        alternatives = [...best];
+        if (alternatives.length < FEED_BATCH_SIZE) {
+          const chosenIds = new Set([...currentIds, ...alternatives.map(paper => paper.id)]);
+          const cachedMatches = sorted.filter(paper => !chosenIds.has(paper.id) && matchesFilters(paper));
+          for (let index = cachedMatches.length - 1; index > 0; index--) {
+            const swap = Math.floor(Math.random() * (index + 1));
+            [cachedMatches[index], cachedMatches[swap]] = [cachedMatches[swap], cachedMatches[index]];
+          }
+          alternatives.push(...cachedMatches.slice(0, FEED_BATCH_SIZE - alternatives.length));
+        }
+      } else {
+        alternatives = sorted.filter(paper => !currentIds.has(paper.id) && matchesFilters(paper));
+      }
+
+      // Shuffle unseen candidates so each refresh changes the actual set, not
+      // just the ordering of a consecutive page.
+      for (let index = alternatives.length - 1; index > 0; index--) {
+        const swap = Math.floor(Math.random() * (index + 1));
+        [alternatives[index], alternatives[swap]] = [alternatives[swap], alternatives[index]];
+      }
+      let next = alternatives.slice(0, FEED_BATCH_SIZE);
+
+      // In a small library there may not be ten unseen papers. Show a shuffled
+      // sample rather than an empty feed.
+      if (next.length < FEED_BATCH_SIZE && totalPapers <= FEED_BATCH_SIZE * 3) {
+        const pool = storageMode === 'server'
+          ? (await apiListPapers({ limit: totalPapers })).papers
+          : [...sorted];
+        const matching = pool.filter(matchesFilters);
+        for (let index = matching.length - 1; index > 0; index--) {
+          const swap = Math.floor(Math.random() * (index + 1));
+          [matching[index], matching[swap]] = [matching[swap], matching[index]];
+        }
+        next = matching.slice(0, FEED_BATCH_SIZE);
+      }
+
+      if (next.length > 0) setRefreshedPapers(next);
+    } catch (error) {
+      console.warn('[dashboard] could not load a different paper batch', error);
+      setRefreshError('Could not refresh papers. Try again shortly.');
+    } finally {
+      setRefreshing(false);
+    }
+  };
 
   // Companies/labs come from each paper's PDF, which the server reads in the
   // background. Poll the visible page while some are still pending.
@@ -230,23 +307,38 @@ function FeedTab() {
     <div className="max-w-[780px] mx-auto px-5 sm:px-0 py-6">
       <section className="overflow-hidden rounded-xl border border-[#e7e5df] bg-white shadow-[0_1px_2px_rgba(25,25,20,0.04)]">
       {/* Filter tabs */}
-      <div className="flex items-end gap-6 border-b border-[#eeede8] px-5 pt-4">
-        {filters.map(f => {
-          const active = filter === f.value;
-          return (
-            <button
-              key={f.value}
-              onClick={() => setFilter(f.value)}
-              className={`relative pb-3 text-[12px] transition-colors ${
-                active ? 'font-semibold text-slate-900' : 'font-medium text-slate-500 hover:text-slate-800'
-              }`}
-            >
-              {f.label}
-              <span className={`ml-1.5 text-[10px] tabular-nums ${active ? 'text-slate-500' : 'text-slate-400'}`}>{f.count.toLocaleString()}</span>
-              {active && <span className="absolute left-0 right-0 -bottom-px h-[2px] bg-slate-900" />}
-            </button>
-          );
-        })}
+      <div className="flex items-end justify-between gap-3 border-b border-[#eeede8] px-5 pt-4">
+        <div className="flex items-end gap-6 min-w-0">
+          {filters.map(f => {
+            const active = filter === f.value;
+            return (
+              <button
+                key={f.value}
+                onClick={() => setFilter(f.value)}
+                className={`relative pb-3 text-[12px] transition-colors ${
+                  active ? 'font-semibold text-slate-900' : 'font-medium text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                {f.label}
+                <span className={`ml-1.5 text-[10px] tabular-nums ${active ? 'text-slate-500' : 'text-slate-400'}`}>{f.count.toLocaleString()}</span>
+                {active && <span className="absolute left-0 right-0 -bottom-px h-[2px] bg-slate-900" />}
+              </button>
+            );
+          })}
+        </div>
+        {total > FEED_BATCH_SIZE && (
+          <button
+            type="button"
+            onClick={() => void refreshFeed()}
+            disabled={refreshing}
+            aria-label="Refresh with different papers"
+            title="Show a different set of papers, including older papers"
+            className="mb-2 inline-flex shrink-0 items-center gap-1.5 rounded-md border border-[#e7e5df] px-2.5 py-1.5 text-[11px] font-medium text-slate-600 transition-colors hover:border-slate-300 hover:text-slate-900 disabled:cursor-wait disabled:opacity-60"
+          >
+            <RefreshCw size={12} className={refreshing ? 'animate-spin' : ''} />
+            {refreshing ? 'Loading…' : 'Refresh'}
+          </button>
+        )}
       </div>
 
       {/* Category filter */}
@@ -286,7 +378,7 @@ function FeedTab() {
         </div>
       ) : (
         <div className="divide-y divide-[#eeede8]">
-          {pagination.slice.map(paper => {
+          {displayedPapers.map(paper => {
             const pub = publisherOf(paper);
             const read = readIds.has(paper.id);
             const liked = isLiked(paper.id);
@@ -430,11 +522,7 @@ function FeedTab() {
         </div>
       )}
 
-      {filtered.length > 0 && (
-        <div className="border-t border-[#eeede8]">
-          <Pager pagination={pagination} variant="light" size="sm" label="papers" pageSizes={[25, 50, 100]} />
-        </div>
-      )}
+      {refreshError && <p role="alert" className="border-t border-[#eeede8] px-5 py-2 text-[11px] text-rose-600">{refreshError}</p>}
       </section>
     </div>
   );
@@ -540,7 +628,7 @@ function PaperImagePreview({ paper, storageMode, updatePaperMeta }: {
       {state === 'image' && figures.length > 0 ? (
         <div className="overflow-hidden rounded-xl border border-[#e7e5df] bg-white">
           <div
-            className="relative flex min-h-[140px] items-center justify-center bg-[#fafaf8]"
+            className="relative flex h-[min(65vh,420px)] min-h-[140px] items-center justify-center bg-[#fafaf8]"
             aria-roledescription="carousel"
             aria-label={`Figures from ${paper.title}`}
             onTouchStart={event => { touchStartX.current = event.touches[0]?.clientX ?? null; }}
@@ -559,7 +647,7 @@ function PaperImagePreview({ paper, storageMode, updatePaperMeta }: {
                 src={imageUrl}
                 alt={`Figure ${activeIndex + 1} from ${paper.title}, page ${figures[activeIndex].pageNumber}`}
                 draggable={false}
-                className="block w-full max-h-[420px] select-none object-contain"
+                className="block h-full w-full select-none object-contain"
               />
             ) : imageLoading ? (
               <div className="flex items-center gap-2 py-8 text-[11px] text-slate-400">
