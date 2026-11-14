@@ -71,7 +71,6 @@ function AppLayoutInner() {
         setActiveView={setActiveView}
         onAISuggest={() => setShowAISuggest(true)}
         onSettings={() => setShowSettings(true)}
-        onSearch={() => setShowSearch(true)}
         onActivity={() => setShowActivity(true)}
       />
       <Sidebar activeView={activeView} setActiveView={setActiveView} />
