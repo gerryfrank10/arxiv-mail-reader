@@ -4,7 +4,7 @@ const MIN_IMAGE_AREA = 8_000;
 const MAX_IMAGE_AREA = 40_000_000;
 const PREVIEW_MAX_EDGE = 960;
 const FIGURE_RENDER_SCALE = 2;
-const FIGURE_CACHE_VERSION = 2;
+const FIGURE_CACHE_VERSION = 3;
 
 export { FIGURE_CACHE_VERSION };
 
@@ -86,7 +86,12 @@ function captionColumn(items, caption, pageWidth) {
   }
 
   const columnWidth = Math.max(1, right - left - pageWidth * 0.03);
-  const fullWidth = caption.width >= pageWidth * 0.44;
+  // Some PDFs split "Figure 3." and its caption into separate text items.
+  // Measure the complete caption line so page-wide floats aren't cropped to
+  // one column just because the prefix is only a few characters wide.
+  const captionLine = items.filter(item => Math.abs(item.y - caption.y) <= 1.5 && item.x >= caption.x - 1);
+  const captionLineRight = Math.max(...captionLine.map(item => item.x + item.width), caption.x + caption.width);
+  const fullWidth = captionLineRight - caption.x >= pageWidth * 0.44;
   if (fullWidth) {
     return { x: left, width: Math.min(pageWidth - left, pageWidth - left * 2) };
   }
@@ -94,7 +99,33 @@ function captionColumn(items, caption, pageWidth) {
   return { x, width: Math.min(columnWidth, pageWidth - x) };
 }
 
-function findRenderedFigureBounds(context, sourceWidth, sourceHeight, cropX, cropWidth, captionTop, scale) {
+function extendCropToFigureLabels(items, region, top, pageHeight, scale) {
+  let result = top;
+  // The whitespace scanner can stop between a diagram and its short legend.
+  // Include nearby label rows, but never an indented/full-width prose row.
+  for (let count = 0; count < 3; count++) {
+    const boundaryY = pageHeight - result / scale;
+    const candidates = items.filter(item => item.str.trim()
+      && item.y > boundaryY + 2.5 && item.y < boundaryY + 28
+      && item.x >= region.x - 16 && item.x + item.width <= region.x + region.width + 24);
+    if (candidates.length === 0) break;
+    const y = Math.min(...candidates.map(item => item.y));
+    const row = candidates.filter(item => Math.abs(item.y - y) <= 1.5);
+    const minX = Math.min(...row.map(item => item.x));
+    const maxX = Math.max(...row.map(item => item.x + item.width));
+    const text = row.sort((a, b) => a.x - b.x).map(item => item.str).join(' ').trim();
+    const width = maxX - minX;
+    const prose = text.length >= 40 && minX <= region.x + 8 && width >= region.width * 0.55;
+    const section = /^\d+(?:\.\d+)*\s+[A-Z]/.test(text) || /^abstract$/i.test(text);
+    const figureLabel = text.length > 0 && !prose && !section
+      && (minX > region.x + 5 || width < region.width * 0.7);
+    if (!figureLabel) break;
+    result = Math.min(result, (pageHeight - Math.max(...row.map(item => item.y + item.height))) * scale);
+  }
+  return result;
+}
+
+export function findRenderedFigureBounds(context, sourceWidth, sourceHeight, cropX, cropWidth, captionTop, scale, items = [], pageHeight = sourceHeight / scale) {
   const x = Math.max(0, Math.floor(cropX * scale));
   const width = Math.max(1, Math.min(sourceWidth - x, Math.ceil(cropWidth * scale)));
   const captionY = Math.max(0, Math.min(sourceHeight, Math.floor(captionTop * scale)));
@@ -120,7 +151,11 @@ function findRenderedFigureBounds(context, sourceWidth, sourceHeight, cropX, cro
 
   let blankRows = 0;
   const minBlankRows = Math.round(8 * scale);
+  const minFigureHeight = Math.round(60 * scale);
   let top = 0;
+  // A caption can be followed by an internal subheading/legend, then another
+  // blank gap, before the actual diagram. Never accept such a tiny fragment as
+  // the whole figure; keep the last gap as a fallback while scanning upward.
   for (let y = bottomInk - 1; y >= 0; y--) {
     if (isInkRow(y)) {
       blankRows = 0;
@@ -129,12 +164,14 @@ function findRenderedFigureBounds(context, sourceWidth, sourceHeight, cropX, cro
     blankRows++;
     if (blankRows >= minBlankRows) {
       top = y + blankRows + 1;
-      break;
+      if (bottomInk - top >= minFigureHeight) break;
     }
   }
 
   const padding = Math.round(5 * scale);
-  const y = Math.max(0, top - padding);
+  const region = { x: cropX, width: cropWidth };
+  const extendedTop = extendCropToFigureLabels(items, region, top, pageHeight, scale);
+  const y = Math.max(0, extendedTop - padding);
   const bottom = Math.min(sourceHeight, bottomInk + padding + 1);
   return { x, y, width, height: bottom - y };
 }
@@ -186,6 +223,8 @@ export async function createPaperFigureThumbnails(pdfBuffer) {
           region.width,
           captionTop,
           pageImage.width / viewport.width,
+          items,
+          viewport.height,
         );
         if (!bounds || bounds.width < 40 || bounds.height < 30) continue;
 

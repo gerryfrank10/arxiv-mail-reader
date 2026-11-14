@@ -370,6 +370,21 @@ export async function apiListPapers(
   };
 }
 
+export async function apiGetRelevantPapers(
+  { limit = 10, offset = 0 }: { limit?: number; offset?: number } = {},
+): Promise<{ papers: Paper[]; total: number; hasMore: boolean }> {
+  const qs = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  const result = await call<{
+    papers: Array<Paper & { digestDate: string }>;
+    total: number;
+    hasMore: boolean;
+  }>(`/api/db/papers/relevant?${qs}`);
+  return {
+    ...result,
+    papers: result.papers.map(paper => ({ ...paper, digestDate: new Date(paper.digestDate) })),
+  };
+}
+
 export async function apiGetPaper(id: string): Promise<Paper> {
   const { paper } = await call<{ paper: Omit<Paper, 'digestDate'> & { digestDate: string } }>(
     `/api/db/papers/${encodeURIComponent(id)}`,
@@ -498,7 +513,7 @@ export async function apiUpdatePaperAbstract(id: string, abstract: string): Prom
 /** Generate (once) and fetch the embedded figures from every page of a paper. */
 export interface PaperFigure {
   index: number;
-  pageNumber: number;
+  pageNumber?: number | null;
   width: number;
   height: number;
 }

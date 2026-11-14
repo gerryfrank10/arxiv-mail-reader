@@ -1,101 +1,49 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { usePapers } from '../contexts/PapersContext';
 import { useLibrary } from '../contexts/LibraryContext';
-import { computeAssessment, ASSESSMENT_BADGE } from '../utils/assessment';
-import { CATEGORY_COLORS_LIGHT } from '../utils/categories';
-import { computeAuthorStats, groupByVenue, detectVenue, type AuthorStat, type VenueGroup, FEATURED_AUTHORS } from '../utils/conferences';
+import { useTracking } from '../contexts/TrackingContext';
 import { publisherOf } from '../utils/publisher';
-import { apiGetPaperComments, apiAddPaperComment, apiDeletePaperComment, apiGetCommentCounts, apiGetOrganizations, apiGetPaperFigure, apiGetPaperFigures, apiListPapers } from '../utils/researchApi';
+import {
+  apiGetPaperComments, apiAddPaperComment, apiDeletePaperComment, apiGetCommentCounts,
+  apiGetOrganizations, apiGetPaperFigure, apiGetPaperFigures, apiGetRelevantPapers,
+} from '../utils/researchApi';
 import { format, formatDistanceToNow } from 'date-fns';
-import { BookOpen, Users, Presentation, ChevronLeft, ChevronRight, ArrowUpDown, Award, Rss, Heart, Bookmark, BookmarkCheck, MessageCircle, ExternalLink, Loader2, Image as ImageIcon, RefreshCw } from 'lucide-react';
-import { usePagination } from '../hooks/usePagination';
-import Pager from './Pager';
+import {
+  BookOpen, ChevronLeft, ChevronRight, Heart, Bookmark, BookmarkCheck, MessageCircle,
+  ExternalLink, Loader2, Image as ImageIcon, RefreshCw, Target,
+} from 'lucide-react';
 import type { Paper, PaperComment } from '../types';
 
-type Tab = 'feed' | 'authors' | 'conferences';
-
-const TABS: Array<{ value: Tab; label: string; icon: React.ReactNode }> = [
-  { value: 'feed',         label: 'Feed',        icon: <Rss size={13} /> },
-  { value: 'authors',      label: 'Authors',     icon: <Users size={13} /> },
-  { value: 'conferences',  label: 'Conferences', icon: <Presentation size={13} /> },
-];
-
-type FeedFilter = 'all' | 'unread' | 'liked' | 'saved';
 const FEED_BATCH_SIZE = 10;
 
 export default function Dashboard() {
-  const { papers, stats, readIds, setSelectedPaper } = usePapers();
-  const [tab, setTab] = useState<Tab>('feed');
-
+  const { papers } = usePapers();
   if (papers.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center h-full text-center px-8">
-        <div className="w-16 h-16 rounded-2xl bg-slate-100 flex items-center justify-center mb-4">
-          <BookOpen size={28} className="text-slate-400" />
-        </div>
-        <h2 className="text-xl font-semibold text-slate-700 mb-2">No papers yet</h2>
-        <p className="text-slate-400 text-sm max-w-sm">Connect your email and sync to load arXiv digest emails.</p>
+      <div className="flex h-full flex-col items-center justify-center px-8 text-center">
+        <BookOpen size={28} className="mb-4 text-slate-400" />
+        <h2 className="text-xl font-semibold text-slate-700">No papers yet</h2>
+        <p className="mt-2 text-sm text-slate-400">Connect your email and sync to load arXiv digest emails.</p>
       </div>
     );
   }
-
   return (
     <div className="h-full overflow-y-auto main-scroll bg-[#f6f6f3]">
-      {/* ── Page header with tabs ── */}
-      <div className="bg-white border-b border-[#e8e6e0] px-5 pt-7">
-        <div className="max-w-[780px] mx-auto">
-          <div className="flex items-end justify-between gap-6 pb-5">
-            <div className="min-w-0">
-              <p className="text-[10px] font-semibold tracking-[0.18em] uppercase text-slate-400 mb-2">Your research desk</p>
-              <h1 className="font-serif text-[32px] leading-none tracking-tight text-slate-900">Research feed</h1>
-              <p className="mt-2 text-[13px] text-slate-500">
-                New work from your sources
-                {stats && <span className="text-slate-400"> · {(stats.total - readIds.size).toLocaleString()} to review</span>}
-              </p>
-            </div>
-            {stats && (
-              <div className="hidden sm:block text-right shrink-0 pb-0.5">
-                <p className="font-serif text-[24px] leading-none tabular-nums text-slate-800">{stats.total.toLocaleString()}</p>
-                <p className="mt-1.5 text-[9px] font-semibold uppercase tracking-[0.16em] text-slate-400">papers collected</p>
-              </div>
-            )}
-          </div>
-
-          <nav className="flex items-center gap-7 border-t border-[#efeee9]" aria-label="Dashboard sections">
-            {TABS.map(t => (
-              <button
-                key={t.value}
-                onClick={() => setTab(t.value)}
-                aria-current={tab === t.value ? 'page' : undefined}
-                className={`relative flex items-center gap-2 py-3 text-[12px] transition-colors ${
-                  tab === t.value
-                    ? 'font-semibold text-slate-900'
-                    : 'font-medium text-slate-400 hover:text-slate-700'
-                }`}
-              >
-                {t.icon}
-                {t.label}
-                {tab === t.value && <span className="absolute inset-x-0 bottom-0 h-[2px] bg-slate-900" />}
-              </button>
-            ))}
-          </nav>
-        </div>
+      <div className="mx-auto max-w-[780px] px-5 pb-8 pt-8 sm:px-0">
+        <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">Your research desk</p>
+        <h1 className="mt-2 font-serif text-[32px] leading-none tracking-tight text-slate-900">For you</h1>
+        <p className="mt-3 text-[13px] text-slate-500">The best matches for your research interests, regardless of publication date.</p>
+        <FeedTab />
       </div>
-
-      {/* ── Tab content ── */}
-      {tab === 'feed' && <FeedTab />}
-      {tab === 'authors' && <AuthorsTab papers={papers} setSelectedPaper={setSelectedPaper} />}
-      {tab === 'conferences' && <ConferencesTab papers={papers} setSelectedPaper={setSelectedPaper} />}
     </div>
   );
 }
 
 // =========================================================================
-// Feed tab — a flat, chronological stream of incoming papers
+// Optional comments; the feed itself has only a relevance ranking and refresh.
 // =========================================================================
 
 const LOCAL_COMMENTS_KEY = 'arxiv_paper_comments';
-
 type CommentMap = Record<string, PaperComment[]>;
 
 function readLocalCommentMap(): CommentMap {
@@ -103,17 +51,11 @@ function readLocalCommentMap(): CommentMap {
     const raw = localStorage.getItem(LOCAL_COMMENTS_KEY);
     const parsed = raw ? JSON.parse(raw) as CommentMap : {};
     return parsed && typeof parsed === 'object' ? parsed : {};
-  } catch {
-    return {};
-  }
+  } catch { return {}; }
 }
 
 function writeLocalCommentMap(map: CommentMap) {
-  try {
-    localStorage.setItem(LOCAL_COMMENTS_KEY, JSON.stringify(map));
-  } catch {
-    /* storage full or unavailable — comments simply won't persist */
-  }
+  try { localStorage.setItem(LOCAL_COMMENTS_KEY, JSON.stringify(map)); } catch { /* best effort */ }
 }
 
 function localCommentsFor(paperId: string): PaperComment[] {
@@ -121,124 +63,71 @@ function localCommentsFor(paperId: string): PaperComment[] {
 }
 
 function FeedTab() {
-  const { papers, stats, readIds, setSelectedPaper, markRead, markUnread, storageMode, updatePaperMeta } = usePapers();
   const {
-    isLiked, likePaper, unlikePaper, isSaved, savePaper, unsavePaper,
-    likedCount, savedCount,
-  } = useLibrary();
-
-  const [filter, setFilter] = useState<FeedFilter>('all');
-  const [category, setCategory] = useState('');
+    papers, readIds, setSelectedPaper, markRead, markUnread, storageMode, updatePaperMeta,
+  } = usePapers();
+  const { isLiked, likePaper, unlikePaper, isSaved, savePaper, unsavePaper } = useLibrary();
+  const { trackers, scores, ready: trackersReady } = useTracking();
+  const [page, setPage] = useState(0);
+  const [feed, setFeed] = useState<{ papers: Paper[]; total: number }>({ papers: [], total: 0 });
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
   const [expandedAbstract, setExpandedAbstract] = useState<Set<string>>(new Set());
   const [openComments, setOpenComments] = useState<Set<string>>(new Set());
   const [commentCounts, setCommentCounts] = useState<Record<string, number>>({});
-  const [refreshedPapers, setRefreshedPapers] = useState<Paper[] | null>(null);
-  const [refreshing, setRefreshing] = useState(false);
-  const [refreshError, setRefreshError] = useState('');
-
-  const sorted = useMemo(
-    () => [...papers].sort((a, b) => b.digestDate.getTime() - a.digestDate.getTime()),
-    [papers],
-  );
-  const feedCandidates = refreshedPapers ?? sorted;
-
-  const catCounts = useMemo<Array<[string, number]>>(() => {
-    // Server mode: counts cover the whole library, not just the loaded window.
-    if (stats?.categories.length) return stats.categories.map(c => [c.category, c.count]);
-    const counts: Record<string, number> = {};
-    for (const p of sorted) for (const c of p.categories) counts[c] = (counts[c] ?? 0) + 1;
-    return Object.entries(counts).sort((a, b) => b[1] - a[1]);
-  }, [sorted, stats]);
-
-  const filtered = useMemo(() => {
-    let result = feedCandidates;
-    if (category) result = result.filter(p => p.categories.includes(category));
-    if (filter === 'unread') result = result.filter(p => !readIds.has(p.id));
-    if (filter === 'liked') result = result.filter(p => isLiked(p.id));
-    if (filter === 'saved') result = result.filter(p => isSaved(p.id));
-    return result;
-  }, [feedCandidates, category, filter, readIds, isLiked, isSaved]);
-
-  const displayedPapers = filtered.slice(0, FEED_BATCH_SIZE);
-  const pageKey = displayedPapers.map(p => p.id).join(',');
-
-  useEffect(() => { setRefreshedPapers(null); }, [category, filter]);
-
-  const refreshFeed = async () => {
-    if (refreshing) return;
-    setRefreshing(true);
-    setRefreshError('');
-    const currentIds = new Set(displayedPapers.map(paper => paper.id));
-    const totalPapers = stats?.total ?? papers.length;
-    const matchesFilters = (paper: Paper) => (!category || paper.categories.includes(category))
-      && (filter !== 'unread' || !readIds.has(paper.id))
-      && (filter !== 'liked' || isLiked(paper.id))
-      && (filter !== 'saved' || isSaved(paper.id));
-    try {
-      let alternatives: Paper[];
-      if (storageMode === 'server' && totalPapers > FEED_BATCH_SIZE) {
-        // Sample random server offsets so older papers beyond the initial
-        // in-memory window are eligible for this batch too.
-        const sampleSize = Math.min(totalPapers, FEED_BATCH_SIZE * 3);
-        let best: Paper[] = [];
-        for (let attempt = 0; attempt < 6; attempt++) {
-          const maxOffset = Math.max(0, totalPapers - sampleSize);
-          const offset = Math.floor(Math.random() * (maxOffset + 1));
-          const page = await apiListPapers({ limit: sampleSize, offset });
-          const novel = page.papers.filter(paper => !currentIds.has(paper.id) && matchesFilters(paper));
-          if (novel.length > best.length) best = novel;
-          if (best.length >= FEED_BATCH_SIZE) break;
-        }
-        alternatives = [...best];
-        if (alternatives.length < FEED_BATCH_SIZE) {
-          const chosenIds = new Set([...currentIds, ...alternatives.map(paper => paper.id)]);
-          const cachedMatches = sorted.filter(paper => !chosenIds.has(paper.id) && matchesFilters(paper));
-          for (let index = cachedMatches.length - 1; index > 0; index--) {
-            const swap = Math.floor(Math.random() * (index + 1));
-            [cachedMatches[index], cachedMatches[swap]] = [cachedMatches[swap], cachedMatches[index]];
-          }
-          alternatives.push(...cachedMatches.slice(0, FEED_BATCH_SIZE - alternatives.length));
-        }
-      } else {
-        alternatives = sorted.filter(paper => !currentIds.has(paper.id) && matchesFilters(paper));
-      }
-
-      // Shuffle unseen candidates so each refresh changes the actual set, not
-      // just the ordering of a consecutive page.
-      for (let index = alternatives.length - 1; index > 0; index--) {
-        const swap = Math.floor(Math.random() * (index + 1));
-        [alternatives[index], alternatives[swap]] = [alternatives[swap], alternatives[index]];
-      }
-      let next = alternatives.slice(0, FEED_BATCH_SIZE);
-
-      // In a small library there may not be ten unseen papers. Show a shuffled
-      // sample rather than an empty feed.
-      if (next.length < FEED_BATCH_SIZE && totalPapers <= FEED_BATCH_SIZE * 3) {
-        const pool = storageMode === 'server'
-          ? (await apiListPapers({ limit: totalPapers })).papers
-          : [...sorted];
-        const matching = pool.filter(matchesFilters);
-        for (let index = matching.length - 1; index > 0; index--) {
-          const swap = Math.floor(Math.random() * (index + 1));
-          [matching[index], matching[swap]] = [matching[swap], matching[index]];
-        }
-        next = matching.slice(0, FEED_BATCH_SIZE);
-      }
-
-      if (next.length > 0) setRefreshedPapers(next);
-    } catch (error) {
-      console.warn('[dashboard] could not load a different paper batch', error);
-      setRefreshError('Could not refresh papers. Try again shortly.');
-    } finally {
-      setRefreshing(false);
-    }
-  };
-
-  // Companies/labs come from each paper's PDF, which the server reads in the
-  // background. Poll the visible page while some are still pending.
   const [orgMap, setOrgMap] = useState<Record<string, string | null>>({});
   const [orgTick, setOrgTick] = useState(0);
   const orgPolls = useRef(0);
+
+  const localMatches = useMemo(() => {
+    const enabled = new Map(trackers.filter(t => t.enabled).map(t => [t.id, t]));
+    const best = new Map<string, NonNullable<Paper['relevance']>>();
+    for (const score of scores) {
+      const tracker = enabled.get(score.trackerId);
+      if (!tracker || score.score < tracker.minScore) continue;
+      const current = best.get(score.paperId);
+      if (!current || score.score > current.score) {
+        best.set(score.paperId, {
+          score: score.score, trackerName: tracker.name, rationale: score.rationale,
+        });
+      }
+    }
+    return papers.filter(p => best.has(p.id))
+      .map(p => ({ ...p, relevance: best.get(p.id)! }))
+      .sort((a, b) => b.relevance!.score - a.relevance!.score
+        || b.digestDate.getTime() - a.digestDate.getTime());
+  }, [papers, trackers, scores]);
+
+  useEffect(() => { setPage(0); }, [storageMode, trackersReady]);
+  useEffect(() => {
+    if (storageMode !== 'server') {
+      setFeed({ papers: localMatches.slice(page * FEED_BATCH_SIZE, (page + 1) * FEED_BATCH_SIZE), total: localMatches.length });
+      return;
+    }
+    let cancelled = false;
+    setLoading(true);
+    setError('');
+    apiGetRelevantPapers({ limit: FEED_BATCH_SIZE, offset: page * FEED_BATCH_SIZE })
+      .then(result => {
+        if (cancelled) return;
+        if (result.papers.length === 0 && page > 0) setPage(0);
+        else setFeed(result);
+      })
+      .catch(e => { if (!cancelled) setError(e instanceof Error ? e.message : 'Could not load your feed.'); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [storageMode, localMatches, page, trackersReady]);
+
+  const displayedPapers = feed.papers.slice(0, FEED_BATCH_SIZE);
+  const pageKey = displayedPapers.map(p => p.id).join(',');
+  const total = storageMode === 'server' ? feed.total : localMatches.length;
+  const enabledTrackers = trackers.filter(t => t.enabled);
+
+  const refresh = () => {
+    if (total === 0) return;
+    setPage(current => (current + 1) % Math.max(1, Math.ceil(total / FEED_BATCH_SIZE)));
+  };
+
   useEffect(() => { orgPolls.current = 0; setOrgTick(0); }, [pageKey]);
   useEffect(() => {
     if (storageMode !== 'server' || !pageKey) return;
@@ -254,10 +143,7 @@ function FeedTab() {
         }
       })
       .catch(e => console.warn('[feed] organization lookup failed', e));
-    return () => {
-      cancelled = true;
-      if (timer) window.clearTimeout(timer);
-    };
+    return () => { cancelled = true; if (timer) window.clearTimeout(timer); };
   }, [pageKey, storageMode, orgTick]);
 
   useEffect(() => {
@@ -266,118 +152,51 @@ function FeedTab() {
     const ids = pageKey.split(',');
     if (storageMode === 'server') {
       apiGetCommentCounts(ids)
-        .then(counts => {
-          if (!cancelled) setCommentCounts(prev => ({ ...prev, ...counts }));
-        })
+        .then(counts => { if (!cancelled) setCommentCounts(prev => ({ ...prev, ...counts })); })
         .catch(e => console.warn('[feed] comment counts failed', e));
     } else {
       const map = readLocalCommentMap();
-      const next: Record<string, number> = {};
-      for (const id of ids) next[id] = (map[id] ?? []).length;
-      setCommentCounts(prev => ({ ...prev, ...next }));
+      const counts: Record<string, number> = {};
+      for (const id of ids) counts[id] = (map[id] ?? []).length;
+      setCommentCounts(prev => ({ ...prev, ...counts }));
     }
     return () => { cancelled = true; };
   }, [pageKey, storageMode]);
 
-  const total = stats?.total ?? papers.length;
-  const unreadTotal = storageMode === 'server' && stats
-    ? Math.max(0, stats.total - readIds.size)
-    : sorted.filter(p => !readIds.has(p.id)).length;
-
-  const filters: Array<{ value: FeedFilter; label: string; count: number }> = [
-    { value: 'all',    label: 'All',    count: total },
-    { value: 'unread', label: 'Unread', count: unreadTotal },
-    { value: 'liked',  label: 'Liked',  count: likedCount },
-    { value: 'saved',  label: 'Saved',  count: savedCount },
-  ];
-
-  const toggleAbstract = (id: string) => setExpandedAbstract(prev => {
-    const next = new Set(prev);
-    if (next.has(id)) next.delete(id); else next.add(id);
-    return next;
-  });
-
-  const toggleComments = (id: string) => setOpenComments(prev => {
-    const next = new Set(prev);
-    if (next.has(id)) next.delete(id); else next.add(id);
-    return next;
-  });
+  const toggleSetItem = (setter: React.Dispatch<React.SetStateAction<Set<string>>>, id: string) => {
+    setter(prev => { const next = new Set(prev); if (next.has(id)) next.delete(id); else next.add(id); return next; });
+  };
 
   return (
-    <div className="max-w-[780px] mx-auto px-5 sm:px-0 py-6">
-      <section className="overflow-hidden rounded-xl border border-[#e7e5df] bg-white shadow-[0_1px_2px_rgba(25,25,20,0.04)]">
-      {/* Filter tabs */}
-      <div className="flex items-end justify-between gap-3 border-b border-[#eeede8] px-5 pt-4">
-        <div className="flex items-end gap-6 min-w-0">
-          {filters.map(f => {
-            const active = filter === f.value;
-            return (
-              <button
-                key={f.value}
-                onClick={() => setFilter(f.value)}
-                className={`relative pb-3 text-[12px] transition-colors ${
-                  active ? 'font-semibold text-slate-900' : 'font-medium text-slate-500 hover:text-slate-800'
-                }`}
-              >
-                {f.label}
-                <span className={`ml-1.5 text-[10px] tabular-nums ${active ? 'text-slate-500' : 'text-slate-400'}`}>{f.count.toLocaleString()}</span>
-                {active && <span className="absolute left-0 right-0 -bottom-px h-[2px] bg-slate-900" />}
-              </button>
-            );
-          })}
-        </div>
-        {total > FEED_BATCH_SIZE && (
-          <button
-            type="button"
-            onClick={() => void refreshFeed()}
-            disabled={refreshing}
-            aria-label="Refresh with different papers"
-            title="Show a different set of papers, including older papers"
-            className="mb-2 inline-flex shrink-0 items-center gap-1.5 rounded-md border border-[#e7e5df] px-2.5 py-1.5 text-[11px] font-medium text-slate-600 transition-colors hover:border-slate-300 hover:text-slate-900 disabled:cursor-wait disabled:opacity-60"
-          >
-            <RefreshCw size={12} className={refreshing ? 'animate-spin' : ''} />
-            {refreshing ? 'Loading…' : 'Refresh'}
-          </button>
-        )}
+    <section className="mt-6">
+      <div className="mb-3 flex items-center justify-between gap-4">
+        <p className="text-[12px] text-slate-500">
+          {total > 0 ? `${total.toLocaleString()} papers matching your trackers` : 'Papers matching your trackers'}
+        </p>
+        <button
+          type="button" onClick={refresh} disabled={loading || total <= FEED_BATCH_SIZE}
+          aria-label="Show the next 10 relevant papers" title="Show the next 10 relevant papers"
+          className="inline-flex items-center gap-1.5 rounded-md border border-[#e7e5df] bg-white px-2.5 py-1.5 text-[11px] font-medium text-slate-600 hover:text-slate-900 disabled:cursor-default disabled:opacity-50"
+        >
+          <RefreshCw size={12} className={loading ? 'animate-spin' : ''} /> Refresh
+        </button>
       </div>
 
-      {/* Category filter */}
-      {catCounts.length > 0 && (
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-[#eeede8] px-5 py-3 text-[11px]">
-          <button
-            onClick={() => setCategory('')}
-            className={`shrink-0 ${!category ? 'text-slate-900 font-semibold' : 'text-slate-500 hover:text-slate-800'}`}
-          >
-            Everything
-          </button>
-          {catCounts.slice(0, 16).map(([cat]) => {
-            const active = category === cat;
-            return (
-              <button
-                key={cat}
-                onClick={() => setCategory(active ? '' : cat)}
-                className={`shrink-0 font-mono ${active ? 'text-slate-900 font-semibold underline underline-offset-4 decoration-2' : 'text-slate-500 hover:text-slate-800'}`}
-              >
-                {cat}
-              </button>
-            );
-          })}
-        </div>
-      )}
-
-      {/* Stream */}
-      {filtered.length === 0 ? (
-        <div className="py-20 px-6 text-center">
-          <p className="font-serif text-xl text-slate-700">
-            {filter === 'unread' ? 'Nothing unread. You are caught up.'
-              : filter === 'liked' ? 'No liked papers yet.'
-              : filter === 'saved' ? 'Nothing saved yet.'
-              : 'No papers match this filter.'}
+      {error && <p role="alert" className="mb-3 text-[12px] text-rose-600">{error}</p>}
+      {!loading && displayedPapers.length === 0 ? (
+        <div className="rounded-xl border border-[#e7e5df] bg-white px-6 py-16 text-center">
+          <Target size={24} className="mx-auto mb-3 text-slate-400" />
+          <h2 className="font-serif text-xl text-slate-700">
+            {enabledTrackers.length === 0 ? 'Set up a research interest to personalize your feed.' : 'No papers currently meet your tracker thresholds.'}
+          </h2>
+          <p className="mx-auto mt-2 max-w-md text-[12px] leading-relaxed text-slate-500">
+            {enabledTrackers.length === 0
+              ? 'Create and enable a tracker. Existing papers will be ranked by interest, not just by how new they are.'
+              : 'You can lower a tracker’s minimum score or use its scoring action to find more relevant papers.'}
           </p>
-          <p className="mt-2 text-[12px] text-slate-500">Try another view or clear the category filter.</p>
         </div>
       ) : (
-        <div className="divide-y divide-[#eeede8]">
+        <div className={`space-y-5 ${loading ? 'opacity-60' : ''}`}>
           {displayedPapers.map(paper => {
             const pub = publisherOf(paper);
             const read = readIds.has(paper.id);
@@ -385,146 +204,57 @@ function FeedTab() {
             const saved = isSaved(paper.id);
             const expanded = expandedAbstract.has(paper.id);
             const showingComments = openComments.has(paper.id);
-            const comments = commentCounts[paper.id] ?? 0;
             const abstract = paper.abstract?.trim() ?? '';
-            const longAbstract = abstract.length > 280;
-            const openHref = paper.url || (paper.arxivId ? `https://arxiv.org/abs/${paper.arxivId}` : '');
-            // The company/lab is the headline when we know it; the venue
-            // (arXiv, OpenReview, …) moves to a small "via" note.
-            const org = orgMap[paper.id] !== undefined ? orgMap[paper.id] : (paper.organization ?? null);
-            const headline = org ?? pub.name;
-
+            const org = orgMap[paper.id] !== undefined ? orgMap[paper.id] : paper.organization;
+            const href = paper.url || `https://arxiv.org/abs/${paper.arxivId}`;
             return (
-              <article key={paper.id} className="group relative px-5 sm:px-6 py-5 hover:bg-[#fcfcfa] transition-colors">
-                {/* Unread marker */}
-                {!read && <span className="absolute left-2 top-7 w-1.5 h-1.5 rounded-full bg-blue-600" title="Unread" />}
-
-                {/* Source and provenance */}
-                <header className="flex items-center gap-2 text-[12px] min-w-0">
-                  <span className="font-semibold text-slate-900 truncate">{headline}</span>
-                  {org && <span className="text-slate-400 shrink-0">via {pub.name}</span>}
-                  <span className="text-slate-300 shrink-0">·</span>
-                  <time
-                    dateTime={paper.digestDate.toISOString()}
-                    title={format(paper.digestDate, 'PPpp')}
-                    className="text-slate-500 whitespace-nowrap"
-                  >
-                    {formatDistanceToNow(paper.digestDate, { addSuffix: false }).replace(/^about /, '').replace(/^less than a minute$/, 'now')}
-                  </time>
-                  {(org || paper.arxivId) && (
-                    <span className="ml-auto flex items-baseline gap-2 font-mono text-[10px] text-slate-400 shrink-0">
-                      {paper.arxivId && <span>{paper.arxivId}</span>}
-                    </span>
+              <article key={paper.id} className="overflow-hidden rounded-xl border border-[#e7e5df] bg-white shadow-[0_1px_2px_rgba(25,25,20,0.04)]">
+                <div className="px-5 py-5 sm:px-6">
+                  <header className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-slate-400">
+                    <span>{org || pub.name}</span><span>·</span>
+                    <time dateTime={paper.digestDate.toISOString()} title={format(paper.digestDate, 'PPpp')}>
+                      {format(paper.digestDate, 'MMM d, yyyy')}
+                    </time>
+                    {paper.relevance && (
+                      <span className="ml-auto inline-flex items-center gap-1 font-medium text-sky-700" title={paper.relevance.rationale}>
+                        <Target size={11} /> {paper.relevance.score} · {paper.relevance.trackerName}
+                      </span>
+                    )}
+                  </header>
+                  <button onClick={() => { markRead(paper.id); setSelectedPaper(paper); }} className="mt-2 block w-full text-left">
+                    <h2 className={`text-[18px] leading-[1.4] tracking-[-0.015em] ${read ? 'font-medium text-slate-700' : 'font-semibold text-slate-950'}`}>{paper.title}</h2>
+                  </button>
+                  <p className="mt-1 truncate text-[12px] text-slate-500">{paper.authors || paper.authorList.join(', ')}</p>
+                  {abstract && (
+                    <div className="mt-2.5">
+                      <p className={`text-[14px] leading-[1.7] text-slate-600 ${expanded ? '' : 'line-clamp-3'}`}>{abstract}</p>
+                      {abstract.length > 280 && <button onClick={() => toggleSetItem(setExpandedAbstract, paper.id)} className="mt-1 text-[12px] text-slate-500 hover:text-slate-900">{expanded ? 'Show less' : 'Show more'}</button>}
+                    </div>
                   )}
-                </header>
-
-                {/* Title + authors */}
-                <button
-                  onClick={() => { markRead(paper.id); setSelectedPaper(paper); }}
-                  className="block text-left mt-1.5 w-full"
-                >
-                  <h3 className={`text-[17px] leading-[1.35] tracking-[-0.015em] group-hover:underline decoration-slate-300 underline-offset-2 ${
-                    read ? 'font-medium text-slate-700' : 'font-semibold text-slate-950'
-                  }`}>
-                    {paper.title}
-                  </h3>
-                </button>
-                <p className="mt-1 text-[12px] text-slate-500 truncate">
-                  {paper.authors || paper.authorList.join(', ')}
-                </p>
-
-                {/* Abstract */}
-                {abstract ? (
-                  <div className="mt-2.5">
-                    <p className={`text-[14px] leading-[1.7] text-slate-600 ${expanded ? '' : 'line-clamp-3'}`}>
-                      {abstract}
-                    </p>
-                    {longAbstract && (
-                      <button
-                        onClick={() => toggleAbstract(paper.id)}
-                        className="mt-1 text-[12px] font-medium text-slate-500 hover:text-slate-900"
-                      >
-                        {expanded ? 'Show less' : 'Show more'}
-                      </button>
-                    )}
-                  </div>
-                ) : (
-                  <p className="mt-2.5 text-[12.5px] text-slate-400">No abstract yet. Open the paper to fetch it.</p>
-                )}
-
-                <PaperImagePreview paper={paper} storageMode={storageMode} updatePaperMeta={updatePaperMeta} />
-
-                {paper.categories.length > 0 && (
-                  <div className="mt-2.5 flex flex-wrap gap-x-3 gap-y-1 font-mono text-[11px] text-slate-400">
-                    {paper.categories.slice(0, 5).map(cat => <span key={cat}>{cat}</span>)}
-                  </div>
-                )}
-
-                {/* Actions */}
-                <div className="mt-4 flex items-center gap-6 text-[12px] text-slate-500">
-                  <button
-                    onClick={() => (liked ? unlikePaper(paper.id) : likePaper(paper))}
-                    className={`flex items-center gap-1.5 transition-colors ${liked ? 'text-rose-600' : 'hover:text-rose-600'}`}
-                    title={liked ? 'Unlike' : 'Like'}
-                  >
-                    <Heart size={15} className={liked ? 'fill-current' : ''} />
-                    <span className="tabular-nums">{liked ? 'Liked' : 'Like'}</span>
-                  </button>
-                  <button
-                    onClick={() => toggleComments(paper.id)}
-                    className={`flex items-center gap-1.5 transition-colors ${showingComments ? 'text-sky-600' : 'hover:text-sky-600'}`}
-                    title="Comments"
-                  >
-                    <MessageCircle size={15} />
-                    <span className="tabular-nums">{comments > 0 ? comments : 'Comment'}</span>
-                  </button>
-                  <button
-                    onClick={() => (saved ? unsavePaper(paper.id) : savePaper(paper))}
-                    className={`flex items-center gap-1.5 transition-colors ${saved ? 'text-amber-600' : 'hover:text-amber-600'}`}
-                    title={saved ? 'Remove from library' : 'Save to library'}
-                  >
-                    {saved ? <BookmarkCheck size={15} /> : <Bookmark size={15} />}
-                    <span>{saved ? 'Saved' : 'Save'}</span>
-                  </button>
-                  <div className="ml-auto flex items-center gap-4">
-                    <button
-                      onClick={() => (read ? markUnread(paper.id) : markRead(paper.id))}
-                      className="hover:text-slate-950"
-                      title={read ? 'Mark as unread' : 'Mark as read'}
-                    >
-                      {read ? 'Mark unread' : 'Mark read'}
+                  <PaperImagePreview paper={paper} storageMode={storageMode} updatePaperMeta={updatePaperMeta} />
+                  <div className="mt-4 flex items-center gap-5 text-[12px] text-slate-500">
+                    <button onClick={() => liked ? unlikePaper(paper.id) : likePaper(paper)} className={`flex items-center gap-1.5 ${liked ? 'text-rose-600' : 'hover:text-rose-600'}`}>
+                      <Heart size={15} className={liked ? 'fill-current' : ''} /> {liked ? 'Liked' : 'Like'}
                     </button>
-                    {openHref && (
-                      <a
-                        href={openHref}
-                        target="_blank"
-                        rel="noreferrer"
-                        onClick={() => markRead(paper.id)}
-                        className="flex items-center gap-1 hover:text-slate-950"
-                        title={`Open on ${pub.name}`}
-                      >
-                        <ExternalLink size={13} />
-                        <span>Open</span>
-                      </a>
-                    )}
+                    <button onClick={() => toggleSetItem(setOpenComments, paper.id)} className={`flex items-center gap-1.5 ${showingComments ? 'text-sky-600' : 'hover:text-sky-600'}`}>
+                      <MessageCircle size={15} /> {commentCounts[paper.id] || 'Comment'}
+                    </button>
+                    <button onClick={() => saved ? unsavePaper(paper.id) : savePaper(paper)} className={`flex items-center gap-1.5 ${saved ? 'text-amber-600' : 'hover:text-amber-600'}`}>
+                      {saved ? <BookmarkCheck size={15} /> : <Bookmark size={15} />} {saved ? 'Saved' : 'Save'}
+                    </button>
+                    <div className="ml-auto flex items-center gap-3">
+                      <button onClick={() => read ? markUnread(paper.id) : markRead(paper.id)} className="hover:text-slate-950">{read ? 'Unread' : 'Read'}</button>
+                      <a href={href} target="_blank" rel="noreferrer" onClick={() => markRead(paper.id)} className="flex items-center gap-1 hover:text-slate-950"><ExternalLink size={13} /> Open</a>
+                    </div>
                   </div>
+                  {showingComments && <CommentThread paperId={paper.id} onCountChange={n => setCommentCounts(prev => ({ ...prev, [paper.id]: n }))} />}
                 </div>
-
-                {showingComments && (
-                  <CommentThread
-                    paperId={paper.id}
-                    onCountChange={(n) => setCommentCounts(prev => ({ ...prev, [paper.id]: n }))}
-                  />
-                )}
               </article>
             );
           })}
         </div>
       )}
-
-      {refreshError && <p role="alert" className="border-t border-[#eeede8] px-5 py-2 text-[11px] text-rose-600">{refreshError}</p>}
-      </section>
-    </div>
+    </section>
   );
 }
 
@@ -535,26 +265,20 @@ function PaperImagePreview({ paper, storageMode, updatePaperMeta }: {
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const requested = useRef(false);
-  const touchStartX = useRef<number | null>(null);
   const [retry, setRetry] = useState(0);
   const [state, setState] = useState<'idle' | 'loading' | 'image' | 'none' | 'error'>(
     paper.thumbnailChecked && !paper.thumbnailAvailable ? 'none' : 'idle',
   );
-  const [figures, setFigures] = useState<Array<{ index: number; pageNumber: number; width: number; height: number }>>([]);
+  const [figures, setFigures] = useState<Array<{ index: number; pageNumber?: number | null; width: number; height: number }>>([]);
   const [activeIndex, setActiveIndex] = useState(0);
-  const [imageLoading, setImageLoading] = useState(false);
   const [imageUrl, setImageUrl] = useState<string | null>(null);
 
   useEffect(() => {
-    if (storageMode !== 'server' || (paper.thumbnailChecked && !paper.thumbnailAvailable)) {
-      if (paper.thumbnailChecked && !paper.thumbnailAvailable) setState('none');
-      return;
-    }
+    if (storageMode !== 'server' || (paper.thumbnailChecked && !paper.thumbnailAvailable)) return;
     if (requested.current) return;
     const host = hostRef.current;
     if (!host) return;
     let cancelled = false;
-
     const load = async () => {
       if (requested.current || cancelled) return;
       requested.current = true;
@@ -562,148 +286,63 @@ function PaperImagePreview({ paper, storageMode, updatePaperMeta }: {
       try {
         const result = await apiGetPaperFigures(paper.id);
         if (cancelled) return;
-        if (result.length > 0) {
-          setFigures(result);
-          setActiveIndex(0);
-          setState('image');
-          updatePaperMeta(paper.id, { thumbnailChecked: true, thumbnailAvailable: true });
-        } else {
-          setFigures([]);
-          setState('none');
-          updatePaperMeta(paper.id, { thumbnailChecked: true, thumbnailAvailable: false });
-        }
+        setFigures(result);
+        setState(result.length > 0 ? 'image' : 'none');
+        updatePaperMeta(paper.id, { thumbnailChecked: true, thumbnailAvailable: result.length > 0 });
       } catch (e) {
-        if (cancelled) return;
-        setState('error');
-        console.warn(`[feed] figure extraction failed for ${paper.arxivId}:`, e);
+        if (!cancelled) { setState('error'); console.warn(`[feed] figure extraction failed for ${paper.arxivId}:`, e); }
       }
     };
-
-    if (typeof IntersectionObserver === 'undefined') {
-      void load();
-      return () => { cancelled = true; };
-    }
+    if (typeof IntersectionObserver === 'undefined') { void load(); return () => { cancelled = true; }; }
     const observer = new IntersectionObserver(entries => {
-      if (entries.some(entry => entry.isIntersecting)) {
-        observer.disconnect();
-        void load();
-      }
+      if (entries.some(entry => entry.isIntersecting)) { observer.disconnect(); void load(); }
     }, { rootMargin: '180px 0px' });
     observer.observe(host);
-    return () => {
-      cancelled = true;
-      observer.disconnect();
-    };
+    return () => { cancelled = true; observer.disconnect(); };
   }, [paper.id, paper.arxivId, paper.thumbnailChecked, paper.thumbnailAvailable, storageMode, retry, updatePaperMeta]);
 
   useEffect(() => {
     const figure = figures[activeIndex];
     if (state !== 'image' || !figure) return;
     let cancelled = false;
-    setImageLoading(true);
+    let objectUrl: string | null = null;
     setImageUrl(null);
     apiGetPaperFigure(paper.id, figure.index)
-      .then(blob => {
-        if (!cancelled) setImageUrl(URL.createObjectURL(blob));
-      })
-      .catch(e => {
-        if (cancelled) return;
-        setState('error');
-        console.warn(`[feed] figure image failed for ${paper.arxivId}:`, e);
-      })
-      .finally(() => {
-        if (!cancelled) setImageLoading(false);
-      });
-    return () => { cancelled = true; };
+      .then(blob => { if (!cancelled) { objectUrl = URL.createObjectURL(blob); setImageUrl(objectUrl); } })
+      .catch(e => { if (!cancelled) { setState('error'); console.warn(`[feed] figure image failed for ${paper.arxivId}:`, e); } });
+    return () => { cancelled = true; if (objectUrl) URL.revokeObjectURL(objectUrl); };
   }, [paper.id, paper.arxivId, state, figures, activeIndex]);
 
-  useEffect(() => () => {
-    if (imageUrl) URL.revokeObjectURL(imageUrl);
-  }, [imageUrl]);
-
   if (state === 'none' || storageMode !== 'server') return null;
-
   return (
     <div ref={hostRef} className="mt-3">
       {state === 'image' && figures.length > 0 ? (
-        <div className="overflow-hidden rounded-xl border border-[#e7e5df] bg-white">
-          <div
-            className="relative flex h-[min(65vh,420px)] min-h-[140px] items-center justify-center bg-[#fafaf8]"
-            aria-roledescription="carousel"
-            aria-label={`Figures from ${paper.title}`}
-            onTouchStart={event => { touchStartX.current = event.touches[0]?.clientX ?? null; }}
-            onTouchEnd={event => {
-              const start = touchStartX.current;
-              touchStartX.current = null;
-              const end = event.changedTouches[0]?.clientX;
-              if (start === null || end === undefined || figures.length < 2) return;
-              const distance = end - start;
-              if (distance < -40) setActiveIndex(index => (index + 1) % figures.length);
-              if (distance > 40) setActiveIndex(index => (index - 1 + figures.length) % figures.length);
-            }}
-          >
+        <div className="overflow-hidden rounded-lg border border-[#e7e5df] bg-white">
+          <div className="relative flex h-[min(65vh,420px)] min-h-[140px] items-center justify-center bg-[#fafaf8]" aria-roledescription="carousel" aria-label={`Figures from ${paper.title}`}>
             {imageUrl ? (
-              <img
-                src={imageUrl}
-                alt={`Figure ${activeIndex + 1} from ${paper.title}, page ${figures[activeIndex].pageNumber}`}
-                draggable={false}
-                className="block h-full w-full select-none object-contain"
-              />
-            ) : imageLoading ? (
-              <div className="flex items-center gap-2 py-8 text-[11px] text-slate-400">
-                <Loader2 size={12} className="animate-spin" /> Loading figure…
-              </div>
-            ) : null}
+              <img src={imageUrl} alt={`Figure ${activeIndex + 1} from ${paper.title}${figures[activeIndex].pageNumber ? `, page ${figures[activeIndex].pageNumber}` : ''}`} draggable={false} className="block h-full w-full select-none object-contain" />
+            ) : <div className="flex items-center gap-2 text-[11px] text-slate-400"><Loader2 size={12} className="animate-spin" /> Loading figure…</div>}
             {figures.length > 1 && (
               <>
-                <button
-                  type="button"
-                  aria-label="Previous figure"
-                  onClick={() => setActiveIndex(index => (index - 1 + figures.length) % figures.length)}
-                  className="absolute left-2 top-1/2 -translate-y-1/2 rounded-full border border-white/70 bg-white/90 p-1.5 text-slate-700 shadow hover:bg-white"
-                >
-                  <ChevronLeft size={16} />
-                </button>
-                <button
-                  type="button"
-                  aria-label="Next figure"
-                  onClick={() => setActiveIndex(index => (index + 1) % figures.length)}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full border border-white/70 bg-white/90 p-1.5 text-slate-700 shadow hover:bg-white"
-                >
-                  <ChevronRight size={16} />
-                </button>
+                <button type="button" aria-label="Previous figure" onClick={() => setActiveIndex(i => (i - 1 + figures.length) % figures.length)} className="absolute left-2 top-1/2 -translate-y-1/2 rounded-full border border-white/70 bg-white/90 p-1.5 text-slate-700 shadow hover:bg-white"><ChevronLeft size={16} /></button>
+                <button type="button" aria-label="Next figure" onClick={() => setActiveIndex(i => (i + 1) % figures.length)} className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full border border-white/70 bg-white/90 p-1.5 text-slate-700 shadow hover:bg-white"><ChevronRight size={16} /></button>
               </>
             )}
           </div>
-          <div className="flex items-center justify-between gap-3 border-t border-[#eeede8] px-3 py-1.5 text-[10px] text-slate-400">
-            <span>Figure {activeIndex + 1} of {figures.length} · page {figures[activeIndex].pageNumber}</span>
-            {figures.length > 1 && <span className="text-slate-400">Swipe to browse</span>}
+          <div className="border-t border-[#eeede8] px-3 py-1.5 text-[10px] text-slate-400">
+            Figure {activeIndex + 1} of {figures.length}{figures[activeIndex].pageNumber ? ` · page ${figures[activeIndex].pageNumber}` : ''}
           </div>
         </div>
       ) : state === 'loading' ? (
-        <div className="flex items-center gap-2 py-1 text-[11px] text-slate-400">
-          <Loader2 size={12} className="animate-spin" /> Finding figures across the paper…
-        </div>
+        <div className="flex items-center gap-2 text-[11px] text-slate-400"><Loader2 size={12} className="animate-spin" /> Finding figures…</div>
       ) : state === 'error' ? (
-        <button
-          onClick={() => { requested.current = false; setRetry(n => n + 1); }}
-          className="inline-flex items-center gap-1.5 text-[11px] text-slate-400 hover:text-slate-700"
-        >
-          <ImageIcon size={12} /> Preview unavailable · retry
-        </button>
+        <button onClick={() => { requested.current = false; setRetry(n => n + 1); }} className="inline-flex items-center gap-1.5 text-[11px] text-slate-400 hover:text-slate-700"><ImageIcon size={12} /> Preview unavailable · retry</button>
       ) : null}
     </div>
   );
 }
 
-// =========================================================================
-// Comment thread — a user's own notes on a paper
-// =========================================================================
-
-function CommentThread({ paperId, onCountChange }: {
-  paperId: string;
-  onCountChange: (n: number) => void;
-}) {
+function CommentThread({ paperId, onCountChange }: { paperId: string; onCountChange: (n: number) => void }) {
   const { storageMode } = usePapers();
   const [comments, setComments] = useState<PaperComment[]>([]);
   const [loading, setLoading] = useState(true);
@@ -714,21 +353,10 @@ function CommentThread({ paperId, onCountChange }: {
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    setError('');
-    (async () => {
-      try {
-        const list = storageMode === 'server'
-          ? await apiGetPaperComments(paperId)
-          : localCommentsFor(paperId);
-        if (cancelled) return;
-        setComments(list);
-        onCountChange(list.length);
-      } catch (e) {
-        if (!cancelled) setError(e instanceof Error ? e.message : 'Could not load comments');
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
+    (storageMode === 'server' ? apiGetPaperComments(paperId) : Promise.resolve(localCommentsFor(paperId)))
+      .then(list => { if (!cancelled) { setComments(list); onCountChange(list.length); } })
+      .catch(e => { if (!cancelled) setError(e instanceof Error ? e.message : 'Could not load comments'); })
+      .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, [paperId, storageMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -736,658 +364,47 @@ function CommentThread({ paperId, onCountChange }: {
     const text = body.trim();
     if (!text || busy) return;
     setBusy(true);
-    setError('');
     try {
       let created: PaperComment;
-      if (storageMode === 'server') {
-        created = await apiAddPaperComment(paperId, text);
-      } else {
-        created = {
-          id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-          paperId,
-          body: text,
-          createdAt: Date.now(),
-        };
+      if (storageMode === 'server') created = await apiAddPaperComment(paperId, text);
+      else {
+        created = { id: `${Date.now()}-${Math.random().toString(36).slice(2)}`, paperId, body: text, createdAt: Date.now() };
         const map = readLocalCommentMap();
-        map[paperId] = [...(map[paperId] ?? []), created];
-        writeLocalCommentMap(map);
+        writeLocalCommentMap({ ...map, [paperId]: [...(map[paperId] ?? []), created] });
       }
-      const next = [...comments, created];
-      setComments(next);
-      onCountChange(next.length);
+      setComments(prev => { const next = [...prev, created]; onCountChange(next.length); return next; });
       setBody('');
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not post the comment');
-    } finally {
-      setBusy(false);
-    }
+    } catch (e) { setError(e instanceof Error ? e.message : 'Could not post the comment'); }
+    finally { setBusy(false); }
   };
 
   const remove = async (id: string) => {
-    setError('');
     try {
-      if (storageMode === 'server') {
-        await apiDeletePaperComment(id);
-      } else {
+      if (storageMode === 'server') await apiDeletePaperComment(id);
+      else {
         const map = readLocalCommentMap();
-        map[paperId] = (map[paperId] ?? []).filter(c => c.id !== id);
-        writeLocalCommentMap(map);
+        writeLocalCommentMap({ ...map, [paperId]: (map[paperId] ?? []).filter(c => c.id !== id) });
       }
-      const next = comments.filter(c => c.id !== id);
-      setComments(next);
-      onCountChange(next.length);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not delete the comment');
-    }
+      setComments(prev => { const next = prev.filter(c => c.id !== id); onCountChange(next.length); return next; });
+    } catch (e) { setError(e instanceof Error ? e.message : 'Could not delete the comment'); }
   };
 
   return (
-    <div className="mt-4 pl-4 border-l-2 border-slate-200 space-y-3">
-      {loading ? (
-        <p className="text-[12px] text-slate-400 flex items-center gap-2">
-          <Loader2 size={12} className="animate-spin" /> Loading
-        </p>
-      ) : comments.length === 0 ? (
-        <p className="text-[12px] text-slate-400">No notes yet.</p>
-      ) : (
-        comments.map(c => (
-          <div key={c.id} className="group/c">
-            <p className="text-[13px] leading-relaxed text-slate-700 whitespace-pre-wrap break-words">{c.body}</p>
-            <div className="mt-0.5 flex items-center gap-3 text-[11px] text-slate-400">
-              <span>{formatDistanceToNow(new Date(c.createdAt), { addSuffix: true })}</span>
-              <button onClick={() => remove(c.id)} className="opacity-0 group-hover/c:opacity-100 hover:text-rose-600 transition-opacity">
-                Delete
-              </button>
-            </div>
+    <div className="mt-4 space-y-3 border-l-2 border-slate-200 pl-4">
+      {loading ? <Loader2 size={13} className="animate-spin text-slate-400" /> : comments.map(c => (
+        <div key={c.id} className="group/c">
+          <p className="whitespace-pre-wrap break-words text-[13px] text-slate-700">{c.body}</p>
+          <div className="mt-1 flex items-center gap-3 text-[11px] text-slate-400">
+            <span>{formatDistanceToNow(new Date(c.createdAt), { addSuffix: true })}</span>
+            <button onClick={() => void remove(c.id)} className="opacity-0 group-hover/c:opacity-100 hover:text-rose-600">Delete</button>
           </div>
-        ))
-      )}
-
+        </div>
+      ))}
       <div className="flex items-end gap-2">
-        <textarea
-          value={body}
-          onChange={e => setBody(e.target.value)}
-          onKeyDown={e => {
-            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-              e.preventDefault();
-              void submit();
-            }
-          }}
-          rows={2}
-          maxLength={4000}
-          placeholder="Add a note"
-          className="flex-1 resize-none bg-transparent border-b border-slate-300 focus:border-slate-900 text-[13px] text-slate-800 placeholder:text-slate-400 py-1.5 focus:outline-none"
-        />
-        <button
-          onClick={() => void submit()}
-          disabled={busy || !body.trim()}
-          className="text-[12px] font-semibold text-slate-900 disabled:text-slate-300 pb-1.5"
-        >
-          {busy ? 'Posting…' : 'Post'}
-        </button>
+        <textarea value={body} onChange={e => setBody(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void submit(); } }} rows={2} maxLength={4000} placeholder="Add a note" className="flex-1 resize-none border-b border-slate-300 bg-transparent py-1.5 text-[13px] focus:border-slate-900 focus:outline-none" />
+        <button onClick={() => void submit()} disabled={busy || !body.trim()} className="pb-1.5 text-[12px] font-semibold text-slate-900 disabled:text-slate-300">{busy ? 'Posting…' : 'Post'}</button>
       </div>
-      <p className="text-[10.5px] text-slate-400">⌘/Ctrl + Enter to post</p>
-
       {error && <p className="text-[11px] text-rose-600">{error}</p>}
     </div>
-  );
-}
-
-// =========================================================================
-// Authors tab — top authors with featured researchers + pagination
-// =========================================================================
-
-function AuthorsTab({ papers, setSelectedPaper }: {
-  papers: ReturnType<typeof usePapers>['papers'];
-  setSelectedPaper: (p: ReturnType<typeof usePapers>['papers'][0]) => void;
-}) {
-  const [query, setQuery] = useState('');
-  const [selectedAuthor, setSelectedAuthor] = useState<AuthorStat | null>(null);
-
-  const allStats = useMemo(() => computeAuthorStats(papers), [papers]);
-
-  // Featured authors found in the user's papers (matched by name)
-  const featuredFound = useMemo(() => {
-    return FEATURED_AUTHORS.map(fa => {
-      // Match case-insensitively against the authorList of every paper
-      const matchName = fa.matchName.toLowerCase();
-      const authorStat = allStats.find(a => a.name.toLowerCase().includes(matchName));
-      return authorStat ? { featured: fa, stat: authorStat } : null;
-    }).filter(Boolean) as Array<{ featured: typeof FEATURED_AUTHORS[0]; stat: AuthorStat }>;
-  }, [allStats]);
-
-  const filtered = useMemo(() => {
-    const min = 5; // only authors with 5+ papers
-    let result = allStats.filter(a => a.paperCount >= min);
-    if (query) {
-      const q = query.toLowerCase();
-      result = result.filter(a => a.name.toLowerCase().includes(q));
-    }
-    return result;
-  }, [allStats, query]);
-
-  // ── Author detail ──
-  if (selectedAuthor) {
-    const authorPapers = selectedAuthor.papers.slice().sort((a, b) => b.digestDate.getTime() - a.digestDate.getTime());
-    return (
-      <div className="max-w-5xl mx-auto px-8 py-6 fade-in">
-        <button
-          onClick={() => setSelectedAuthor(null)}
-          className="text-xs text-slate-500 hover:text-slate-700 mb-4 flex items-center gap-1 transition-colors"
-        >
-          <ChevronRight size={12} className="rotate-180" /> All authors
-        </button>
-        <div className="flex items-start gap-4 mb-6">
-          <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-indigo-500 to-violet-500 flex items-center justify-center text-white text-lg font-bold shrink-0 shadow-md">
-            {selectedAuthor.name.split(' ').map(n => n[0]).slice(0, 2).join('')}
-          </div>
-          <div>
-            <h2 className="text-xl font-bold text-slate-900">{selectedAuthor.name}</h2>
-            <p className="text-sm text-slate-500 mt-0.5">
-              {selectedAuthor.paperCount} papers · {selectedAuthor.categories.length} categories · last seen {format(selectedAuthor.lastDate, 'MMM yyyy')}
-            </p>
-            <div className="flex flex-wrap gap-1 mt-2">
-              {selectedAuthor.categories.slice(0, 8).map(cat => {
-                const color = CATEGORY_COLORS_LIGHT[cat] ?? CATEGORY_COLORS_LIGHT.default;
-                return <span key={cat} className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${color}`}>{cat}</span>;
-              })}
-            </div>
-          </div>
-        </div>
-        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-          {authorPapers.map(paper => {
-            const assessment = computeAssessment(paper);
-            return (
-              <button
-                key={paper.id}
-                onClick={() => setSelectedPaper(paper)}
-                className={`w-full text-left px-5 py-3.5 flex items-start gap-4 hover:bg-slate-50 transition-colors group border-b border-slate-100 last:border-0`}
-              >
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-slate-800 line-clamp-1 group-hover:text-blue-700 transition-colors">{paper.title}</p>
-                  <p className="text-xs text-slate-400 mt-1 truncate">
-                    {format(paper.digestDate, 'MMM d, yyyy')} · {paper.arxivId}
-                  </p>
-                </div>
-                <span className={`text-[10px] font-semibold px-2 py-1 rounded-full border shrink-0 ${ASSESSMENT_BADGE[assessment.label]}`}>
-                  {assessment.label}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-      </div>
-    );
-  }
-
-  // ── Author list ──
-  return (
-    <div className="max-w-5xl mx-auto px-8 py-6 fade-in">
-      {/* Featured AI researchers */}
-      {featuredFound.length > 0 && (
-        <div className="mb-8">
-          <div className="flex items-center gap-2 mb-4">
-            <Award size={16} className="text-amber-500" />
-            <h2 className="text-sm font-bold text-slate-700">Featured Researchers in Your Library</h2>
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            {featuredFound.map(({ featured, stat }) => (
-              <button
-                key={featured.name}
-                onClick={() => setSelectedAuthor(stat)}
-                className="text-left bg-white rounded-xl border border-slate-200 p-4 hover:border-indigo-300 hover:shadow-md transition-all group"
-              >
-                <div className="flex items-start gap-3 mb-3">
-                  <img
-                    src={featured.photoUrl}
-                    alt={featured.name}
-                    className="w-12 h-12 rounded-full object-cover shrink-0 border border-slate-200"
-                    onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
-                  />
-                  <div className="min-w-0">
-                    <p className="text-sm font-bold text-slate-900 group-hover:text-indigo-700 transition-colors truncate">{featured.name}</p>
-                    <p className="text-[10px] text-slate-400 truncate">{featured.affiliation}</p>
-                  </div>
-                </div>
-                <p className="text-[10px] font-semibold text-indigo-600 mb-1">{featured.title}</p>
-                <p className="text-[11px] text-slate-500 line-clamp-3 leading-relaxed">{featured.bio}</p>
-                <p className="text-[10px] text-slate-400 mt-2 pt-2 border-t border-slate-100">
-                  {stat.paperCount} papers in your library →
-                </p>
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* All authors header */}
-      <div className="flex items-center justify-between mb-4">
-        <p className="text-sm text-slate-500">
-          {filtered.length} author{filtered.length !== 1 ? 's' : ''} with 5+ papers
-        </p>
-        <div className="relative w-64">
-          <input
-            type="text"
-            value={query}
-            onChange={e => setQuery(e.target.value)}
-            placeholder="Search authors…"
-            className="w-full pl-3 pr-3 py-2 border border-slate-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-400 transition-all"
-          />
-        </div>
-      </div>
-      {filtered.length === 0 ? (
-        <p className="text-center text-slate-400 text-sm py-12">
-          {allStats.length === 0 ? 'No authors found.' : 'No authors with 5+ papers yet.'}
-        </p>
-      ) : (
-        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-          <AuthorList items={filtered} onSelect={setSelectedAuthor} />
-        </div>
-      )}
-    </div>
-  );
-}
-
-// Author list with pagination — keeps the DOM light even with 10k+ authors
-function AuthorList({ items, onSelect }: {
-  items: AuthorStat[];
-  onSelect: (a: AuthorStat) => void;
-}) {
-  const pager = usePagination(items, 50);
-  return (
-    <>
-      {pager.slice.map((author, idx) => {
-        const rank = pager.rangeStart + idx;
-        return (
-          <button
-            key={author.name}
-            onClick={() => onSelect(author)}
-            className={`w-full text-left px-5 py-3.5 flex items-center gap-4 hover:bg-slate-50 transition-colors group border-b border-slate-100 last:border-0`}
-          >
-            {/* Rank */}
-            <span className="text-[10px] font-bold text-slate-400 w-6 shrink-0 text-right">{rank}</span>
-            <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-white text-xs font-bold shrink-0 ${
-              rank <= 3 ? 'bg-gradient-to-br from-indigo-500 to-violet-500' : 'bg-slate-400'
-            }`}>
-              {author.name.split(' ').map(n => n[0]).slice(0, 2).join('')}
-            </div>
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium text-slate-800 group-hover:text-indigo-700 transition-colors truncate">{author.name}</p>
-              <p className="text-xs text-slate-400 truncate">
-                {author.paperCount} papers · {author.categories.slice(0, 3).join(', ')}
-                {author.categories.length > 3 && ` +${author.categories.length - 3}`}
-              </p>
-            </div>
-            <span className="text-xs font-bold text-slate-600 bg-slate-100 px-2 py-1 rounded-full shrink-0">
-              {author.paperCount}
-            </span>
-            <ChevronRight size={14} className="text-slate-300 group-hover:text-indigo-500 transition-colors shrink-0" />
-          </button>
-        );
-      })}
-      <Pager pagination={pager} variant="light" size="sm" label="authors" pageSizes={[25, 50, 100, 250]} />
-    </>
-  );
-}
-
-// =========================================================================
-// Conferences tab — venue list with descriptions + pagination, papers
-// inside each venue sortable by year with ranking
-// =========================================================================
-
-type ConfSortMode = 'papers' | 'name' | 'recent';
-
-function ConferencesTab({ papers, setSelectedPaper }: {
-  papers: ReturnType<typeof usePapers>['papers'];
-  setSelectedPaper: (p: ReturnType<typeof usePapers>['papers'][0]) => void;
-}) {
-  const [selectedVenue, setSelectedVenue] = useState<VenueGroup | null>(null);
-  const [sortMode, setSortMode] = useState<ConfSortMode>('papers');
-
-  const allGroups = useMemo(() => groupByVenue(papers), [papers]);
-  const allVenuePapers = useMemo(() => papers.filter(p => detectVenue(p) !== null), [papers]);
-
-  const sortedGroups = useMemo(() => {
-    const result = [...allGroups];
-    if (sortMode === 'papers') {
-      result.sort((a, b) => b.papers.length - a.papers.length || a.info.name.localeCompare(b.info.name));
-    } else if (sortMode === 'name') {
-      result.sort((a, b) => a.info.name.localeCompare(b.info.name));
-    } else {
-      // recent: most recent paper date first
-      result.sort((a, b) => {
-        const aLast = Math.max(...a.papers.map(p => p.digestDate.getTime()));
-        const bLast = Math.max(...b.papers.map(p => p.digestDate.getTime()));
-        return bLast - aLast;
-      });
-    }
-    return result;
-  }, [allGroups, sortMode]);
-
-  // ── Venue detail ──
-  if (selectedVenue) {
-    return (
-      <VenueDetail venue={selectedVenue} setSelectedPaper={setSelectedPaper} onBack={() => setSelectedVenue(null)} />
-    );
-  }
-
-  // ── Venue list ──
-  return (
-    <div className="max-w-5xl mx-auto px-8 py-6 fade-in">
-      {/* Intro */}
-      <div className="mb-6">
-        <p className="text-sm text-slate-600 leading-relaxed">
-          Conference and venue information is automatically detected from the arXiv <code className="text-[11px] bg-slate-100 px-1 py-0.5 rounded">comments</code> field
-          of each paper — for example "Accepted at NeurIPS 2024" or "Published in CVPR 2024".
-          Papers without venue metadata won't appear here.
-        </p>
-        <p className="text-sm text-slate-500 mt-2">
-          {allVenuePapers.length.toLocaleString()} of {papers.length.toLocaleString()} papers have a detected venue · {allGroups.length} venue{allGroups.length !== 1 ? 's' : ''}
-        </p>
-      </div>
-
-      {/* Sort bar */}
-      <div className="flex items-center gap-2 mb-4">
-        <ArrowUpDown size={13} className="text-slate-400" />
-        <span className="text-xs text-slate-500 mr-1">Sort:</span>
-        {([
-          { value: 'papers', label: 'Most papers' },
-          { value: 'name',   label: 'A-Z' },
-          { value: 'recent', label: 'Most recent' },
-        ] as const).map(opt => (
-          <button
-            key={opt.value}
-            onClick={() => setSortMode(opt.value)}
-            className={`px-3 py-1 rounded-full text-xs font-medium transition-all ${
-              sortMode === opt.value
-                ? 'bg-slate-800 text-white'
-                : 'bg-white text-slate-500 border border-slate-200 hover:border-slate-300 hover:text-slate-700'
-            }`}
-          >
-            {opt.label}
-          </button>
-        ))}
-      </div>
-
-      {allGroups.length === 0 ? (
-        <div className="text-center py-12">
-          <Presentation size={32} className="mx-auto text-slate-300 mb-3" />
-          <p className="text-slate-400 text-sm">
-            No conference papers detected. Venue info is parsed from the arXiv "comments" field.
-          </p>
-        </div>
-      ) : (
-        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-          <VenueList items={sortedGroups} onSelect={setSelectedVenue} />
-        </div>
-      )}
-    </div>
-  );
-}
-
-// Venue list with pagination
-function VenueList({ items, onSelect }: {
-  items: VenueGroup[];
-  onSelect: (v: VenueGroup) => void;
-}) {
-  const pager = usePagination(items, 20);
-  return (
-    <>
-      {pager.slice.map((group, idx) => {
-        const rank = pager.rangeStart + idx;
-        const recentPaper = group.papers.slice().sort((a, b) => b.digestDate.getTime() - a.digestDate.getTime())[0];
-        return (
-          <button
-            key={group.info.key}
-            onClick={() => onSelect(group)}
-            className={`w-full text-left px-5 py-4 flex items-start gap-4 hover:bg-slate-50 transition-colors group border-b border-slate-100 last:border-0`}
-          >
-            {/* Rank */}
-            <span className="text-[10px] font-bold text-slate-400 w-6 shrink-0 text-right mt-1">{rank}</span>
-            {/* Icon */}
-            <div className={`w-9 h-9 rounded-lg flex items-center justify-center text-white shrink-0 shadow-sm mt-0.5 ${
-              group.info.type === 'conference' ? 'bg-gradient-to-br from-emerald-500 to-teal-500' :
-              group.info.type === 'workshop'   ? 'bg-gradient-to-br from-amber-500 to-orange-500' :
-                                                  'bg-gradient-to-br from-blue-500 to-cyan-500'
-            }`}>
-              {group.info.type === 'conference' ? <Presentation size={16} /> :
-               group.info.type === 'workshop'   ? <Users size={16} /> :
-                                                   <BookOpen size={16} />}
-            </div>
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-2">
-                <p className="text-sm font-semibold text-slate-800 group-hover:text-emerald-700 transition-colors">{group.info.name}</p>
-                <span className={`text-[9px] font-semibold px-1.5 py-0.5 rounded-full ${
-                  group.info.type === 'conference' ? 'bg-emerald-100 text-emerald-700' :
-                  group.info.type === 'workshop'   ? 'bg-amber-100 text-amber-700' :
-                                                      'bg-blue-100 text-blue-700'
-                }`}>
-                  {group.info.type}
-                </span>
-              </div>
-              {/* Description */}
-              <p className="text-[11px] text-slate-500 mt-1 line-clamp-2 leading-relaxed">
-                {group.info.about}
-              </p>
-              <p className="text-xs text-slate-400 mt-1.5">
-                {group.papers.length} paper{group.papers.length !== 1 ? 's' : ''}
-                {group.years.length > 0 && ` · ${group.years.join(', ')}`}
-                {recentPaper && ` · latest ${format(recentPaper.digestDate, 'MMM yyyy')}`}
-              </p>
-            </div>
-            <span className="text-xs font-bold text-slate-600 bg-slate-100 px-2 py-1 rounded-full shrink-0 mt-1">
-              {group.papers.length}
-            </span>
-            <ChevronRight size={14} className="text-slate-300 group-hover:text-emerald-500 transition-colors shrink-0 mt-1.5" />
-          </button>
-        );
-      })}
-      <Pager pagination={pager} variant="light" size="sm" label="venues" pageSizes={[10, 20, 50]} />
-    </>
-  );
-}
-
-// Venue detail — papers grouped by year with per-year rankings
-function VenueDetail({ venue, setSelectedPaper, onBack }: {
-  venue: VenueGroup;
-  setSelectedPaper: (p: Paper) => void;
-  onBack: () => void;
-}) {
-  const [yearFilter, setYearFilter] = useState<number | 'all'>('all');
-
-  // Group papers by year (extracted from venue detection), sort years desc
-  const byYear = useMemo(() => {
-    const map = new Map<number, Paper[]>();
-    const noYear: Paper[] = [];
-    for (const p of venue.papers) {
-      const info = detectVenue(p);
-      const yr = info?.year;
-      if (yr) {
-        const arr = map.get(yr) ?? [];
-        arr.push(p);
-        map.set(yr, arr);
-      } else {
-        noYear.push(p);
-      }
-    }
-    // Sort each year's papers by assessment score (depth ranking)
-    const sortPapers = (arr: Paper[]) =>
-      arr.map(p => ({ p, a: computeAssessment(p) }))
-         .sort((x, y) => y.a.score - x.a.score)
-         .map(x => x.p);
-    const grouped = Array.from(map.entries())
-      .map(([year, papers]) => ({ year, papers: sortPapers(papers) }))
-      .sort((a, b) => b.year - a.year);
-    return { grouped, noYear: sortPapers(noYear) };
-  }, [venue]);
-
-  // Years available for the filter dropdown
-  const years = byYear.grouped.map(g => g.year);
-
-  // Filtered groups
-  const visibleGroups = yearFilter === 'all'
-    ? byYear.grouped
-    : byYear.grouped.filter(g => g.year === yearFilter);
-
-  return (
-    <div className="max-w-5xl mx-auto px-8 py-6 fade-in">
-      <button
-        onClick={onBack}
-        className="text-xs text-slate-500 hover:text-slate-700 mb-4 flex items-center gap-1 transition-colors"
-      >
-        <ChevronRight size={12} className="rotate-180" /> All venues
-      </button>
-      {/* Venue header */}
-      <div className="flex items-start gap-4 mb-4">
-        <div className={`w-12 h-12 rounded-xl flex items-center justify-center text-white shrink-0 shadow-md ${
-          venue.info.type === 'conference' ? 'bg-gradient-to-br from-emerald-500 to-teal-500' :
-          venue.info.type === 'workshop'   ? 'bg-gradient-to-br from-amber-500 to-orange-500' :
-                                              'bg-gradient-to-br from-blue-500 to-cyan-500'
-        }`}>
-          {venue.info.type === 'conference' ? <Presentation size={20} /> :
-           venue.info.type === 'workshop'   ? <Users size={20} /> :
-                                               <BookOpen size={20} />}
-        </div>
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2">
-            <h2 className="text-xl font-bold text-slate-900">{venue.info.name}</h2>
-            <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
-              venue.info.type === 'conference' ? 'bg-emerald-100 text-emerald-700' :
-              venue.info.type === 'workshop'   ? 'bg-amber-100 text-amber-700' :
-                                                  'bg-blue-100 text-blue-700'
-            }`}>
-              {venue.info.type}
-            </span>
-          </div>
-          <p className="text-sm text-slate-500 mt-0.5 leading-relaxed">{venue.info.about}</p>
-          <p className="text-xs text-slate-400 mt-1">
-            {venue.papers.length} paper{venue.papers.length !== 1 ? 's' : ''} across {years.length} year{years.length !== 1 ? 's' : ''}
-            {years.length > 0 && ` · ${years.join(', ')}`}
-          </p>
-        </div>
-      </div>
-
-      {/* Year filter bar */}
-      {years.length > 1 && (
-        <div className="flex items-center gap-2 mb-6 overflow-x-auto pb-1 hide-scrollbar">
-          <button
-            onClick={() => setYearFilter('all')}
-            className={`px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap transition-all ${
-              yearFilter === 'all'
-                ? 'bg-slate-800 text-white'
-                : 'bg-white text-slate-500 border border-slate-200 hover:border-slate-300 hover:text-slate-700'
-            }`}
-          >
-            All years
-            <span className={`ml-1.5 text-[10px] px-1.5 py-0.5 rounded-full font-bold ${
-              yearFilter === 'all' ? 'bg-white/20' : 'bg-slate-100'
-            }`}>
-              {venue.papers.length}
-            </span>
-          </button>
-          {years.map(yr => {
-            const count = byYear.grouped.find(g => g.year === yr)?.papers.length ?? 0;
-            const active = yearFilter === yr;
-            return (
-              <button
-                key={yr}
-                onClick={() => setYearFilter(yr)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap transition-all ${
-                  active
-                    ? 'bg-slate-800 text-white'
-                    : 'bg-white text-slate-500 border border-slate-200 hover:border-slate-300 hover:text-slate-700'
-                }`}
-              >
-                {yr}
-                <span className={`ml-1.5 text-[10px] px-1.5 py-0.5 rounded-full font-bold ${
-                  active ? 'bg-white/20' : 'bg-slate-100'
-                }`}>
-                  {count}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-      )}
-
-      {/* Papers grouped by year with per-year ranking */}
-      <div className="space-y-8">
-        {visibleGroups.map(group => (
-          <YearSection
-            key={group.year}
-            year={group.year}
-            papers={group.papers}
-            setSelectedPaper={setSelectedPaper}
-          />
-        ))}
-        {/* Papers with no detected year (only in "all" mode) */}
-        {yearFilter === 'all' && byYear.noYear.length > 0 && (
-          <YearSection
-            year={null}
-            papers={byYear.noYear}
-            setSelectedPaper={setSelectedPaper}
-          />
-        )}
-        {visibleGroups.length === 0 && byYear.noYear.length === 0 && (
-          <p className="text-center text-slate-400 text-sm py-8">No papers for this year.</p>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// A single year section within a venue detail — papers ranked by depth score
-function YearSection({ year, papers, setSelectedPaper }: {
-  year: number | null;
-  papers: Paper[];
-  setSelectedPaper: (p: Paper) => void;
-}) {
-  const pager = usePagination(papers, 50);
-  return (
-    <section>
-      <div className="flex items-center gap-2 mb-3">
-        <div className={`px-3 py-1 rounded-lg text-sm font-bold ${
-          year ? 'bg-slate-800 text-white' : 'bg-slate-200 text-slate-600'
-        }`}>
-          {year ?? 'Date unknown'}
-        </div>
-        <span className="text-xs text-slate-400">
-          {papers.length} paper{papers.length !== 1 ? 's' : ''} · ranked by depth score
-        </span>
-      </div>
-      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-        {pager.slice.map((paper, idx) => {
-          const assessment = computeAssessment(paper);
-          const rank = idx + 1; // per-year rank
-          return (
-            <button
-              key={paper.id}
-              onClick={() => setSelectedPaper(paper)}
-              className={`w-full text-left px-5 py-3.5 flex items-start gap-4 hover:bg-slate-50 transition-colors group border-b border-slate-100 last:border-0`}
-            >
-              {/* Per-year rank badge */}
-              <div className={`w-7 h-7 rounded-full flex items-center justify-center shrink-0 mt-0.5 font-bold text-xs ${
-                rank === 1 ? 'bg-amber-100 text-amber-700' :
-                rank === 2 ? 'bg-slate-100 text-slate-600' :
-                rank === 3 ? 'bg-orange-100 text-orange-700' :
-                'bg-slate-50 text-slate-400'
-              }`}>
-                {rank}
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium text-slate-800 line-clamp-1 group-hover:text-blue-700 transition-colors">{paper.title}</p>
-                <p className="text-xs text-slate-400 mt-1 truncate">
-                  {paper.authorList[0]}{paper.authorList.length > 1 ? ' et al.' : ''} · {format(paper.digestDate, 'MMM d, yyyy')}
-                </p>
-              </div>
-              <span className={`text-[10px] font-semibold px-2 py-1 rounded-full border shrink-0 ${ASSESSMENT_BADGE[assessment.label]}`}>
-                {assessment.label}
-              </span>
-            </button>
-          );
-        })}
-        <Pager pagination={pager} variant="light" size="sm" label="papers" pageSizes={[25, 50, 100]} />
-      </div>
-    </section>
   );
 }

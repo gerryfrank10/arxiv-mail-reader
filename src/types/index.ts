@@ -36,6 +36,12 @@ export interface Paper {
   // Embedded PDF figures, extracted lazily for feed-visible papers.
   thumbnailChecked?: boolean;
   thumbnailAvailable?: boolean;
+  // Best qualifying match among the user's enabled trackers (dashboard feed).
+  relevance?: {
+    score: number;
+    trackerName: string;
+    rationale: string;
+  };
 }
 
 // A user's own note/comment on a paper (dashboard feed).

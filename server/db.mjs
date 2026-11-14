@@ -272,8 +272,8 @@ export const db = {
                (full_text IS NOT NULL) AS has_full_text,
                COALESCE(full_text_chars, 0) AS full_text_chars,
                organization,
-                (thumbnail_figures IS NOT NULL AND thumbnail_version=2) AS thumbnail_checked,
-                (thumbnail_version=2 AND COALESCE(jsonb_array_length(thumbnail_figures), 0) > 0) AS thumbnail_has_image`;
+                (thumbnail_figures IS NOT NULL AND thumbnail_version=3) AS thumbnail_checked,
+                (thumbnail_version=3 AND COALESCE(jsonb_array_length(thumbnail_figures), 0) > 0) AS thumbnail_has_image`;
     const lim = Math.trunc(Number(limit) || 0);
     const off = Math.max(0, Math.trunc(Number(offset) || 0));
 
@@ -309,6 +309,46 @@ export const db = {
     );
     const total = rows.length > 0 ? Number(rows[0].total_count) : 0;
     return { papers: rows.map(rowToPaper), total };
+  },
+
+  // Ranked feed uses existing tracker scores; no date or random-selection bias.
+  async getRelevantPapers(userId, { limit = 10, offset = 0 } = {}) {
+    const cols = `id, arxiv_id, title, authors, author_list, categories,
+              abstract, comments, url, pdf_url, size, date, email_id,
+              digest_subject, digest_date, source,
+               file_path, file_size, mime_type, original_filename, uploaded_at,
+               (full_text IS NOT NULL) AS has_full_text,
+               COALESCE(full_text_chars, 0) AS full_text_chars,
+              organization,
+               (thumbnail_figures IS NOT NULL AND thumbnail_version=3) AS thumbnail_checked,
+               (thumbnail_version=3 AND COALESCE(jsonb_array_length(thumbnail_figures), 0) > 0) AS thumbnail_has_image`;
+    const { rows } = await pool.query(
+      `WITH matches AS (
+         SELECT s.paper_id, s.score, s.rationale, t.name AS tracker_name,
+                row_number() OVER (
+                  PARTITION BY s.paper_id
+                  ORDER BY s.score DESC, s.ts DESC, t.name
+                ) AS rank
+         FROM paper_scores s
+         JOIN trackers t ON t.user_id=s.user_id AND t.id=s.tracker_id
+         WHERE s.user_id=$1 AND t.enabled AND s.score>=t.min_score
+       ), ranked AS (
+         SELECT m.paper_id, m.score, m.rationale, m.tracker_name,
+                count(*) OVER() AS total_count
+         FROM matches m WHERE m.rank=1
+       )
+       SELECT ${cols}, r.score AS relevance_score, r.rationale AS relevance_rationale,
+              r.tracker_name AS relevance_tracker_name, r.total_count
+       FROM ranked r
+       JOIN papers p ON p.user_id=$1 AND p.id=r.paper_id
+       ORDER BY r.score DESC, p.digest_date DESC, p.id DESC
+       LIMIT $2 OFFSET $3`,
+      [userId, Math.min(100, Math.max(1, Math.trunc(Number(limit) || 10))), Math.max(0, Math.trunc(Number(offset) || 0))],
+    );
+    return {
+      papers: rows.map(rowToPaper),
+      total: rows.length > 0 ? Number(rows[0].total_count) : 0,
+    };
   },
 
   // Library-wide aggregates for the Dashboard. The papers list is paginated, so
@@ -636,8 +676,8 @@ export const db = {
               (full_text IS NOT NULL) AS has_full_text,
               COALESCE(full_text_chars, 0) AS full_text_chars,
               organization,
-              (thumbnail_figures IS NOT NULL AND thumbnail_version=2) AS thumbnail_checked,
-              (thumbnail_version=2 AND COALESCE(jsonb_array_length(thumbnail_figures), 0) > 0) AS thumbnail_has_image
+              (thumbnail_figures IS NOT NULL AND thumbnail_version=3) AS thumbnail_checked,
+              (thumbnail_version=3 AND COALESCE(jsonb_array_length(thumbnail_figures), 0) > 0) AS thumbnail_has_image
        FROM papers WHERE user_id=$1 AND id=$2`,
       [userId, id],
     );
@@ -666,8 +706,8 @@ export const db = {
                 (full_text IS NOT NULL) AS has_full_text,
                 COALESCE(full_text_chars, 0) AS full_text_chars,
                 organization,
-                (thumbnail_figures IS NOT NULL AND thumbnail_version=2) AS thumbnail_checked,
-                (thumbnail_version=2 AND COALESCE(jsonb_array_length(thumbnail_figures), 0) > 0) AS thumbnail_has_image
+                (thumbnail_figures IS NOT NULL AND thumbnail_version=3) AS thumbnail_checked,
+                (thumbnail_version=3 AND COALESCE(jsonb_array_length(thumbnail_figures), 0) > 0) AS thumbnail_has_image
          FROM papers WHERE ${where}
          ORDER BY digest_date DESC, id DESC
          LIMIT $3 OFFSET $4`,
@@ -1749,6 +1789,11 @@ function rowToPaper(r) {
     organization:     r.organization ?? null,
     thumbnailChecked: !!r.thumbnail_checked,
     thumbnailAvailable: !!r.thumbnail_has_image,
+    relevance: r.relevance_score == null ? undefined : {
+      score: Number(r.relevance_score),
+      trackerName: r.relevance_tracker_name,
+      rationale: r.relevance_rationale ?? '',
+    },
   };
 }
 

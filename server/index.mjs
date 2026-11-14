@@ -22,6 +22,7 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import { db } from './db.mjs';
 import { fetchSources, buildNewsQuery } from './sources.mjs';
 import { createPaperFigureThumbnails, FIGURE_CACHE_VERSION } from './paperThumbnail.mjs';
+import { createArxivHtmlFigures, detectArxivPdfVersion } from './arxivFigures.mjs';
 import { isParallaxPublicRead, isParallaxPublicWrite, registerParallaxPublicApi } from './parallax/publicApi.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -1098,6 +1099,12 @@ app.get('/api/db/papers', (req, res) => withUser(req, res, async (uid) => {
   const { papers, total } = await db.getPapers(uid, { limit, offset });
   res.json({ papers, total, hasMore: limit > 0 && offset + papers.length < total });
 }));
+app.get('/api/db/papers/relevant', (req, res) => withUser(req, res, async (uid) => {
+  const limit = Math.min(100, Math.max(1, Math.trunc(Number(req.query.limit) || 10)));
+  const offset = Math.max(0, Math.trunc(Number(req.query.offset) || 0));
+  const { papers, total } = await db.getRelevantPapers(uid, { limit, offset });
+  res.json({ papers, total, hasMore: offset + papers.length < total });
+}));
 app.get('/api/db/papers/search', (req, res) => withUser(req, res, async (uid) => {
   const query = String(req.query.q ?? '').trim();
   const limit = Math.min(250, Math.max(1, Math.trunc(Number(req.query.limit) || 100)));
@@ -1602,25 +1609,50 @@ async function generatePaperFigures(userId, paper, req) {
     if (figures.every(figure => resolvePaperFigurePath(userId, figure))) return figures;
   }
 
+  const isArxiv = /^(\d{4}\.\d{4,5}|[a-z-]+(?:\.[a-z-]+)?\/\d{7})(v\d+)?$/i.test(String(paper.arxivId ?? ''));
   const cachedPath = resolvePaperFilePath(paper, req.get('x-user-email') || '');
-  let pdfBuffer;
-  if (cachedPath) {
-    pdfBuffer = readFileSync(cachedPath);
-  } else if (/^(\d{4}\.\d{4,5}|[a-z-]+(?:\.[a-z-]+)?\/\d{7})(v\d+)?$/i.test(String(paper.arxivId ?? ''))) {
-    // Reuse the shared PDF queue/rate limit. The PDF buffer is temporary: only
-    // extracted figure images are retained unless the user separately caches
-    // the whole PDF.
-    pdfBuffer = await enqueuePdfFetch(() => downloadArxivPdf(paper.arxivId));
-  } else {
-    await db.setPaperThumbnail(userId, paper.id, [], FIGURE_CACHE_VERSION);
-    return [];
+  let pdfBuffer = cachedPath ? readFileSync(cachedPath) : null;
+  let htmlArxivId = isArxiv ? paper.arxivId : null;
+  if (pdfBuffer && isArxiv && !/v\d+$/i.test(paper.arxivId)) {
+    // A cached v1 PDF must never be illustrated with assets from arXiv's
+    // current v2 HTML. Use the printed version, or keep the PDF as authority.
+    const version = await detectArxivPdfVersion(pdfBuffer, paper.arxivId);
+    htmlArxivId = version ? `${paper.arxivId}${version}` : null;
   }
 
-  const extracted = await enqueueExtraction(() => withTimeout(
-    createPaperFigureThumbnails(pdfBuffer),
-    180_000,
-    'paper figure extraction timed out',
-  ));
+  let extracted = null;
+  if (htmlArxivId) {
+    try {
+      // LaTeXML/arXiv HTML retains the original composed SVG/PNG assets, so
+      // complete multi-panel figures don't depend on fragile PDF crop bounds.
+      extracted = await enqueuePdfFetch(() => createArxivHtmlFigures(htmlArxivId, { headers: ARXIV_HEADERS }));
+    } catch (error) {
+      console.warn(`[figures] arXiv HTML unavailable for ${htmlArxivId}: ${error.message}; using PDF`);
+    }
+  }
+
+  if (!extracted || extracted.some(figure => !figure)) {
+    if (!pdfBuffer && isArxiv) {
+      // Reuse the shared PDF queue/rate limit. The PDF buffer is temporary: only
+      // extracted figure images are retained unless the user separately caches
+      // the whole PDF.
+      pdfBuffer = await enqueuePdfFetch(() => downloadArxivPdf(paper.arxivId));
+    } else if (!pdfBuffer) {
+      await db.setPaperThumbnail(userId, paper.id, [], FIGURE_CACHE_VERSION);
+      return [];
+    }
+
+    const pdfFigures = await enqueueExtraction(() => withTimeout(
+      createPaperFigureThumbnails(pdfBuffer),
+      180_000,
+      'paper figure extraction timed out',
+    ));
+    // HTML and PDF figure captions follow the same sequence. Fill only missing
+    // HTML groups from the PDF so a broken appendix asset never drops a figure.
+    extracted = extracted
+      ? extracted.map((figure, index) => figure ?? pdfFigures[index] ?? null).filter(Boolean)
+      : pdfFigures;
+  }
 
   const figures = [];
   for (let index = 0; index < extracted.length; index++) {
@@ -1629,7 +1661,7 @@ async function generatePaperFigures(userId, paper, req) {
     writeFileSync(path, figure.buffer);
     figures.push({
       index,
-      pageNumber: figure.pageNumber,
+      pageNumber: figure.pageNumber ?? null,
       width: figure.width,
       height: figure.height,
       file: basename(path),
