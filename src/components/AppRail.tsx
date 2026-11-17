@@ -166,7 +166,7 @@ export default function AppRail({ activeView, setActiveView, onAISuggest, onSett
 
   return (
     <aside
-      className={`shrink-0 h-full flex flex-col bg-slate-900 border-r border-slate-800 py-3 transition-[width] duration-200 overflow-hidden ${
+      className={`shrink-0 h-full flex flex-col bg-slate-900 border-r border-slate-800 py-3 transition-[width] duration-200 ${
         expanded ? 'w-[232px] px-2' : 'w-[68px] px-1.5 items-center'
       }`}
     >
