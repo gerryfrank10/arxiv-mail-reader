@@ -10,6 +10,7 @@ import multer from 'multer';
 import 'dotenv/config';
 import { extractText as extractPdfTextRaw } from 'unpdf';
 import { detectOrganization } from './organizations.mjs';
+import { getNobelLaureates } from './nobel.mjs';
 import {
   ARXIV_CATEGORY_RE as ARXIV_CAT_RE,
   extractArxivAbstract,
@@ -1092,6 +1093,16 @@ app.post('/api/auth/password', async (req, res) => {
 // Gate every DB route (status above stays public so the client can detect an
 // unavailable DB). Browser-direct file URLs can't set headers, so the token is
 // also accepted as ?token=… for those routes only.
+// nobel — official laureate data, proxied + cached by the server
+app.get('/api/nobel/laureates', (req, res) => withUser(req, res, async () => {
+  try {
+    res.json(await getNobelLaureates({ cacheFile: join(UPLOAD_ROOT, 'nobel', 'laureates-cache.json') }));
+  } catch (error) {
+    console.warn(`[nobel] laureates unavailable: ${error.message}`);
+    res.status(502).json({ error: `Nobel Prize API unavailable: ${error.message}` });
+  }
+}));
+
 // papers
 app.get('/api/db/papers', (req, res) => withUser(req, res, async (uid) => {
   const limit  = Math.min(20000, Math.max(0, Math.trunc(Number(req.query.limit)  || 0)));

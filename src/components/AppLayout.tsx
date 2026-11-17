@@ -11,6 +11,7 @@ import BooksView from './BooksView';
 import WriterView from './WriterView';
 import CollectionsView from './CollectionsView';
 import MagazineView from './MagazineView';
+import NobelView from './NobelView';
 import AISuggestPanel from './AISuggestPanel';
 import SettingsModal from './SettingsModal';
 import { usePapers } from '../contexts/PapersContext';
@@ -26,7 +27,7 @@ import { AIActivityProvider } from '../contexts/AIActivityContext';
 import AIActivityPanel from './AIActivityPanel';
 import AutoPaperCache from './AutoPaperCache';
 
-export type ActiveView = 'inbox' | 'library' | 'discover' | 'tracking' | 'books' | 'writer' | 'collections' | 'magazine';
+export type ActiveView = 'inbox' | 'library' | 'discover' | 'tracking' | 'books' | 'writer' | 'collections' | 'magazine' | 'nobel';
 
 function AppLayoutInner() {
   const { selectedPaper } = usePapers();
@@ -58,6 +59,7 @@ function AppLayoutInner() {
       case 'writer':       return <WriterView />;
       case 'collections':  return <CollectionsView />;
       case 'magazine':     return <MagazineView />;
+      case 'nobel':        return <NobelView />;
       default:             return <Dashboard />;
     }
   };

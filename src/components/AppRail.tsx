@@ -1,4 +1,4 @@
-import { Inbox, Compass, Target, BookMarked, Library, Pen, Sparkles, Settings, RefreshCw, FolderOpen, Newspaper, Activity, LogOut, ChevronsLeft, ChevronsRight, ChevronDown } from 'lucide-react';
+import { Inbox, Compass, Target, BookMarked, Library, Pen, Sparkles, Settings, RefreshCw, FolderOpen, Newspaper, Activity, LogOut, ChevronsLeft, ChevronsRight, ChevronDown, Medal } from 'lucide-react';
 import { useState, useRef, useEffect, useMemo } from 'react';
 import { useAIActivity } from '../contexts/AIActivityContext';
 import { ActiveView } from './AppLayout';
@@ -19,7 +19,7 @@ interface Props {
   label:  string;
   hint:   string;
   badge?: number | null;
-  accent: 'blue' | 'indigo' | 'emerald' | 'amber' | 'cyan' | 'violet' | 'fuchsia' | 'rose';
+  accent: 'blue' | 'indigo' | 'emerald' | 'amber' | 'cyan' | 'violet' | 'fuchsia' | 'rose' | 'yellow';
 }
 
 // Static color maps so Tailwind's JIT picks up the classes
@@ -32,6 +32,7 @@ const ACCENT_BAR: Record<RailItem['accent'], string> = {
   violet:  'bg-violet-400',
   fuchsia: 'bg-fuchsia-400',
   rose:    'bg-rose-400',
+  yellow:  'bg-yellow-400',
 };
 const ACCENT_BADGE: Record<RailItem['accent'], string> = {
   blue:    'bg-blue-500',
@@ -42,6 +43,7 @@ const ACCENT_BADGE: Record<RailItem['accent'], string> = {
   violet:  'bg-violet-500',
   fuchsia: 'bg-fuchsia-500',
   rose:    'bg-rose-500',
+  yellow:  'bg-yellow-500',
 };
 
 const EXPANDED_KEY = 'rail.expanded';
@@ -98,6 +100,9 @@ export default function AppRail({ activeView, setActiveView, onAISuggest, onSett
     { id: 'collections', icon: <FolderOpen size={18} />, label: 'Collections', hint: 'Grouped papers by project', badge: null,  accent: 'fuchsia' },
     { id: 'magazine',    icon: <Newspaper  size={18} />, label: 'Magazine',    hint: 'Curated digest issues', badge: null,     accent: 'rose' },
     { id: 'writer',      icon: <Pen        size={18} />, label: 'Writer',      hint: 'Draft notes and documents', badge: null, accent: 'violet' },
+  ];
+  const exploreItems: RailItem[] = [
+    { id: 'nobel',       icon: <Medal size={18} />, label: 'Nobel Prize', hint: 'Every laureate since 1901', badge: null, accent: 'yellow' },
   ];
 
   function pick(id: ActiveView) {
@@ -205,6 +210,8 @@ export default function AppRail({ activeView, setActiveView, onAISuggest, onSett
         {readingItems.map(renderItem)}
         {renderSectionLabel('Workspaces')}
         {workspaceItems.map(renderItem)}
+        {renderSectionLabel('Explore')}
+        {exploreItems.map(renderItem)}
       </nav>
 
       <div className="flex-1" />
