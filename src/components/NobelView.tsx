@@ -1,6 +1,8 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { Medal, Search, AlertCircle, ExternalLink, BookOpen, X, ChevronDown, Trophy } from 'lucide-react';
 import { apiGetNobelLaureates, NobelData, NobelLaureate, NobelAward } from '../utils/nobelApi';
+import Pager from './Pager';
+import { usePagination } from '../hooks/usePagination';
 
 const CATEGORIES = ['Physics', 'Chemistry', 'Physiology or Medicine', 'Literature', 'Peace', 'Economic Sciences'];
 
@@ -79,8 +81,19 @@ export default function NobelView() {
 
   const matchCount = filtered.reduce((sum, y) => sum + y.awards.reduce((s, a) => s + a.laureates.length, 0), 0);
 
+  // Paginate the year list in both browse and filter modes.
+  const displayYears = data ? (filtering ? filtered : data.years) : [];
+  const pagination   = usePagination(displayYears, 20);
+  const visibleYears = pagination.slice;
+  const scrollRef    = useRef<HTMLDivElement>(null);
+
+  // Jump back to the top when the page changes so the user sees the new years.
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: 0 });
+  }, [pagination.page]);
+
   return (
-    <div className="h-full overflow-y-auto main-scroll">
+    <div ref={scrollRef} className="h-full overflow-y-auto main-scroll">
       <div className="max-w-5xl mx-auto px-8 py-8 fade-in">
         {/* Header */}
         <div className="flex items-center gap-3 mb-1">
@@ -167,7 +180,7 @@ export default function NobelView() {
                 : <><span className="font-semibold text-slate-700">{matchCount.toLocaleString()}</span> laureate{matchCount === 1 ? '' : 's'} match{matchCount === 1 ? 'es' : ''} in {filtered.length} year{filtered.length === 1 ? '' : 's'}.</>}
             </p>
             <div className="space-y-6">
-              {filtered.map(({ year, awards }) => (
+              {visibleYears.map(({ year, awards }) => (
                 <div key={year}>
                   <div className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2">{year}</div>
                   <div className="space-y-3">
@@ -182,7 +195,7 @@ export default function NobelView() {
         {/* Browse-all mode: collapsible year timeline */}
         {!loading && !error && data && !filtering && (
           <div className="space-y-2.5">
-            {data.years.map(({ year, awards }) => {
+            {visibleYears.map(({ year, awards }) => {
               const open = openYear === year;
               const laureateCount = awards.reduce((s, a) => s + a.laureates.length, 0);
               return (
@@ -211,6 +224,16 @@ export default function NobelView() {
               );
             })}
           </div>
+        )}
+
+        {/* Pagination — shared by browse and filter modes */}
+        {!loading && !error && data && (
+          <Pager
+            pagination={pagination}
+            label="years"
+            pageSizes={[10, 20, 40]}
+            sticky
+          />
         )}
       </div>
     </div>
