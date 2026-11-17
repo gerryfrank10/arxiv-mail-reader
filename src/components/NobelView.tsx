@@ -1,6 +1,8 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
-import { Medal, Search, AlertCircle, ExternalLink, BookOpen, X, ChevronDown, Trophy } from 'lucide-react';
+import { Medal, Search, AlertCircle, ExternalLink, BookOpen, X, ChevronDown, Trophy, FileText, Loader2 } from 'lucide-react';
 import { apiGetNobelLaureates, NobelData, NobelLaureate, NobelAward } from '../utils/nobelApi';
+import { fetchArxivBySearch, ArxivMetadata } from '../utils/paperImport';
+import { usePapers } from '../contexts/PapersContext';
 import Pager from './Pager';
 import { usePagination } from '../hooks/usePagination';
 
@@ -16,6 +18,7 @@ const CATEGORY_CHIP: Record<string, string> = {
 };
 
 export default function NobelView() {
+  const { papers } = usePapers();
   const [data, setData]       = useState<NobelData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState<string | null>(null);
@@ -80,6 +83,10 @@ export default function NobelView() {
   }, [data, query, category]);
 
   const matchCount = filtered.reduce((sum, y) => sum + y.awards.reduce((s, a) => s + a.laureates.length, 0), 0);
+
+  // arXiv IDs already in the user's library, so laureate papers can be marked
+  // "in your library" without a second lookup.
+  const libraryIds = useMemo(() => new Set(papers.map(p => p.arxivId).filter(Boolean)), [papers]);
 
   // Paginate the year list in both browse and filter modes.
   const displayYears = data ? (filtering ? filtered : data.years) : [];
@@ -184,7 +191,7 @@ export default function NobelView() {
                 <div key={year}>
                   <div className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2">{year}</div>
                   <div className="space-y-3">
-                    {awards.map(award => <AwardRow key={award.category} award={award} prizeCountById={prizeCountById} />)}
+                    {awards.map(award => <AwardRow key={award.category} award={award} prizeCountById={prizeCountById} libraryIds={libraryIds} />)}
                   </div>
                 </div>
               ))}
@@ -217,7 +224,7 @@ export default function NobelView() {
                   </button>
                   {open && (
                     <div className="px-4 pb-4 pt-1 space-y-3 border-t border-slate-100">
-                      {awards.map(award => <AwardRow key={award.category} award={award} prizeCountById={prizeCountById} />)}
+                      {awards.map(award => <AwardRow key={award.category} award={award} prizeCountById={prizeCountById} libraryIds={libraryIds} />)}
                     </div>
                   )}
                 </div>
@@ -240,7 +247,7 @@ export default function NobelView() {
   );
 }
 
-function AwardRow({ award, prizeCountById }: { award: NobelAward; prizeCountById: Map<string, number> }) {
+function AwardRow({ award, prizeCountById, libraryIds }: { award: NobelAward; prizeCountById: Map<string, number>; libraryIds: Set<string> }) {
   return (
     <div>
       <div className="flex items-center gap-2 mb-1.5">
@@ -250,14 +257,14 @@ function AwardRow({ award, prizeCountById }: { award: NobelAward; prizeCountById
       </div>
       <div className="space-y-2">
         {award.laureates.map(laureate => (
-          <LaureateCard key={laureate.id} laureate={laureate} prizeCountById={prizeCountById} />
+          <LaureateCard key={laureate.id} laureate={laureate} prizeCountById={prizeCountById} libraryIds={libraryIds} />
         ))}
       </div>
     </div>
   );
 }
 
-function LaureateCard({ laureate, prizeCountById }: { laureate: NobelLaureate; prizeCountById: Map<string, number> }) {
+function LaureateCard({ laureate, prizeCountById, libraryIds }: { laureate: NobelLaureate; prizeCountById: Map<string, number>; libraryIds: Set<string> }) {
   const multi = prizeCountById.get(laureate.id) ?? 1;
   const life = laureate.birthYear
     ? ` (${laureate.birthYear}${laureate.deathYear ? `–${laureate.deathYear}` : '–'})`
@@ -292,6 +299,7 @@ function LaureateCard({ laureate, prizeCountById }: { laureate: NobelLaureate; p
           {laureate.motivation && (
             <p className="text-xs text-slate-600 mt-1 leading-relaxed">{laureate.motivation}</p>
           )}
+          <LaureatePapers laureate={laureate} libraryIds={libraryIds} />
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
           {laureate.portion && laureate.portion !== '1' && (
@@ -323,6 +331,108 @@ function LaureateCard({ laureate, prizeCountById }: { laureate: NobelLaureate; p
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+// Papers found per laureate, cached for the session so multi-prize winners
+// (rendered as several cards) and revisits don't re-query arXiv.
+const laureatePapersCache = new Map<string, { papers?: ArxivMetadata[]; error?: string }>();
+
+/**
+ * Expandable list of a laureate's papers on arXiv, searched by author name
+ * via the server's arXiv proxy. Papers already in the user's library are
+ * marked. Laureates in fields arXiv doesn't cover (Literature, Peace, most
+ * Medicine/Chemistry work) simply come back empty.
+ */
+function LaureatePapers({ laureate, libraryIds }: { laureate: NobelLaureate; libraryIds: Set<string> }) {
+  const [open, setOpen]       = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [state, setState]     = useState<{ papers?: ArxivMetadata[]; error?: string } | null>(
+    () => laureatePapersCache.get(laureate.id) ?? null,
+  );
+
+  async function toggle() {
+    const next = !open;
+    setOpen(next);
+    if (!next || state || loading) return;
+    setLoading(true);
+    try {
+      const result = await fetchArxivBySearch({ mode: 'author', value: laureate.name, max: 25 });
+      const found = { papers: result.results };
+      laureatePapersCache.set(laureate.id, found);
+      setState(found);
+    } catch (e) {
+      const failed = { error: e instanceof Error ? e.message : 'arXiv search failed' };
+      laureatePapersCache.set(laureate.id, failed);
+      setState(failed);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const count = state?.papers?.length ?? 0;
+
+  return (
+    <div className="mt-2">
+      <button
+        onClick={toggle}
+        disabled={loading}
+        className="inline-flex items-center gap-1.5 text-[11px] font-medium px-2 py-1 rounded-lg bg-white border border-slate-200 text-slate-600 hover:border-amber-400 hover:text-amber-700 transition-colors disabled:opacity-60"
+      >
+        {loading ? <Loader2 size={11} className="animate-spin" /> : <FileText size={11} />}
+        {loading
+          ? 'Searching arXiv…'
+          : state
+            ? (count > 0 ? `${count} arXiv paper${count === 1 ? '' : 's'}` : 'No arXiv papers')
+            : 'arXiv papers'}
+      </button>
+
+      {open && state && (
+        <div className="mt-2 space-y-1.5">
+          {state.error && <p className="text-[11px] text-rose-600">{state.error}</p>}
+          {!state.error && count === 0 && (
+            <p className="text-[11px] text-slate-500">
+              Nothing on arXiv for this author — arXiv covers physics, mathematics, computer science, and related fields.
+            </p>
+          )}
+          {state.papers?.map(paper => {
+            const inLibrary = libraryIds.has(paper.arxivId);
+            const year = paper.digestDate?.getFullYear?.() ?? paper.date?.slice(0, 4);
+            return (
+              <div key={paper.arxivId} className="rounded-lg bg-white border border-slate-150 px-2.5 py-1.5">
+                <a
+                  href={paper.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-xs font-medium text-slate-800 hover:text-amber-700 hover:underline leading-snug"
+                >
+                  {paper.title}
+                </a>
+                <div className="flex items-center gap-1.5 flex-wrap mt-0.5">
+                  <span className="text-[10px] text-slate-400">{year} · {paper.categories[0] ?? 'arXiv'}</span>
+                  {inLibrary && (
+                    <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700 border border-emerald-200">
+                      In your library
+                    </span>
+                  )}
+                </div>
+                <p className="text-[10px] text-slate-500 truncate mt-0.5">{paper.authors}</p>
+              </div>
+            );
+          })}
+          {count > 0 && (
+            <a
+              href={`https://arxiv.org/search/?searchtype=author&query=${encodeURIComponent(laureate.name)}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 text-[11px] text-slate-500 hover:text-slate-800 hover:underline"
+            >
+              See all on arXiv <ExternalLink size={10} />
+            </a>
+          )}
+        </div>
+      )}
     </div>
   );
 }

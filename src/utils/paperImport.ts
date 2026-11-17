@@ -39,7 +39,7 @@ export function extractArxivIds(input: string): string[] {
 // Fetch from arXiv API (via our server proxy)
 // =========================================================================
 
-interface ArxivMetadata {
+export interface ArxivMetadata {
   arxivId: string;
   title: string;
   authors: string;
