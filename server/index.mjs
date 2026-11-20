@@ -1061,6 +1061,53 @@ app.post('/api/auth/logout', async (req, res) => {
   res.json({ ok: true });
 });
 
+// Forgot password: issue a one-time reset link. There is no outbound email
+// configured, so the link is written to the server log for the operator to
+// retrieve. The response is always the same so accounts can't be enumerated.
+app.post('/api/auth/forgot-password', async (req, res) => {
+  if (!db.enabled) return res.status(503).json({ error: 'Database is not enabled.' });
+  const email = String(req.body?.email ?? '').trim().toLowerCase();
+  if (!validEmail(email)) return res.status(400).json({ error: 'Enter a valid email address.' });
+  const key = loginKey(req, `forgot:${email}`);
+  if (tooManyTries(key)) return res.status(429).json({ error: 'Too many attempts. Try again in a few minutes.' });
+  try {
+    const user = await db.findUserByEmail(email);
+    if (user) {
+      loginTries.delete(key);
+      const token = await db.createPasswordReset(user.id);
+      const origin = `${req.protocol}://${req.get('host')}`;
+      console.log(`[auth] Password reset link for ${email} (valid 30 minutes): ${origin}/?token=${token}`);
+    } else {
+      noteFailure(key);
+    }
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('[auth] forgot-password failed:', e.message);
+    res.status(500).json({ error: 'Could not create a reset link.' });
+  }
+});
+
+app.post('/api/auth/reset-password', async (req, res) => {
+  if (!db.enabled) return res.status(503).json({ error: 'Database is not enabled.' });
+  const token = String(req.body?.token ?? '').trim();
+  const next  = String(req.body?.newPassword ?? '');
+  if (!/^[a-f0-9]{64}$/i.test(token)) {
+    return res.status(400).json({ error: 'This reset link is invalid or has expired. Request a new one.' });
+  }
+  if (next.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters.' });
+  try {
+    const user = await db.consumePasswordReset(token, next);
+    if (!user) {
+      return res.status(400).json({ error: 'This reset link is invalid or has expired. Request a new one.' });
+    }
+    const session = await db.createSession(user.id);
+    res.json({ ok: true, token: session, user: { email: user.email } });
+  } catch (e) {
+    console.error('[auth] reset-password failed:', e.message);
+    res.status(500).json({ error: 'Could not reset the password.' });
+  }
+});
+
 app.get('/api/auth/me', async (req, res) => {
   if (!db.enabled) return res.status(503).json({ error: 'Database is not enabled.' });
   try {

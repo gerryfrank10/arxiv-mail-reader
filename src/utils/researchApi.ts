@@ -73,6 +73,22 @@ export async function apiMe(): Promise<{ user: { email: string } }> {
   return call<{ user: { email: string } }>('/api/auth/me');
 }
 
+/** Ask the server to issue a one-time password reset link (written to the server log). */
+export async function apiForgotPassword(email: string): Promise<void> {
+  await call('/api/auth/forgot-password', {
+    method: 'POST',
+    body: JSON.stringify({ email }),
+  });
+}
+
+/** Complete a password reset with a one-time token; returns a fresh session. */
+export async function apiResetPassword(token: string, newPassword: string): Promise<AuthResult> {
+  return call<AuthResult>('/api/auth/reset-password', {
+    method: 'POST',
+    body: JSON.stringify({ token, newPassword }),
+  });
+}
+
 export async function apiChangePassword(currentPassword: string, newPassword: string): Promise<{ token: string }> {
   return call<{ token: string }>('/api/auth/password', {
     method: 'POST',

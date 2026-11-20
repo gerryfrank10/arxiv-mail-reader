@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
 import { Provider, ImapConfig } from '../types';
-import { apiLogin, apiRegister, apiLogout, apiMe, apiChangePassword } from '../utils/researchApi';
+import { apiLogin, apiRegister, apiLogout, apiMe, apiChangePassword, apiForgotPassword, apiResetPassword } from '../utils/researchApi';
 
 const SESSION_KEY = 'arxiv_auth_session';
 const LEGACY_IMAP_KEY = 'arxiv_imap_config';
@@ -20,6 +20,8 @@ interface AuthContextValue {
   loginWithPassword: (email: string, password: string) => Promise<void>;
   register: (email: string, password: string) => Promise<void>;
   changePassword: (currentPassword: string, newPassword: string) => Promise<void>;
+  requestPasswordReset: (email: string) => Promise<void>;
+  resetPassword: (token: string, newPassword: string) => Promise<void>;
   logout: () => void;
   isLoggingIn: boolean;
   loginError: string | null;
@@ -113,6 +115,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     });
   }, []);
 
+  const requestPasswordReset = useCallback(async (email: string) => {
+    await apiForgotPassword(email.trim());
+  }, []);
+
+  const resetPassword = useCallback(async (token: string, newPassword: string) => {
+    setIsLoggingIn(true);
+    setLoginError(null);
+    try {
+      const { token: session, user: account } = await apiResetPassword(token, newPassword);
+      const next: AuthUser = { provider: 'server', accessToken: session, email: account.email };
+      saveSession(next);
+      setUser(next);
+    } catch (e) {
+      setLoginError(e instanceof Error ? e.message : 'Could not reset the password.');
+      throw e;
+    } finally {
+      setIsLoggingIn(false);
+    }
+  }, []);
+
   const logout = useCallback(() => {
     apiLogout().catch(() => { /* best-effort */ });
     clearSession();
@@ -123,7 +145,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <AuthContext.Provider value={{
-      user, loginWithPassword, register, changePassword, logout,
+      user, loginWithPassword, register, changePassword, requestPasswordReset, resetPassword, logout,
       isLoggingIn, loginError, clearError, isRestoring,
     }}>
       {children}

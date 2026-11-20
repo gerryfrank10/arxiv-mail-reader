@@ -78,6 +78,20 @@ export const db = {
             expires_at TIMESTAMPTZ NOT NULL
           )
         `);
+        // One-time password reset tokens: stored as SHA-256 hashes, expire
+        // after 30 minutes, and are consumed atomically on use.
+        await pool.query(`
+          CREATE TABLE IF NOT EXISTS password_resets (
+            token_hash TEXT        PRIMARY KEY,
+            user_id    UUID        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            expires_at TIMESTAMPTZ NOT NULL,
+            used_at    TIMESTAMPTZ
+          )
+        `);
+        await pool.query(`
+          CREATE INDEX IF NOT EXISTS idx_password_resets_user ON password_resets (user_id)
+        `);
         await pool.query(`
           CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions (user_id)
         `);
@@ -202,6 +216,47 @@ export const db = {
     // Changing the password invalidates other sessions.
     await pool.query(`DELETE FROM sessions WHERE user_id=$1`, [userId]);
     return true;
+  },
+
+  async findUserByEmail(email) {
+    const { rows } = await pool.query(
+      `SELECT id, email FROM users WHERE email=$1`,
+      [String(email).trim().toLowerCase()],
+    );
+    return rows[0] ?? null;
+  },
+
+  /** Issue a one-time reset token (returns the raw token; only its hash is stored). */
+  async createPasswordReset(userId) {
+    const token = newSessionToken();
+    await pool.query(`DELETE FROM password_resets WHERE user_id=$1 AND used_at IS NULL`, [userId]);
+    await pool.query(
+      `INSERT INTO password_resets (token_hash, user_id, expires_at)
+       VALUES ($1,$2, now() + interval '30 minutes')`,
+      [hashSessionToken(token), userId],
+    );
+    return token;
+  },
+
+  /**
+   * Consume a reset token and set the new password. Returns the user when the
+   * token was valid; the UPDATE ... RETURNING makes consumption atomic so a
+   * token can never be used twice. All sessions are invalidated.
+   */
+  async consumePasswordReset(token, newPassword) {
+    const { rows } = await pool.query(
+      `UPDATE password_resets SET used_at=now()
+        WHERE token_hash=$1 AND used_at IS NULL AND expires_at > now()
+        RETURNING user_id`,
+      [hashSessionToken(String(token))],
+    );
+    const userId = rows[0]?.user_id;
+    if (!userId) return null;
+    await pool.query(`UPDATE users SET password_hash=$2 WHERE id=$1`, [userId, hashPassword(newPassword)]);
+    await pool.query(`DELETE FROM sessions WHERE user_id=$1`, [userId]);
+    await pool.query(`DELETE FROM password_resets WHERE user_id=$1 AND used_at IS NULL`, [userId]);
+    const user = await pool.query(`SELECT email FROM users WHERE id=$1`, [userId]);
+    return user.rows[0] ? { id: userId, email: user.rows[0].email } : null;
   },
 
   async createSession(userId, days = 30) {

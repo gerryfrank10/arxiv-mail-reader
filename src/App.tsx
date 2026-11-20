@@ -5,6 +5,9 @@ import AppLayout from './components/AppLayout';
 
 function AppInner() {
   const { user, isRestoring } = useAuth();
+  // A reset link must always open the reset form, even if another session is
+  // still active in this browser.
+  const hasResetToken = new URLSearchParams(window.location.search).has('token');
 
   if (isRestoring) {
     return (
@@ -14,7 +17,7 @@ function AppInner() {
     );
   }
 
-  return user ? (
+  return user && !hasResetToken ? (
     <PapersProvider>
       <AppLayout />
     </PapersProvider>
