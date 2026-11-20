@@ -13,6 +13,12 @@ import { decryptImapConfig, encryptImapConfig } from './imapCredentials.mjs';
 
 const { Pool } = pg;
 
+// Sign-ins stay valid for a year, and every authenticated request inside the
+// last ~35 days of that window pushes the expiry back to a full year, so
+// people who keep using the app are never signed out.
+const SESSION_DAYS = 365;
+const SESSION_RENEW_WITHIN_DAYS = 330;
+
 let pool = null;
 
 export const db = {
@@ -259,7 +265,7 @@ export const db = {
     return user.rows[0] ? { id: userId, email: user.rows[0].email } : null;
   },
 
-  async createSession(userId, days = 30) {
+  async createSession(userId, days = SESSION_DAYS) {
     const token = newSessionToken();
     await pool.query(
       `INSERT INTO sessions (token_hash, user_id, expires_at)
@@ -271,13 +277,26 @@ export const db = {
 
   async getSessionUser(token) {
     if (!token) return null;
+    const tokenHash = hashSessionToken(token);
     const { rows } = await pool.query(
-      `SELECT u.id, u.email
+      `SELECT s.user_id, s.expires_at, u.email
        FROM sessions s JOIN users u ON u.id = s.user_id
        WHERE s.token_hash=$1 AND s.expires_at > now()`,
-      [hashSessionToken(token)],
+      [tokenHash],
     );
-    return rows[0] ?? null;
+    const row = rows[0];
+    if (!row) return null;
+    // Sliding expiration: an active session is pushed back to a full
+    // SESSION_DAYS. Only write when the session is getting old, so ordinary
+    // API traffic doesn't cause an UPDATE on every request.
+    const remainingMs = new Date(row.expires_at).getTime() - Date.now();
+    if (remainingMs < SESSION_RENEW_WITHIN_DAYS * 86_400_000) {
+      await pool.query(
+        `UPDATE sessions SET expires_at = now() + ($2::int * interval '1 day') WHERE token_hash=$1`,
+        [tokenHash, SESSION_DAYS],
+      );
+    }
+    return { id: row.user_id, email: row.email };
   },
 
   async deleteSession(token) {
