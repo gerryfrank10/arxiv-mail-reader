@@ -36,10 +36,13 @@ export interface Paper {
   // Embedded PDF figures, extracted lazily for feed-visible papers.
   thumbnailChecked?: boolean;
   thumbnailAvailable?: boolean;
-  // Best qualifying match among the user's enabled trackers (dashboard feed).
+  // Why this paper is in the dashboard feed: a tracker match or shared
+  // authorship with the user's liked/saved papers.
   relevance?: {
     score: number;
-    trackerName: string;
+    source: 'tracker' | 'author';
+    trackerName?: string;
+    authorName?: string;
     rationale: string;
   };
 }

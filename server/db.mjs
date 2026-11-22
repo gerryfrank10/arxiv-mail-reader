@@ -60,6 +60,25 @@ export const db = {
           CREATE INDEX IF NOT EXISTS idx_papers_user_file
             ON papers (user_id) WHERE file_path IS NOT NULL
         `);
+        // Author overlap lookups for the personalised dashboard feed (papers
+        // by authors of liked/saved papers). Author names vary in casing
+        // between papers, so match on a normalised copy of the array; the GIN
+        // index keeps `&&` fast across the whole library.
+        await pool.query(`
+          CREATE OR REPLACE FUNCTION lower_author_list(text[])
+          RETURNS text[] LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
+            SELECT coalesce(
+              array_agg(lower(trim(a))) FILTER (WHERE length(trim(a)) > 0),
+              '{}'::text[]
+            )
+            FROM unnest($1) a
+          $$
+        `);
+        await pool.query(`
+          CREATE INDEX IF NOT EXISTS idx_papers_author_list_lower
+            ON papers USING gin (lower_author_list(author_list))
+        `);
+        await pool.query(`DROP INDEX IF EXISTS idx_papers_author_list`);
         // "Liked" papers — a lightweight signal distinct from the library
         // (bookmark). Mirrors the library table. Idempotent so existing DBs
         // get it without a manual migration.
@@ -385,7 +404,8 @@ export const db = {
     return { papers: rows.map(rowToPaper), total };
   },
 
-  // Ranked feed uses existing tracker scores; no date or random-selection bias.
+  // Ranked feed combines tracker scores with author affinity: papers written
+  // by authors of the user's liked/saved papers. No date or random bias.
   async getRelevantPapers(userId, { limit = 10, offset = 0 } = {}) {
     const cols = `id, arxiv_id, title, authors, author_list, categories,
               abstract, comments, url, pdf_url, size, date, email_id,
@@ -396,32 +416,95 @@ export const db = {
               organization,
                (thumbnail_figures IS NOT NULL AND thumbnail_version=3) AS thumbnail_checked,
                (thumbnail_version=3 AND COALESCE(jsonb_array_length(thumbnail_figures), 0) > 0) AS thumbnail_has_image`;
-    const { rows } = await pool.query(
-      `WITH matches AS (
+    const cte = `WITH enabled_trackers AS (
+         SELECT id, name, min_score FROM trackers
+          WHERE user_id=$1 AND enabled
+       ), tracker_matches AS (
          SELECT s.paper_id, s.score, s.rationale, t.name AS tracker_name,
                 row_number() OVER (
                   PARTITION BY s.paper_id
                   ORDER BY s.score DESC, s.ts DESC, t.name
                 ) AS rank
          FROM paper_scores s
-         JOIN trackers t ON t.user_id=s.user_id AND t.id=s.tracker_id
-         WHERE s.user_id=$1 AND t.enabled AND s.score>=t.min_score
-       ), ranked AS (
-         SELECT m.paper_id, m.score, m.rationale, m.tracker_name,
-                count(*) OVER() AS total_count
-         FROM matches m WHERE m.rank=1
-       )
-       SELECT ${cols}, r.score AS relevance_score, r.rationale AS relevance_rationale,
-              r.tracker_name AS relevance_tracker_name, r.total_count
-       FROM ranked r
-       JOIN papers p ON p.user_id=$1 AND p.id=r.paper_id
-       ORDER BY r.score DESC, p.digest_date DESC, p.id DESC
-       LIMIT $2 OFFSET $3`,
-      [userId, Math.min(100, Math.max(1, Math.trunc(Number(limit) || 10))), Math.max(0, Math.trunc(Number(offset) || 0))],
-    );
+         JOIN enabled_trackers t ON t.id=s.tracker_id
+         -- Skip scores left behind by papers that no longer exist.
+         JOIN papers p ON p.id=s.paper_id AND p.user_id=$1
+         WHERE s.user_id=$1 AND s.score>=t.min_score
+       ), favourites AS (
+         SELECT paper_id FROM likes   WHERE user_id=$1
+         UNION
+         SELECT paper_id FROM library WHERE user_id=$1
+       ), fav_authors AS (
+         -- Every author of a liked or saved paper, weighted by how many of the
+         -- user's favourites they appear on.
+         SELECT lower(trim(a)) AS author, count(*)::int AS weight
+         FROM favourites f
+         JOIN papers p ON p.user_id=$1 AND p.id=f.paper_id
+         CROSS JOIN LATERAL unnest(p.author_list) a
+         WHERE length(trim(a)) > 0
+         GROUP BY 1
+       ), strong_authors AS (
+         -- Authors on at least two favourites: a real recurring interest rather
+         -- than a one-off collaboration or a common-name collision.
+         SELECT * FROM fav_authors WHERE weight >= 2
+       ), fav_author_names AS (
+         SELECT array_agg(author) AS names FROM strong_authors
+       ), author_matches AS (
+         -- Papers sharing an author with the favourites. The expression GIN
+         -- index on lower_author_list(author_list) keeps this cheap.
+         SELECT p.id AS paper_id,
+                count(sa.author)::int AS shared_authors,
+                sum(sa.weight)::int AS author_weight,
+                min(a) AS sample_author
+         FROM papers p, fav_author_names fn
+         CROSS JOIN LATERAL unnest(p.author_list) a
+         JOIN strong_authors sa ON sa.author = lower(trim(a))
+         WHERE p.user_id=$1 AND lower_author_list(p.author_list) && fn.names
+           AND p.id NOT IN (SELECT paper_id FROM favourites)
+         GROUP BY p.id
+       ), candidates AS (
+         SELECT tm.paper_id,
+                tm.score::int AS base_score,
+                'tracker'::text AS kind,
+                tm.tracker_name AS label,
+                tm.rationale AS rationale
+         FROM tracker_matches tm
+         WHERE tm.rank=1
+         UNION ALL
+         SELECT am.paper_id,
+                LEAST(95, 50 + am.shared_authors*6 + LEAST(25, am.author_weight*2))::int,
+                'author'::text,
+                am.sample_author,
+                NULL::text
+         FROM author_matches am
+         WHERE am.shared_authors > 0
+           AND NOT EXISTS (
+             SELECT 1 FROM tracker_matches tm
+             WHERE tm.paper_id=am.paper_id AND tm.rank=1
+           )
+       ), best AS (
+         SELECT DISTINCT ON (paper_id) *
+         FROM candidates
+         ORDER BY paper_id, base_score DESC, kind
+       )`;
+    const lim = Math.min(100, Math.max(1, Math.trunc(Number(limit) || 10)));
+    const off = Math.max(0, Math.trunc(Number(offset) || 0));
+    const [{ rows }, { rows: countRows }] = await Promise.all([
+      pool.query(
+        `${cte}
+         SELECT ${cols}, b.base_score AS relevance_score, b.kind AS relevance_source,
+                b.label AS relevance_label, b.rationale AS relevance_rationale
+         FROM best b
+         JOIN papers p ON p.user_id=$1 AND p.id=b.paper_id
+         ORDER BY b.base_score DESC, p.digest_date DESC, p.id DESC
+         LIMIT $2 OFFSET $3`,
+        [userId, lim, off],
+      ),
+      pool.query(`${cte} SELECT count(*)::int AS total FROM best`, [userId]),
+    ]);
     return {
       papers: rows.map(rowToPaper),
-      total: rows.length > 0 ? Number(rows[0].total_count) : 0,
+      total: Number(countRows[0]?.total ?? 0),
     };
   },
 
@@ -1865,8 +1948,10 @@ function rowToPaper(r) {
     thumbnailAvailable: !!r.thumbnail_has_image,
     relevance: r.relevance_score == null ? undefined : {
       score: Number(r.relevance_score),
-      trackerName: r.relevance_tracker_name,
-      rationale: r.relevance_rationale ?? '',
+      source: r.relevance_source === 'author' ? 'author' : 'tracker',
+      trackerName: r.relevance_source === 'author' ? undefined : (r.relevance_label ?? undefined),
+      authorName:  r.relevance_source === 'author' ? (r.relevance_label ?? undefined) : undefined,
+      rationale:   r.relevance_rationale ?? '',
     },
   };
 }

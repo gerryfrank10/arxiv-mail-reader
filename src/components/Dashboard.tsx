@@ -66,7 +66,7 @@ function FeedTab() {
   const {
     papers, readIds, setSelectedPaper, markRead, markUnread, storageMode, updatePaperMeta,
   } = usePapers();
-  const { isLiked, likePaper, unlikePaper, isSaved, savePaper, unsavePaper } = useLibrary();
+  const { isLiked, likePaper, unlikePaper, isSaved, savePaper, unsavePaper, likedPapers, savedPapers } = useLibrary();
   const { trackers, scores, ready: trackersReady } = useTracking();
   const [page, setPage] = useState(0);
   const [feed, setFeed] = useState<{ papers: Paper[]; total: number }>({ papers: [], total: 0 });
@@ -88,15 +88,57 @@ function FeedTab() {
       const current = best.get(score.paperId);
       if (!current || score.score > current.score) {
         best.set(score.paperId, {
-          score: score.score, trackerName: tracker.name, rationale: score.rationale,
+          score: score.score,
+          source: 'tracker',
+          trackerName: tracker.name,
+          rationale: score.rationale,
         });
       }
     }
+
+    // Author affinity: papers by authors of liked/saved papers, mirroring the
+    // server-side ranking.
+    const favourites = [...new Map([...likedPapers, ...savedPapers].map(p => [p.id, p])).values()];
+    const favouriteIds = new Set(favourites.map(p => p.id));
+    const authorWeights = new Map<string, number>();
+    for (const paper of favourites) {
+      for (const author of paper.authorList) {
+        const key = author.trim().toLowerCase();
+        if (key) authorWeights.set(key, (authorWeights.get(key) ?? 0) + 1);
+      }
+    }
+    if (authorWeights.size > 0) {
+      for (const paper of papers) {
+        if (favouriteIds.has(paper.id) || best.has(paper.id)) continue;
+        let shared = 0;
+        let weight = 0;
+        let sample: string | null = null;
+        for (const author of paper.authorList) {
+          const w = authorWeights.get(author.trim().toLowerCase()) ?? 0;
+          // Only authors recurring on two or more favourites, matching the
+          // server-side `strong_authors` threshold.
+          if (w >= 2) {
+            shared += 1;
+            weight += w;
+            sample = sample ?? author;
+          }
+        }
+        if (shared > 0) {
+          best.set(paper.id, {
+            score: Math.min(95, 50 + shared * 6 + Math.min(25, weight * 2)),
+            source: 'author',
+            authorName: sample ?? undefined,
+            rationale: '',
+          });
+        }
+      }
+    }
+
     return papers.filter(p => best.has(p.id))
       .map(p => ({ ...p, relevance: best.get(p.id)! }))
       .sort((a, b) => b.relevance!.score - a.relevance!.score
         || b.digestDate.getTime() - a.digestDate.getTime());
-  }, [papers, trackers, scores]);
+  }, [papers, trackers, scores, likedPapers, savedPapers]);
 
   useEffect(() => { setPage(0); }, [storageMode, trackersReady]);
   useEffect(() => {
@@ -171,7 +213,7 @@ function FeedTab() {
     <section className="mt-6">
       <div className="mb-3 flex items-center justify-between gap-4">
         <p className="text-[12px] text-slate-500">
-          {total > 0 ? `${total.toLocaleString()} papers matching your trackers` : 'Papers matching your trackers'}
+          {total > 0 ? `${total.toLocaleString()} papers matched to your interests` : 'Papers matched to your interests'}
         </p>
         <button
           type="button" onClick={refresh} disabled={loading || total <= FEED_BATCH_SIZE}
@@ -187,12 +229,12 @@ function FeedTab() {
         <div className="rounded-xl border border-[#e7e5df] bg-white px-6 py-16 text-center">
           <Target size={24} className="mx-auto mb-3 text-slate-400" />
           <h2 className="font-serif text-xl text-slate-700">
-            {enabledTrackers.length === 0 ? 'Set up a research interest to personalize your feed.' : 'No papers currently meet your tracker thresholds.'}
+            {enabledTrackers.length === 0 ? 'Set up a research interest to personalize your feed.' : 'No papers currently match your trackers or favourite authors.'}
           </h2>
           <p className="mx-auto mt-2 max-w-md text-[12px] leading-relaxed text-slate-500">
             {enabledTrackers.length === 0
               ? 'Create and enable a tracker. Existing papers will be ranked by interest, not just by how new they are.'
-              : 'You can lower a tracker’s minimum score or use its scoring action to find more relevant papers.'}
+              : 'You can lower a tracker’s minimum score, or like/save papers so their authors show up in your feed.'}
           </p>
         </div>
       ) : (
@@ -216,9 +258,18 @@ function FeedTab() {
                       {format(paper.digestDate, 'MMM d, yyyy')}
                     </time>
                     {paper.relevance && (
-                      <span className="ml-auto inline-flex items-center gap-1 font-medium text-sky-700" title={paper.relevance.rationale}>
-                        <Target size={11} /> {paper.relevance.score} · {paper.relevance.trackerName}
-                      </span>
+                      paper.relevance.source === 'author' ? (
+                        <span
+                          className="ml-auto inline-flex items-center gap-1 font-medium text-amber-700"
+                          title={`Shares an author with papers you liked or saved${paper.relevance.authorName ? ` — ${paper.relevance.authorName}` : ''}`}
+                        >
+                          <Heart size={11} /> Favourite author{paper.relevance.authorName ? ` · ${paper.relevance.authorName}` : ''}
+                        </span>
+                      ) : (
+                        <span className="ml-auto inline-flex items-center gap-1 font-medium text-sky-700" title={paper.relevance.rationale}>
+                          <Target size={11} /> {paper.relevance.score} · {paper.relevance.trackerName}
+                        </span>
+                      )
                     )}
                   </header>
                   <button onClick={() => { markRead(paper.id); setSelectedPaper(paper); }} className="mt-2 block w-full text-left">
