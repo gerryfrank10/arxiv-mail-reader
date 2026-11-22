@@ -406,7 +406,7 @@ export const db = {
 
   // Ranked feed combines tracker scores with author affinity: papers written
   // by authors of the user's liked/saved papers. No date or random bias.
-  async getRelevantPapers(userId, { limit = 10, offset = 0 } = {}) {
+  async getRelevantPapers(userId, { limit = 10, offset = 0, author = '' } = {}) {
     const cols = `id, arxiv_id, title, authors, author_list, categories,
               abstract, comments, url, pdf_url, size, date, email_id,
               digest_subject, digest_date, source,
@@ -462,6 +462,18 @@ export const db = {
          WHERE p.user_id=$1 AND lower_author_list(p.author_list) && fn.names
            AND p.id NOT IN (SELECT paper_id FROM favourites)
          GROUP BY p.id
+       ), author_filter AS (
+         -- When the dashboard is filtered to one author, surface every paper
+         -- they wrote, not only ones that also match a tracker.
+         SELECT p.id AS paper_id,
+                70 AS base_score,
+                'author'::text AS kind,
+                (SELECT min(a) FROM unnest(p.author_list) a
+                  WHERE lower(trim(a)) = $2) AS label,
+                NULL::text AS rationale
+         FROM papers p
+         WHERE $2 <> '' AND p.user_id=$1
+           AND lower_author_list(p.author_list) && ARRAY[$2]::text[]
        ), candidates AS (
          SELECT tm.paper_id,
                 tm.score::int AS base_score,
@@ -482,6 +494,9 @@ export const db = {
              SELECT 1 FROM tracker_matches tm
              WHERE tm.paper_id=am.paper_id AND tm.rank=1
            )
+         UNION ALL
+         SELECT af.paper_id, af.base_score, af.kind, af.label, af.rationale
+         FROM author_filter af
        ), best AS (
          SELECT DISTINCT ON (paper_id) *
          FROM candidates
@@ -489,6 +504,7 @@ export const db = {
        )`;
     const lim = Math.min(100, Math.max(1, Math.trunc(Number(limit) || 10)));
     const off = Math.max(0, Math.trunc(Number(offset) || 0));
+    const authorKey = String(author ?? '').trim().toLowerCase();
     const [{ rows }, { rows: countRows }] = await Promise.all([
       pool.query(
         `${cte}
@@ -496,16 +512,49 @@ export const db = {
                 b.label AS relevance_label, b.rationale AS relevance_rationale
          FROM best b
          JOIN papers p ON p.user_id=$1 AND p.id=b.paper_id
+         WHERE $2 = '' OR lower_author_list(p.author_list) && ARRAY[$2]::text[]
          ORDER BY b.base_score DESC, p.digest_date DESC, p.id DESC
-         LIMIT $2 OFFSET $3`,
-        [userId, lim, off],
+         LIMIT $3 OFFSET $4`,
+        [userId, authorKey, lim, off],
       ),
-      pool.query(`${cte} SELECT count(*)::int AS total FROM best`, [userId]),
+      pool.query(
+        `${cte}
+         SELECT count(*)::int AS total
+         FROM best b
+         JOIN papers p ON p.user_id=$1 AND p.id=b.paper_id
+         WHERE $2 = '' OR lower_author_list(p.author_list) && ARRAY[$2]::text[]`,
+        [userId, authorKey],
+      ),
     ]);
     return {
       papers: rows.map(rowToPaper),
       total: Number(countRows[0]?.total ?? 0),
     };
+  },
+
+  // Most frequent authors across the user's liked and saved papers. Powers the
+  // "Top authors" panel on the dashboard.
+  async getTopAuthors(userId, { limit = 12 } = {}) {
+    const lim = Math.min(100, Math.max(1, Math.trunc(Number(limit) || 12)));
+    const { rows } = await pool.query(
+      `WITH favourites AS (
+         SELECT paper_id FROM likes   WHERE user_id=$1
+         UNION
+         SELECT paper_id FROM library WHERE user_id=$1
+       )
+       SELECT min(trim(a)) AS name,
+              lower(trim(a)) AS key,
+              count(*)::int AS count
+       FROM favourites f
+       JOIN papers p ON p.user_id=$1 AND p.id=f.paper_id
+       CROSS JOIN LATERAL unnest(p.author_list) a
+       WHERE length(trim(a)) > 0
+       GROUP BY lower(trim(a))
+       ORDER BY count DESC, name
+       LIMIT $2`,
+      [userId, lim],
+    );
+    return rows.map(r => ({ name: r.name, key: r.key, count: Number(r.count) }));
   },
 
   // Library-wide aggregates for the Dashboard. The papers list is paginated, so

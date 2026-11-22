@@ -6,11 +6,12 @@ import { publisherOf } from '../utils/publisher';
 import {
   apiGetPaperComments, apiAddPaperComment, apiDeletePaperComment, apiGetCommentCounts,
   apiGetOrganizations, apiGetPaperFigure, apiGetPaperFigures, apiGetRelevantPapers,
+  apiGetTopAuthors, type TopAuthor,
 } from '../utils/researchApi';
 import { format, formatDistanceToNow } from 'date-fns';
 import {
   BookOpen, ChevronLeft, ChevronRight, Heart, Bookmark, BookmarkCheck, MessageCircle,
-  ExternalLink, Loader2, Image as ImageIcon, RefreshCw, Target,
+  ExternalLink, Loader2, Image as ImageIcon, RefreshCw, Target, Users,
 } from 'lucide-react';
 import type { Paper, PaperComment } from '../types';
 
@@ -66,10 +67,12 @@ function FeedTab() {
   const {
     papers, readIds, setSelectedPaper, markRead, markUnread, storageMode, updatePaperMeta,
   } = usePapers();
-  const { isLiked, likePaper, unlikePaper, isSaved, savePaper, unsavePaper, likedPapers, savedPapers } = useLibrary();
+  const { isLiked, likePaper, unlikePaper, isSaved, savePaper, unsavePaper, likedPapers, savedPapers, likedCount, savedCount } = useLibrary();
   const { trackers, scores, ready: trackersReady } = useTracking();
   const [page, setPage] = useState(0);
   const [feed, setFeed] = useState<{ papers: Paper[]; total: number }>({ papers: [], total: 0 });
+  const [authorFilter, setAuthorFilter] = useState<{ key: string; name: string } | null>(null);
+  const [serverTopAuthors, setServerTopAuthors] = useState<TopAuthor[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [expandedAbstract, setExpandedAbstract] = useState<Set<string>>(new Set());
@@ -140,16 +143,60 @@ function FeedTab() {
         || b.digestDate.getTime() - a.digestDate.getTime());
   }, [papers, trackers, scores, likedPapers, savedPapers]);
 
+  // Authors ranked by how many liked/saved papers they appear on. In server
+  // mode the full library is not in memory, so ask the API instead.
+  const localTopAuthors = useMemo<TopAuthor[]>(() => {
+    const favourites = [...new Map([...likedPapers, ...savedPapers].map(p => [p.id, p])).values()];
+    const byKey = new Map<string, TopAuthor>();
+    for (const paper of favourites) {
+      for (const author of paper.authorList) {
+        const name = author.trim();
+        const key = name.toLowerCase();
+        if (!key) continue;
+        const entry = byKey.get(key);
+        if (entry) entry.count += 1;
+        else byKey.set(key, { key, name, count: 1 });
+      }
+    }
+    return [...byKey.values()]
+      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
+      .slice(0, 12);
+  }, [likedPapers, savedPapers]);
+  const topAuthors = storageMode === 'server' ? serverTopAuthors : localTopAuthors;
+
+  useEffect(() => {
+    if (storageMode !== 'server') return;
+    let cancelled = false;
+    apiGetTopAuthors(12)
+      .then(list => { if (!cancelled) setServerTopAuthors(list); })
+      .catch(e => console.warn('[feed] top authors failed', e));
+    return () => { cancelled = true; };
+  }, [storageMode, likedCount, savedCount]);
+
+  const toggleAuthor = (author: TopAuthor) => {
+    setAuthorFilter(current => current?.key === author.key ? null : { key: author.key, name: author.name });
+    setPage(0);
+  };
+
   useEffect(() => { setPage(0); }, [storageMode, trackersReady]);
   useEffect(() => {
     if (storageMode !== 'server') {
-      setFeed({ papers: localMatches.slice(page * FEED_BATCH_SIZE, (page + 1) * FEED_BATCH_SIZE), total: localMatches.length });
+      const list = authorFilter
+        ? papers
+            .filter(p => p.authorList.some(a => a.trim().toLowerCase() === authorFilter.key))
+            .sort((a, b) => b.digestDate.getTime() - a.digestDate.getTime())
+        : localMatches;
+      setFeed({ papers: list.slice(page * FEED_BATCH_SIZE, (page + 1) * FEED_BATCH_SIZE), total: list.length });
       return;
     }
     let cancelled = false;
     setLoading(true);
     setError('');
-    apiGetRelevantPapers({ limit: FEED_BATCH_SIZE, offset: page * FEED_BATCH_SIZE })
+    apiGetRelevantPapers({
+      limit: FEED_BATCH_SIZE,
+      offset: page * FEED_BATCH_SIZE,
+      author: authorFilter?.key ?? '',
+    })
       .then(result => {
         if (cancelled) return;
         if (result.papers.length === 0 && page > 0) setPage(0);
@@ -158,11 +205,11 @@ function FeedTab() {
       .catch(e => { if (!cancelled) setError(e instanceof Error ? e.message : 'Could not load your feed.'); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [storageMode, localMatches, page, trackersReady]);
+  }, [storageMode, localMatches, papers, page, trackersReady, authorFilter]);
 
   const displayedPapers = feed.papers.slice(0, FEED_BATCH_SIZE);
   const pageKey = displayedPapers.map(p => p.id).join(',');
-  const total = storageMode === 'server' ? feed.total : localMatches.length;
+  const total = feed.total;
   const enabledTrackers = trackers.filter(t => t.enabled);
 
   const refresh = () => {
@@ -210,10 +257,64 @@ function FeedTab() {
   };
 
   return (
-    <section className="mt-6">
+    <div>
+      <section className="mt-6 rounded-xl border border-[#e7e5df] bg-white px-4 py-3">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h2 className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400">
+              <Users size={12} /> Top authors
+            </h2>
+            <p className="mt-1 text-[11px] text-slate-500">From papers you liked or saved</p>
+          </div>
+          {authorFilter && (
+            <button
+              type="button"
+              onClick={() => { setAuthorFilter(null); setPage(0); }}
+              className="text-[11px] font-medium text-sky-700 hover:underline"
+            >
+              Clear filter
+            </button>
+          )}
+        </div>
+        {topAuthors.length === 0 ? (
+          <p className="mt-3 text-[11px] text-slate-400">
+            Like or save a few papers and their authors will appear here.
+          </p>
+        ) : (
+          <div className="mt-3 flex flex-wrap gap-1.5">
+            {topAuthors.map(author => {
+              const active = authorFilter?.key === author.key;
+              return (
+                <button
+                  key={author.key}
+                  type="button"
+                  onClick={() => toggleAuthor(author)}
+                  title={`${author.count} liked or saved paper${author.count === 1 ? '' : 's'}`}
+                  className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] transition-colors ${
+                    active
+                      ? 'border-amber-300 bg-amber-50 text-amber-800'
+                      : 'border-[#e7e5df] bg-white text-slate-600 hover:border-amber-300 hover:text-amber-800'
+                  }`}
+                >
+                  {author.name}
+                  <span className={`rounded-full px-1 text-[9px] font-semibold ${
+                    active ? 'bg-amber-200 text-amber-900' : 'bg-slate-100 text-slate-500'
+                  }`}>
+                    {author.count}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </section>
+
+      <section className="mt-6">
       <div className="mb-3 flex items-center justify-between gap-4">
         <p className="text-[12px] text-slate-500">
-          {total > 0 ? `${total.toLocaleString()} papers matched to your interests` : 'Papers matched to your interests'}
+          {authorFilter
+            ? <>Papers by <span className="font-medium text-slate-700">{authorFilter.name}</span>{total > 0 ? ` · ${total.toLocaleString()}` : ''}</>
+            : total > 0 ? `${total.toLocaleString()} papers matched to your interests` : 'Papers matched to your interests'}
         </p>
         <button
           type="button" onClick={refresh} disabled={loading || total <= FEED_BATCH_SIZE}
@@ -229,12 +330,16 @@ function FeedTab() {
         <div className="rounded-xl border border-[#e7e5df] bg-white px-6 py-16 text-center">
           <Target size={24} className="mx-auto mb-3 text-slate-400" />
           <h2 className="font-serif text-xl text-slate-700">
-            {enabledTrackers.length === 0 ? 'Set up a research interest to personalize your feed.' : 'No papers currently match your trackers or favourite authors.'}
+            {authorFilter
+              ? `No papers by ${authorFilter.name} in your library.`
+              : enabledTrackers.length === 0 ? 'Set up a research interest to personalize your feed.' : 'No papers currently match your trackers or favourite authors.'}
           </h2>
           <p className="mx-auto mt-2 max-w-md text-[12px] leading-relaxed text-slate-500">
-            {enabledTrackers.length === 0
-              ? 'Create and enable a tracker. Existing papers will be ranked by interest, not just by how new they are.'
-              : 'You can lower a tracker’s minimum score, or like/save papers so their authors show up in your feed.'}
+            {authorFilter
+              ? 'Clear the author filter to return to your full feed.'
+              : enabledTrackers.length === 0
+                ? 'Create and enable a tracker. Existing papers will be ranked by interest, not just by how new they are.'
+                : 'You can lower a tracker’s minimum score, or like/save papers so their authors show up in your feed.'}
           </p>
         </div>
       ) : (
@@ -305,7 +410,8 @@ function FeedTab() {
           })}
         </div>
       )}
-    </section>
+      </section>
+    </div>
   );
 }
 

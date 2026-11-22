@@ -1160,8 +1160,13 @@ app.get('/api/db/papers', (req, res) => withUser(req, res, async (uid) => {
 app.get('/api/db/papers/relevant', (req, res) => withUser(req, res, async (uid) => {
   const limit = Math.min(100, Math.max(1, Math.trunc(Number(req.query.limit) || 10)));
   const offset = Math.max(0, Math.trunc(Number(req.query.offset) || 0));
-  const { papers, total } = await db.getRelevantPapers(uid, { limit, offset });
+  const author = String(req.query.author ?? '').trim();
+  const { papers, total } = await db.getRelevantPapers(uid, { limit, offset, author });
   res.json({ papers, total, hasMore: offset + papers.length < total });
+}));
+app.get('/api/db/authors/top', (req, res) => withUser(req, res, async (uid) => {
+  const limit = Math.min(100, Math.max(1, Math.trunc(Number(req.query.limit) || 12)));
+  res.json({ authors: await db.getTopAuthors(uid, { limit }) });
 }));
 app.get('/api/db/papers/search', (req, res) => withUser(req, res, async (uid) => {
   const query = String(req.query.q ?? '').trim();

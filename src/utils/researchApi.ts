@@ -387,9 +387,10 @@ export async function apiListPapers(
 }
 
 export async function apiGetRelevantPapers(
-  { limit = 10, offset = 0 }: { limit?: number; offset?: number } = {},
+  { limit = 10, offset = 0, author = '' }: { limit?: number; offset?: number; author?: string } = {},
 ): Promise<{ papers: Paper[]; total: number; hasMore: boolean }> {
   const qs = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  if (author) qs.set('author', author);
   const result = await call<{
     papers: Array<Paper & { digestDate: string }>;
     total: number;
@@ -399,6 +400,18 @@ export async function apiGetRelevantPapers(
     ...result,
     papers: result.papers.map(paper => ({ ...paper, digestDate: new Date(paper.digestDate) })),
   };
+}
+
+export interface TopAuthor {
+  name: string;
+  key: string;
+  count: number;
+}
+
+export async function apiGetTopAuthors(limit = 12): Promise<TopAuthor[]> {
+  const qs = new URLSearchParams({ limit: String(limit) });
+  const result = await call<{ authors: TopAuthor[] }>(`/api/db/authors/top?${qs}`);
+  return result.authors;
 }
 
 export async function apiGetPaper(id: string): Promise<Paper> {
