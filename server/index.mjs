@@ -10,6 +10,7 @@ import multer from 'multer';
 import 'dotenv/config';
 import { extractText as extractPdfTextRaw } from 'unpdf';
 import { detectOrganization } from './organizations.mjs';
+import { fetchHfCompanyPapers, SUGGESTED_COMPANIES } from './huggingface.mjs';
 import { getNobelLaureates } from './nobel.mjs';
 import {
   ARXIV_CATEGORY_RE as ARXIV_CAT_RE,
@@ -1164,6 +1165,12 @@ app.get('/api/db/papers/relevant', (req, res) => withUser(req, res, async (uid) 
   const { papers, total } = await db.getRelevantPapers(uid, { limit, offset, author });
   res.json({ papers, total, hasMore: offset + papers.length < total });
 }));
+app.get('/api/db/papers/following', (req, res) => withUser(req, res, async (uid) => {
+  const limit = Math.min(100, Math.max(1, Math.trunc(Number(req.query.limit) || 10)));
+  const offset = Math.max(0, Math.trunc(Number(req.query.offset) || 0));
+  const { papers, total } = await db.getFollowingPapers(uid, { limit, offset });
+  res.json({ papers, total, hasMore: offset + papers.length < total });
+}));
 app.get('/api/db/authors/top', (req, res) => withUser(req, res, async (uid) => {
   const limit = Math.min(100, Math.max(1, Math.trunc(Number(req.query.limit) || 12)));
   res.json({ authors: await db.getTopAuthors(uid, { limit }) });
@@ -1316,6 +1323,23 @@ app.post('/api/db/companies/scan', (req, res) => withUser(req, res, async (uid) 
   resolveOrganizations(uid, pending);
   res.json({ scanned, queued: pending.length });
 }));
+
+// ---------- Hugging Face company papers ----------
+// Papers a company posted on Hugging Face, so its dashboard tab works even for
+// papers that never arrived through the user's digests.
+app.get('/api/hf/suggested-companies', (_req, res) => {
+  res.json({ companies: SUGGESTED_COMPANIES });
+});
+app.get('/api/hf/company-papers', async (req, res) => {
+  const name = String(req.query.name ?? '').trim();
+  if (!name) return res.status(400).json({ error: 'Company name is required.' });
+  try {
+    res.json({ papers: await fetchHfCompanyPapers(name) });
+  } catch (e) {
+    console.warn(`[hf] ${name}: ${e.message}`);
+    res.status(502).json({ error: 'Could not reach Hugging Face right now.' });
+  }
+});
 
 // library
 app.get('/api/db/library', (req, res) => withUser(req, res, async (uid) => {

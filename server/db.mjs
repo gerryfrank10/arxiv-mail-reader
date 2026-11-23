@@ -714,6 +714,39 @@ export const db = {
     };
   },
 
+  // Papers by any author the user explicitly follows, newest first. Powers the
+  // dashboard's "Following" tab.
+  async getFollowingPapers(userId, { limit = 10, offset = 0 } = {}) {
+    const lim = Math.min(100, Math.max(1, Math.trunc(Number(limit) || 10)));
+    const off = Math.max(0, Math.trunc(Number(offset) || 0));
+    const { rows: keys } = await pool.query(
+      `SELECT author_key FROM favourite_authors WHERE user_id=$1`,
+      [userId],
+    );
+    if (keys.length === 0) return { papers: [], total: 0 };
+    const authorKeys = keys.map(r => r.author_key);
+    const [{ rows }, { rows: countRows }] = await Promise.all([
+      pool.query(
+        `SELECT ${PAPER_COLS}
+         FROM papers p
+         WHERE p.user_id=$1 AND lower_author_list(p.author_list) && $2::text[]
+         ORDER BY p.digest_date DESC, p.id DESC
+         LIMIT $3 OFFSET $4`,
+        [userId, authorKeys, lim, off],
+      ),
+      pool.query(
+        `SELECT count(*)::int AS total
+         FROM papers p
+         WHERE p.user_id=$1 AND lower_author_list(p.author_list) && $2::text[]`,
+        [userId, authorKeys],
+      ),
+    ]);
+    return {
+      papers: rows.map(rowToPaper),
+      total: Number(countRows[0]?.total ?? 0),
+    };
+  },
+
   // Companies/labs detected from paper PDFs, ranked by how many papers in the
   // library they appear on.
   async getTopCompanies(userId, { query = '', limit = 24, offset = 0 } = {}) {

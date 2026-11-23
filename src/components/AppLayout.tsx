@@ -56,8 +56,8 @@ function AppLayoutInner() {
     if (selectedPaper) return <PaperDetail paper={selectedPaper} />;
     switch (activeView) {
       case 'tracking':     return <TrackingView />;
-      case 'authors':      return <AuthorsView />;
-      case 'companies':    return <CompaniesView />;
+      case 'authors':      return <AuthorsView onBack={() => setActiveView('inbox')} />;
+      case 'companies':    return <CompaniesView onBack={() => setActiveView('inbox')} />;
       case 'discover':     return <DiscoverView />;
       case 'library':      return <LibraryView />;
       case 'books':        return <BooksView />;
@@ -65,7 +65,7 @@ function AppLayoutInner() {
       case 'collections':  return <CollectionsView />;
       case 'magazine':     return <MagazineView />;
       case 'nobel':        return <NobelView />;
-      default:             return <Dashboard onOpenAuthors={() => setActiveView('authors')} />;
+      default:             return <Dashboard onOpenAuthors={() => setActiveView('authors')} onOpenCompanies={() => setActiveView('companies')} />;
     }
   };
 

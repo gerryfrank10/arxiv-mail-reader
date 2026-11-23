@@ -12,14 +12,57 @@ import {
 import { format, formatDistanceToNow } from 'date-fns';
 import {
   BookOpen, ChevronLeft, ChevronRight, Heart, Bookmark, BookmarkCheck, MessageCircle,
-  ExternalLink, Loader2, Image as ImageIcon, RefreshCw, Target, Users,
+  ExternalLink, Loader2, Image as ImageIcon, RefreshCw, Target, Users, Sparkles, Plus, X,
 } from 'lucide-react';
 import type { Paper, PaperComment } from '../types';
+import FollowingFeed from './FollowingFeed';
+import CompanyFeed from './CompanyFeed';
+import CompanyTabPicker from './CompanyTabPicker';
 
 const FEED_BATCH_SIZE = 10;
 
-export default function Dashboard({ onOpenAuthors }: { onOpenAuthors?: () => void }) {
+// ---------------------------------------------------------------------------
+// Dashboard shell — Twitter-style tabs: "For you", "Following", then any
+// company the user pins. Everything lives here; no separate menus needed.
+// ---------------------------------------------------------------------------
+
+const COMPANY_TABS_KEY = 'dashboard.companyTabs.v1';
+const DEFAULT_PINNED = ['NVIDIA', 'DeepSeek'];
+
+function readPinnedCompanies(): string[] {
+  try {
+    const raw = localStorage.getItem(COMPANY_TABS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed.filter((n): n is string => typeof n === 'string' && n.trim() !== '');
+    }
+  } catch { /* ignore */ }
+  return DEFAULT_PINNED;
+}
+
+function writePinnedCompanies(names: string[]) {
+  try { localStorage.setItem(COMPANY_TABS_KEY, JSON.stringify(names)); } catch { /* ignore */ }
+}
+
+export default function Dashboard({ onOpenAuthors, onOpenCompanies }: {
+  onOpenAuthors?: () => void;
+  onOpenCompanies?: () => void;
+}) {
   const { papers } = usePapers();
+  const [pinned, setPinned] = useState<string[]>(readPinnedCompanies);
+  // 'foryou' | 'following' | `company:<name>`
+  const [active, setActive] = useState('foryou');
+  const [pickerOpen, setPickerOpen] = useState(false);
+
+  const togglePin = (name: string) => {
+    setPinned(prev => {
+      const next = prev.includes(name) ? prev.filter(n => n !== name) : [...prev, name];
+      writePinnedCompanies(next);
+      if (!next.includes(name) && active === `company:${name}`) setActive('foryou');
+      return next;
+    });
+  };
+
   if (papers.length === 0) {
     return (
       <div className="flex h-full flex-col items-center justify-center px-8 text-center">
@@ -29,14 +72,98 @@ export default function Dashboard({ onOpenAuthors }: { onOpenAuthors?: () => voi
       </div>
     );
   }
+
+  const activeCompany = active.startsWith('company:') ? active.slice('company:'.length) : null;
+
+  const tabButton = (id: string, label: string, icon?: React.ReactNode, onRemove?: () => void) => {
+    const isActive = active === id;
+    return (
+      <button
+        key={id}
+        type="button"
+        onClick={() => setActive(id)}
+        className={`group relative flex shrink-0 items-center gap-1.5 whitespace-nowrap px-3.5 py-3 text-[12.5px] transition-colors ${
+          isActive ? 'font-semibold text-slate-900' : 'text-slate-500 hover:bg-slate-900/5 hover:text-slate-800'
+        }`}
+      >
+        {icon}
+        {label}
+        {onRemove && (
+          <span
+            role="button"
+            tabIndex={0}
+            aria-label={`Remove ${label} tab`}
+            onClick={e => { e.stopPropagation(); onRemove(); }}
+            onKeyDown={e => { if (e.key === 'Enter') { e.stopPropagation(); onRemove(); } }}
+            className="ml-0.5 hidden rounded-full p-0.5 text-slate-400 hover:bg-slate-200 hover:text-slate-700 group-hover:inline-flex"
+          >
+            <X size={11} />
+          </span>
+        )}
+        {isActive && <span className="absolute bottom-0 left-3 right-3 h-[3px] rounded-full bg-slate-900" />}
+      </button>
+    );
+  };
+
   return (
-    <div className="h-full overflow-y-auto main-scroll bg-[#f6f6f3]">
-      <div className="mx-auto max-w-[780px] px-5 pb-8 pt-8 sm:px-0">
-        <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">Your research desk</p>
-        <h1 className="mt-2 font-serif text-[32px] leading-none tracking-tight text-slate-900">For you</h1>
-        <p className="mt-3 text-[13px] text-slate-500">The best matches for your research interests, regardless of publication date.</p>
-        <FeedTab onOpenAuthors={onOpenAuthors} />
+    <div className="flex h-full flex-col bg-[#f6f6f3]">
+      {/* Fixed header + tab bar; the feed scrolls underneath, Twitter-style. */}
+      <div className="shrink-0 border-b border-[#e7e5df] bg-[#f6f6f3]/95 backdrop-blur">
+        <div className="mx-auto max-w-[780px] px-5 sm:px-0">
+          <p className="pt-5 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">Your research desk</p>
+          <div className="mt-1 flex items-end overflow-x-auto main-scroll">
+            {tabButton('foryou', 'For you', <Sparkles size={13} />)}
+            {tabButton('following', 'Following', <Heart size={13} />)}
+            {pinned.map(name => tabButton(`company:${name}`, name, undefined, () => togglePin(name)))}
+            <button
+              type="button"
+              onClick={() => setPickerOpen(true)}
+              title="Add a company tab"
+              aria-label="Add a company tab"
+              className="mb-1.5 ml-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-[#e7e5df] bg-white text-slate-500 transition hover:border-slate-400 hover:text-slate-800"
+            >
+              <Plus size={14} />
+            </button>
+          </div>
+        </div>
       </div>
+
+      <div className="flex-1 overflow-y-auto main-scroll">
+        <div className="mx-auto max-w-[780px] px-5 pb-8 pt-6 sm:px-0">
+          {active === 'foryou' && (
+            <>
+              <h1 className="font-serif text-[32px] leading-none tracking-tight text-slate-900">For you</h1>
+              <p className="mb-4 mt-3 text-[13px] text-slate-500">The best matches for your research interests, regardless of publication date.</p>
+              <FeedTab onOpenAuthors={onOpenAuthors} />
+            </>
+          )}
+          {active === 'following' && (
+            <>
+              <h1 className="font-serif text-[32px] leading-none tracking-tight text-slate-900">Following</h1>
+              <p className="mb-4 mt-3 text-[13px] text-slate-500">Newest papers from the authors you follow.</p>
+              <FollowingFeed onManageAuthors={onOpenAuthors} />
+            </>
+          )}
+          {activeCompany && (
+            <>
+              <h1 className="font-serif text-[32px] leading-none tracking-tight text-slate-900">{activeCompany}</h1>
+              <p className="mb-4 mt-3 text-[13px] text-slate-500">
+                Papers from {activeCompany} — in your library and on Hugging Face.
+              </p>
+              <CompanyFeed company={activeCompany} />
+            </>
+          )}
+        </div>
+      </div>
+
+      {pickerOpen && (
+        <CompanyTabPicker
+          pinned={pinned}
+          onToggle={togglePin}
+          onClose={() => setPickerOpen(false)}
+          onOpenDirectory={onOpenCompanies ? () => { setPickerOpen(false); onOpenCompanies(); } : undefined}
+        />
+      )}
     </div>
   );
 }

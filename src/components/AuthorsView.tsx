@@ -102,7 +102,7 @@ function CardSkeleton() {
   );
 }
 
-export default function AuthorsView() {
+export default function AuthorsView({ onBack }: { onBack?: () => void } = {}) {
   const { papers, storageMode, setSelectedPaper } = usePapers();
   const { likedPapers, savedPapers, likedCount, savedCount } = useLibrary();
   const { favouriteAuthors, isFavourite, followAuthor, unfollowAuthor } = useAuthors();
@@ -433,6 +433,15 @@ export default function AuthorsView() {
   return (
     <div className="h-full overflow-y-auto main-scroll bg-[#f6f6f3]">
       <div className="mx-auto max-w-[980px] px-5 pb-10 pt-8 sm:px-8">
+        {onBack && (
+          <button
+            type="button"
+            onClick={onBack}
+            className="mb-4 inline-flex items-center gap-1.5 text-[11px] font-medium text-slate-500 transition-colors hover:text-slate-800"
+          >
+            <ArrowLeft size={13} /> Back to dashboard
+          </button>
+        )}
         <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">Your research desk</p>
         <div className="mt-2 flex flex-wrap items-end justify-between gap-4">
           <div>

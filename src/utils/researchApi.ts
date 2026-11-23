@@ -714,6 +714,45 @@ export async function apiScanCompanies(limit = 25): Promise<{ scanned: number; q
   );
 }
 
+// ---------- Dashboard tabs: following feed + Hugging Face ----------
+
+export async function apiGetFollowingPapers(
+  { limit = 10, offset = 0 }: { limit?: number; offset?: number } = {},
+): Promise<{ papers: Paper[]; total: number; hasMore: boolean }> {
+  const qs = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  const result = await call<{
+    papers: Array<Paper & { digestDate: string }>;
+    total: number;
+    hasMore: boolean;
+  }>(`/api/db/papers/following?${qs}`);
+  return {
+    ...result,
+    papers: result.papers.map(paper => ({ ...paper, digestDate: new Date(paper.digestDate) })),
+  };
+}
+
+export interface HfPaper {
+  arxivId: string;
+  title: string;
+  abstract: string;
+  authors: string[];
+  publishedAt: string | null;
+  upvotes: number;
+  url: string;
+  organization: string;
+}
+
+export async function apiGetHfCompanyPapers(name: string): Promise<HfPaper[]> {
+  const qs = new URLSearchParams({ name });
+  const result = await call<{ papers: HfPaper[] }>(`/api/hf/company-papers?${qs}`);
+  return result.papers;
+}
+
+export async function apiGetSuggestedCompanies(): Promise<string[]> {
+  const result = await call<{ companies: string[] }>('/api/hf/suggested-companies');
+  return result.companies;
+}
+
 export async function apiGetCommentCounts(paperIds: string[]): Promise<Record<string, number>> {
   if (paperIds.length === 0) return {};
   const { counts } = await call<{ counts: Record<string, number> }>(
