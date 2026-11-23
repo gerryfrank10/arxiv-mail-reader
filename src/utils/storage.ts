@@ -15,10 +15,12 @@ import {
   apiListPapers, apiUpsertPapers, apiUpdatePaperAbstract, apiGetStats,
   apiGetLibraryIds, apiSavePaper, apiUnsavePaper,
   apiGetLikedIds, apiLikePaper, apiUnlikePaper,
+  apiGetFavouriteAuthors, apiAddFavouriteAuthor, apiRemoveFavouriteAuthor,
   apiGetReadIds, apiSetReadIds, apiAddReadIds, apiRemoveReadIds,
   apiGetTrackers, apiUpsertTracker, apiDeleteTracker,
   apiGetScores, apiUpsertScores, apiDeleteScoresForTracker,
 } from './researchApi';
+import type { AuthorRef } from './researchApi';
 
 export type StorageMode = 'idb' | 'server';
 
@@ -160,6 +162,49 @@ export const likesStore = {
     } else {
       writeLocalLikedIds(readLocalLikedIds().filter(id => id !== paperId));
     }
+  },
+};
+
+// Authors the user explicitly follows. Server mode stores them in Postgres;
+// local mode keeps a small list in localStorage.
+const FAVOURITE_AUTHORS_KEY = 'arxiv_favourite_authors';
+
+function readLocalFavouriteAuthors(): AuthorRef[] {
+  try {
+    const raw = localStorage.getItem(FAVOURITE_AUTHORS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as AuthorRef[];
+      if (Array.isArray(parsed)) return parsed.filter(a => a && a.key && a.name);
+    }
+  } catch { /* ignore */ }
+  return [];
+}
+
+function writeLocalFavouriteAuthors(authors: AuthorRef[]): void {
+  try { localStorage.setItem(FAVOURITE_AUTHORS_KEY, JSON.stringify(authors)); } catch { /* ignore */ }
+}
+
+export const favouriteAuthorsStore = {
+  async getAll(): Promise<AuthorRef[]> {
+    return isServer() ? apiGetFavouriteAuthors() : readLocalFavouriteAuthors();
+  },
+  async add(name: string): Promise<AuthorRef> {
+    if (isServer()) return apiAddFavouriteAuthor(name);
+    const display = name.trim().replace(/\s+/g, ' ');
+    const key = display.toLowerCase();
+    if (!key) throw new Error('Author name is required.');
+    const cur = readLocalFavouriteAuthors();
+    if (!cur.some(a => a.key === key)) {
+      writeLocalFavouriteAuthors([...cur, { name: display, key }]);
+    }
+    return { name: display, key };
+  },
+  async remove(key: string): Promise<void> {
+    if (isServer()) {
+      await apiRemoveFavouriteAuthor(key);
+      return;
+    }
+    writeLocalFavouriteAuthors(readLocalFavouriteAuthors().filter(a => a.key !== key));
   },
 };
 

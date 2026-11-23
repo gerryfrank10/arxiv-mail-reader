@@ -12,10 +12,12 @@ import WriterView from './WriterView';
 import CollectionsView from './CollectionsView';
 import MagazineView from './MagazineView';
 import NobelView from './NobelView';
+import AuthorsView from './AuthorsView';
 import AISuggestPanel from './AISuggestPanel';
 import SettingsModal from './SettingsModal';
 import { usePapers } from '../contexts/PapersContext';
 import { LibraryProvider } from '../contexts/LibraryContext';
+import { AuthorsProvider } from '../contexts/AuthorsContext';
 import { TrackingProvider } from '../contexts/TrackingContext';
 import { BooksProvider } from '../contexts/BooksContext';
 import { WriterProvider } from '../contexts/WriterContext';
@@ -27,7 +29,7 @@ import { AIActivityProvider } from '../contexts/AIActivityContext';
 import AIActivityPanel from './AIActivityPanel';
 import AutoPaperCache from './AutoPaperCache';
 
-export type ActiveView = 'inbox' | 'library' | 'discover' | 'tracking' | 'books' | 'writer' | 'collections' | 'magazine' | 'nobel';
+export type ActiveView = 'inbox' | 'library' | 'discover' | 'tracking' | 'authors' | 'books' | 'writer' | 'collections' | 'magazine' | 'nobel';
 
 function AppLayoutInner() {
   const { selectedPaper } = usePapers();
@@ -53,6 +55,7 @@ function AppLayoutInner() {
     if (selectedPaper) return <PaperDetail paper={selectedPaper} />;
     switch (activeView) {
       case 'tracking':     return <TrackingView />;
+      case 'authors':      return <AuthorsView />;
       case 'discover':     return <DiscoverView />;
       case 'library':      return <LibraryView />;
       case 'books':        return <BooksView />;
@@ -60,12 +63,12 @@ function AppLayoutInner() {
       case 'collections':  return <CollectionsView />;
       case 'magazine':     return <MagazineView />;
       case 'nobel':        return <NobelView />;
-      default:             return <Dashboard />;
+      default:             return <Dashboard onOpenAuthors={() => setActiveView('authors')} />;
     }
   };
 
-  // For Books/Writer the contextual sidebar is still useful (book list /
-  // doc list), so we keep it. Only hide it if explicitly needed in future.
+  // Authors and the Nobel Prize directory are full-width views; the other
+  // workspaces keep their contextual sidebar.
   return (
     <div className="flex h-screen overflow-hidden bg-slate-50">
       <AppRail
@@ -75,7 +78,9 @@ function AppLayoutInner() {
         onSettings={() => setShowSettings(true)}
         onActivity={() => setShowActivity(true)}
       />
-      <Sidebar activeView={activeView} setActiveView={setActiveView} />
+      {activeView !== 'authors' && activeView !== 'nobel' && (
+        <Sidebar activeView={activeView} setActiveView={setActiveView} />
+      )}
       <main className="flex-1 overflow-hidden">
         {mainContent()}
       </main>
@@ -93,6 +98,7 @@ export default function AppLayout() {
     <AIActivityProvider>
     <ConfirmProvider>
       <LibraryProvider>
+        <AuthorsProvider>
         <TrackingProvider>
           <BooksProvider>
             <WriterProvider>
@@ -106,6 +112,7 @@ export default function AppLayout() {
             </WriterProvider>
           </BooksProvider>
         </TrackingProvider>
+        </AuthorsProvider>
       </LibraryProvider>
     </ConfirmProvider>
     </AIActivityProvider>

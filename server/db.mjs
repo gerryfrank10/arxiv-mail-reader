@@ -13,6 +13,23 @@ import { decryptImapConfig, encryptImapConfig } from './imapCredentials.mjs';
 
 const { Pool } = pg;
 
+// Shared projection for paper rows returned by feed/search-style queries.
+const PAPER_COLS = `id, arxiv_id, title, authors, author_list, categories,
+              abstract, comments, url, pdf_url, size, date, email_id,
+              digest_subject, digest_date, source,
+               file_path, file_size, mime_type, original_filename, uploaded_at,
+               (full_text IS NOT NULL) AS has_full_text,
+               COALESCE(full_text_chars, 0) AS full_text_chars,
+              organization,
+               (thumbnail_figures IS NOT NULL AND thumbnail_version=3) AS thumbnail_checked,
+               (thumbnail_version=3 AND COALESCE(jsonb_array_length(thumbnail_figures), 0) > 0) AS thumbnail_has_image`;
+
+// Author-directory pages are expensive to aggregate (one row per author per
+// paper), so keep short-lived per-user results around while someone browses.
+const authorDirectoryCache = new Map();
+const AUTHOR_CACHE_TTL_MS = 60_000;
+const AUTHOR_CACHE_MAX = 120;
+
 // Sign-ins stay valid for a year, and every authenticated request inside the
 // last ~35 days of that window pushes the expiry back to a full year, so
 // people who keep using the app are never signed out.
@@ -89,6 +106,17 @@ export const db = {
             liked_at  TIMESTAMPTZ  NOT NULL DEFAULT now(),
             PRIMARY KEY (user_id, paper_id),
             FOREIGN KEY (user_id, paper_id) REFERENCES papers (user_id, id) ON DELETE CASCADE
+          )
+        `);
+        // Authors the user explicitly follows. They get a strong boost in the
+        // personalised feed even when none of their papers are liked/saved yet.
+        await pool.query(`
+          CREATE TABLE IF NOT EXISTS favourite_authors (
+            user_id      UUID        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            author_key   TEXT        NOT NULL,
+            display_name TEXT        NOT NULL,
+            created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+            PRIMARY KEY (user_id, author_key)
           )
         `);
         // Accounts: passwords live on the user row; sessions are opaque bearer
@@ -407,15 +435,7 @@ export const db = {
   // Ranked feed combines tracker scores with author affinity: papers written
   // by authors of the user's liked/saved papers. No date or random bias.
   async getRelevantPapers(userId, { limit = 10, offset = 0, author = '' } = {}) {
-    const cols = `id, arxiv_id, title, authors, author_list, categories,
-              abstract, comments, url, pdf_url, size, date, email_id,
-              digest_subject, digest_date, source,
-               file_path, file_size, mime_type, original_filename, uploaded_at,
-               (full_text IS NOT NULL) AS has_full_text,
-               COALESCE(full_text_chars, 0) AS full_text_chars,
-              organization,
-               (thumbnail_figures IS NOT NULL AND thumbnail_version=3) AS thumbnail_checked,
-               (thumbnail_version=3 AND COALESCE(jsonb_array_length(thumbnail_figures), 0) > 0) AS thumbnail_has_image`;
+    const cols = PAPER_COLS;
     const cte = `WITH enabled_trackers AS (
          SELECT id, name, min_score FROM trackers
           WHERE user_id=$1 AND enabled
@@ -436,13 +456,20 @@ export const db = {
          SELECT paper_id FROM library WHERE user_id=$1
        ), fav_authors AS (
          -- Every author of a liked or saved paper, weighted by how many of the
-         -- user's favourites they appear on.
-         SELECT lower(trim(a)) AS author, count(*)::int AS weight
-         FROM favourites f
-         JOIN papers p ON p.user_id=$1 AND p.id=f.paper_id
-         CROSS JOIN LATERAL unnest(p.author_list) a
-         WHERE length(trim(a)) > 0
-         GROUP BY 1
+         -- user's favourites they appear on. Explicitly followed authors get a
+         -- fixed boost so their papers enter the feed immediately.
+         SELECT author, sum(weight)::int AS weight
+         FROM (
+           SELECT lower(trim(a)) AS author, count(*)::int AS weight
+           FROM favourites f
+           JOIN papers p ON p.user_id=$1 AND p.id=f.paper_id
+           CROSS JOIN LATERAL unnest(p.author_list) a
+           WHERE length(trim(a)) > 0
+           GROUP BY 1
+           UNION ALL
+           SELECT author_key, 3 FROM favourite_authors WHERE user_id=$1
+         ) src
+         GROUP BY author
        ), strong_authors AS (
          -- Authors on at least two favourites: a real recurring interest rather
          -- than a one-off collaboration or a common-name collision.
@@ -555,6 +582,130 @@ export const db = {
       [userId, lim],
     );
     return rows.map(r => ({ name: r.name, key: r.key, count: Number(r.count) }));
+  },
+
+  // Authors the user explicitly follows (manually added or liked in the
+  // Authors view).
+  async getFavouriteAuthors(userId) {
+    const { rows } = await pool.query(
+      `SELECT display_name AS name, author_key AS key
+       FROM favourite_authors
+       WHERE user_id=$1
+       ORDER BY display_name`,
+      [userId],
+    );
+    return rows;
+  },
+
+  async addFavouriteAuthor(userId, name) {
+    const display = String(name ?? '').trim().replace(/\s+/g, ' ');
+    const key = display.toLowerCase();
+    if (!key) throw new Error('Author name is required.');
+    // Resolve the canonical spelling from the library when possible, so a
+    // manually typed "yann lecun" follows "Yann LeCun" and matches his papers.
+    const { rows: matches } = await pool.query(
+      `SELECT min(a) AS name, lower(trim(a)) AS key
+       FROM papers p
+       CROSS JOIN LATERAL unnest(p.author_list) a
+       WHERE p.user_id=$1
+         AND lower_author_list(p.author_list) && ARRAY[$2]::text[]
+         AND lower(trim(a)) = $2
+       GROUP BY lower(trim(a))
+       LIMIT 1`,
+      [userId, key],
+    );
+    const canonical = matches[0] ?? { name: display, key };
+    const { rows } = await pool.query(
+      `INSERT INTO favourite_authors (user_id, author_key, display_name)
+       VALUES ($1,$2,$3)
+       ON CONFLICT (user_id, author_key)
+       DO UPDATE SET display_name=EXCLUDED.display_name
+       RETURNING display_name AS name, author_key AS key`,
+      [userId, canonical.key, canonical.name],
+    );
+    authorDirectoryCache.clear();
+    return rows[0];
+  },
+
+  async removeFavouriteAuthor(userId, key) {
+    const normalised = String(key ?? '').trim().toLowerCase();
+    if (!normalised) return;
+    await pool.query(
+      `DELETE FROM favourite_authors WHERE user_id=$1 AND author_key=$2`,
+      [userId, normalised],
+    );
+    authorDirectoryCache.clear();
+  },
+
+  // Library-wide author directory, aggregated from the user's papers. Paginated
+  // and searchable; results are cached briefly because the aggregation scans
+  // every author on every paper.
+  async getAllAuthors(userId, { query = '', limit = 24, offset = 0 } = {}) {
+    const q = String(query ?? '').trim().toLowerCase();
+    const lim = Math.min(100, Math.max(1, Math.trunc(Number(limit) || 24)));
+    const off = Math.max(0, Math.trunc(Number(offset) || 0));
+    const cacheKey = `${userId}|${q}|${lim}|${off}`;
+    const cached = authorDirectoryCache.get(cacheKey);
+    if (cached && Date.now() - cached.at < AUTHOR_CACHE_TTL_MS) return cached.value;
+
+    const { rows } = await pool.query(
+      `SELECT min(trim(a)) AS name,
+              lower(trim(a)) AS key,
+              count(*)::int AS papers
+       FROM papers p
+       CROSS JOIN LATERAL unnest(p.author_list) a
+       WHERE p.user_id=$1 AND length(trim(a)) > 0
+         AND ($2 = '' OR lower(trim(a)) LIKE '%' || $2 || '%')
+       GROUP BY lower(trim(a))
+       ORDER BY papers DESC, name
+       LIMIT $3 OFFSET $4`,
+      [userId, q, lim + 1, off],
+    );
+    const hasMore = rows.length > lim;
+    const value = {
+      authors: rows.slice(0, lim).map(r => ({
+        name: r.name,
+        key: r.key,
+        papers: Number(r.papers),
+      })),
+      hasMore,
+    };
+    authorDirectoryCache.set(cacheKey, { at: Date.now(), value });
+    if (authorDirectoryCache.size > AUTHOR_CACHE_MAX) {
+      const oldest = [...authorDirectoryCache.entries()]
+        .sort((a, b) => a[1].at - b[1].at)
+        .slice(0, authorDirectoryCache.size - AUTHOR_CACHE_MAX);
+      for (const [k] of oldest) authorDirectoryCache.delete(k);
+    }
+    return value;
+  },
+
+  // Papers written by one author, newest first. Used by the author detail view.
+  async getAuthorPapers(userId, key, { limit = 20, offset = 0 } = {}) {
+    const normalised = String(key ?? '').trim().toLowerCase();
+    const lim = Math.min(100, Math.max(1, Math.trunc(Number(limit) || 20)));
+    const off = Math.max(0, Math.trunc(Number(offset) || 0));
+    if (!normalised) return { papers: [], total: 0 };
+    const [{ rows }, { rows: countRows }] = await Promise.all([
+      pool.query(
+        `SELECT ${PAPER_COLS}
+         FROM papers p
+         WHERE p.user_id=$1 AND lower_author_list(p.author_list) && ARRAY[$2]::text[]
+         ORDER BY p.digest_date DESC, p.id DESC
+         LIMIT $3 OFFSET $4`,
+        [userId, normalised, lim, off],
+      ),
+      pool.query(
+        `SELECT count(*)::int AS total
+         FROM papers p
+         WHERE p.user_id=$1 AND lower_author_list(p.author_list) && ARRAY[$2]::text[]`,
+        [userId, normalised],
+      ),
+    ]);
+    return {
+      papers: rows.map(rowToPaper),
+      total: Number(countRows[0]?.total ?? 0),
+    };
   },
 
   // Library-wide aggregates for the Dashboard. The papers list is paginated, so

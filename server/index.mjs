@@ -1168,6 +1168,30 @@ app.get('/api/db/authors/top', (req, res) => withUser(req, res, async (uid) => {
   const limit = Math.min(100, Math.max(1, Math.trunc(Number(req.query.limit) || 12)));
   res.json({ authors: await db.getTopAuthors(uid, { limit }) });
 }));
+app.get('/api/db/authors/all', (req, res) => withUser(req, res, async (uid) => {
+  const limit = Math.min(100, Math.max(1, Math.trunc(Number(req.query.limit) || 24)));
+  const offset = Math.max(0, Math.trunc(Number(req.query.offset) || 0));
+  const query = String(req.query.q ?? '').trim();
+  res.json(await db.getAllAuthors(uid, { query, limit, offset }));
+}));
+app.get('/api/db/authors/favourites', (req, res) => withUser(req, res, async (uid) => {
+  res.json({ authors: await db.getFavouriteAuthors(uid) });
+}));
+app.post('/api/db/authors/favourites', (req, res) => withUser(req, res, async (uid) => {
+  const name = String(req.body?.name ?? '').trim();
+  if (!name) return res.status(400).json({ error: 'Author name is required.' });
+  res.json({ author: await db.addFavouriteAuthor(uid, name) });
+}));
+app.delete('/api/db/authors/favourites/:key', (req, res) => withUser(req, res, async (uid) => {
+  await db.removeFavouriteAuthor(uid, req.params.key);
+  res.json({ ok: true });
+}));
+app.get('/api/db/authors/:key/papers', (req, res) => withUser(req, res, async (uid) => {
+  const limit = Math.min(100, Math.max(1, Math.trunc(Number(req.query.limit) || 20)));
+  const offset = Math.max(0, Math.trunc(Number(req.query.offset) || 0));
+  const { papers, total } = await db.getAuthorPapers(uid, req.params.key, { limit, offset });
+  res.json({ papers, total, hasMore: offset + papers.length < total });
+}));
 app.get('/api/db/papers/search', (req, res) => withUser(req, res, async (uid) => {
   const query = String(req.query.q ?? '').trim();
   const limit = Math.min(250, Math.max(1, Math.trunc(Number(req.query.limit) || 100)));

@@ -402,16 +402,64 @@ export async function apiGetRelevantPapers(
   };
 }
 
-export interface TopAuthor {
+export interface AuthorRef {
   name: string;
   key: string;
+}
+
+export interface TopAuthor extends AuthorRef {
   count: number;
+}
+
+export interface DirectoryAuthor extends AuthorRef {
+  papers: number;
 }
 
 export async function apiGetTopAuthors(limit = 12): Promise<TopAuthor[]> {
   const qs = new URLSearchParams({ limit: String(limit) });
   const result = await call<{ authors: TopAuthor[] }>(`/api/db/authors/top?${qs}`);
   return result.authors;
+}
+
+export async function apiGetAllAuthors(
+  { query = '', limit = 24, offset = 0 }: { query?: string; limit?: number; offset?: number } = {},
+): Promise<{ authors: DirectoryAuthor[]; hasMore: boolean }> {
+  const qs = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  if (query) qs.set('q', query);
+  return call<{ authors: DirectoryAuthor[]; hasMore: boolean }>(`/api/db/authors/all?${qs}`);
+}
+
+export async function apiGetFavouriteAuthors(): Promise<AuthorRef[]> {
+  const result = await call<{ authors: AuthorRef[] }>('/api/db/authors/favourites');
+  return result.authors;
+}
+
+export async function apiAddFavouriteAuthor(name: string): Promise<AuthorRef> {
+  const result = await call<{ author: AuthorRef }>('/api/db/authors/favourites', {
+    method: 'POST',
+    body: JSON.stringify({ name }),
+  });
+  return result.author;
+}
+
+export async function apiRemoveFavouriteAuthor(key: string): Promise<void> {
+  await call(`/api/db/authors/favourites/${encodeURIComponent(key)}`, { method: 'DELETE' });
+}
+
+export async function apiGetAuthorPapers(
+  key: string,
+  { limit = 20, offset = 0 }: { limit?: number; offset?: number } = {},
+): Promise<{ papers: Paper[]; total: number; hasMore: boolean }> {
+  const qs = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  const result = await call<{
+    papers: Array<Paper & { digestDate: string }>;
+    total: number;
+    hasMore: boolean;
+  }>(`/api/db/authors/${encodeURIComponent(key)}/papers?${qs}`);
+  return {
+    ...result,
+    papers: result.papers.map(paper => ({ ...paper, digestDate: new Date(paper.digestDate) })),
+  };
 }
 
 export async function apiGetPaper(id: string): Promise<Paper> {

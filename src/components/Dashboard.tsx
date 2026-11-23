@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { usePapers } from '../contexts/PapersContext';
 import { useLibrary } from '../contexts/LibraryContext';
+import { useAuthors } from '../contexts/AuthorsContext';
 import { useTracking } from '../contexts/TrackingContext';
 import { publisherOf } from '../utils/publisher';
 import {
@@ -17,7 +18,7 @@ import type { Paper, PaperComment } from '../types';
 
 const FEED_BATCH_SIZE = 10;
 
-export default function Dashboard() {
+export default function Dashboard({ onOpenAuthors }: { onOpenAuthors?: () => void }) {
   const { papers } = usePapers();
   if (papers.length === 0) {
     return (
@@ -34,7 +35,7 @@ export default function Dashboard() {
         <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">Your research desk</p>
         <h1 className="mt-2 font-serif text-[32px] leading-none tracking-tight text-slate-900">For you</h1>
         <p className="mt-3 text-[13px] text-slate-500">The best matches for your research interests, regardless of publication date.</p>
-        <FeedTab />
+        <FeedTab onOpenAuthors={onOpenAuthors} />
       </div>
     </div>
   );
@@ -63,11 +64,12 @@ function localCommentsFor(paperId: string): PaperComment[] {
   return readLocalCommentMap()[paperId] ?? [];
 }
 
-function FeedTab() {
+function FeedTab({ onOpenAuthors }: { onOpenAuthors?: () => void }) {
   const {
     papers, readIds, setSelectedPaper, markRead, markUnread, storageMode, updatePaperMeta,
   } = usePapers();
   const { isLiked, likePaper, unlikePaper, isSaved, savePaper, unsavePaper, likedPapers, savedPapers, likedCount, savedCount } = useLibrary();
+  const { favouriteAuthors } = useAuthors();
   const { trackers, scores, ready: trackersReady } = useTracking();
   const [page, setPage] = useState(0);
   const [feed, setFeed] = useState<{ papers: Paper[]; total: number }>({ papers: [], total: 0 });
@@ -110,6 +112,10 @@ function FeedTab() {
         if (key) authorWeights.set(key, (authorWeights.get(key) ?? 0) + 1);
       }
     }
+    // Explicitly followed authors get the same boost as the server feed.
+    for (const author of favouriteAuthors) {
+      authorWeights.set(author.key, (authorWeights.get(author.key) ?? 0) + 3);
+    }
     if (authorWeights.size > 0) {
       for (const paper of papers) {
         if (favouriteIds.has(paper.id) || best.has(paper.id)) continue;
@@ -141,7 +147,7 @@ function FeedTab() {
       .map(p => ({ ...p, relevance: best.get(p.id)! }))
       .sort((a, b) => b.relevance!.score - a.relevance!.score
         || b.digestDate.getTime() - a.digestDate.getTime());
-  }, [papers, trackers, scores, likedPapers, savedPapers]);
+  }, [papers, trackers, scores, likedPapers, savedPapers, favouriteAuthors]);
 
   // Authors ranked by how many liked/saved papers they appear on. In server
   // mode the full library is not in memory, so ask the API instead.
@@ -273,6 +279,15 @@ function FeedTab() {
               className="text-[11px] font-medium text-sky-700 hover:underline"
             >
               Clear filter
+            </button>
+          )}
+          {onOpenAuthors && (
+            <button
+              type="button"
+              onClick={onOpenAuthors}
+              className="text-[11px] font-medium text-slate-500 transition-colors hover:text-slate-900"
+            >
+              View all →
             </button>
           )}
         </div>

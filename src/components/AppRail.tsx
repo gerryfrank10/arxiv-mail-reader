@@ -1,10 +1,11 @@
-import { Inbox, Compass, Target, BookMarked, Library, Pen, Sparkles, Settings, RefreshCw, FolderOpen, Newspaper, Activity, LogOut, ChevronsLeft, ChevronsRight, ChevronDown, Medal } from 'lucide-react';
+import { Inbox, Compass, Target, BookMarked, Library, Pen, Sparkles, Settings, RefreshCw, FolderOpen, Newspaper, Activity, LogOut, ChevronsLeft, ChevronsRight, ChevronDown, Medal, Users } from 'lucide-react';
 import { useState, useRef, useEffect, useMemo } from 'react';
 import { useAIActivity } from '../contexts/AIActivityContext';
 import { ActiveView } from './AppLayout';
 import { usePapers } from '../contexts/PapersContext';
 import { useAuth } from '../contexts/AuthContext';
 import { useLibrary } from '../contexts/LibraryContext';
+import { useAuthors } from '../contexts/AuthorsContext';
 import { useTracking } from '../contexts/TrackingContext';
 
 interface Props {
@@ -52,6 +53,7 @@ export default function AppRail({ activeView, setActiveView, onAISuggest, onSett
   const { inFlight, paused } = useAIActivity();
   const { unreadCount, setSelectedPaper, sync, loading: syncing } = usePapers();
   const { savedPapers } = useLibrary();
+  const { favouriteAuthors } = useAuthors();
   const { trackers, newMatchesByTracker, scoring } = useTracking();
   const { user, logout } = useAuth();
 
@@ -93,6 +95,7 @@ export default function AppRail({ activeView, setActiveView, onAISuggest, onSett
     { id: 'inbox',    icon: <Inbox size={18} />, label: 'Inbox',    hint: 'Papers from your digests', badge: unreadCount || null,        accent: 'blue' },
     { id: 'discover', icon: <Compass size={18} />, label: 'Discover', hint: 'Search any research topic', badge: null,                     accent: 'indigo' },
     { id: 'tracking', icon: <Target size={18} className={scoring ? 'animate-pulse' : ''} />, label: 'Tracking', hint: 'Topics you follow', badge: trackingNewCount || null, accent: 'emerald' },
+    { id: 'authors',  icon: <Users size={18} />, label: 'Authors',  hint: 'People whose work you follow', badge: favouriteAuthors.length || null, accent: 'rose' },
     { id: 'library',  icon: <BookMarked size={18} />, label: 'Library',  hint: 'Papers you saved', badge: savedPapers.length || null,         accent: 'amber' },
   ];
   const workspaceItems: RailItem[] = [
