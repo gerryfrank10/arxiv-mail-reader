@@ -666,6 +666,54 @@ export async function apiGetOrganizations(paperIds: string[]): Promise<{
   return { organizations: res.organizations ?? {}, pending: res.pending ?? [] };
 }
 
+// ---------- Companies / labs directory ----------
+
+export interface Company {
+  name: string;
+  papers: number;
+}
+
+export interface CompanyCoverage {
+  checked: number;
+  total: number;
+}
+
+export async function apiGetCompanies(
+  { query = '', limit = 24, offset = 0 }: { query?: string; limit?: number; offset?: number } = {},
+): Promise<{ companies: Company[]; hasMore: boolean; coverage: CompanyCoverage }> {
+  const qs = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  if (query) qs.set('q', query);
+  return call<{ companies: Company[]; hasMore: boolean; coverage: CompanyCoverage }>(
+    `/api/db/companies?${qs}`,
+  );
+}
+
+export async function apiGetCompanyPapers(
+  name: string,
+  { limit = 20, offset = 0 }: { limit?: number; offset?: number } = {},
+): Promise<{ papers: Paper[]; total: number; hasMore: boolean }> {
+  const qs = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  const result = await call<{
+    papers: Array<Paper & { digestDate: string }>;
+    total: number;
+    hasMore: boolean;
+  }>(`/api/db/companies/${encodeURIComponent(name)}/papers?${qs}`);
+  return {
+    ...result,
+    papers: result.papers.map(paper => ({ ...paper, digestDate: new Date(paper.digestDate) })),
+  };
+}
+
+// Reads affiliations from the first page of recent unchecked papers. Papers
+// with stored full text are classified immediately; the rest are queued for
+// PDF download on the server's polite fetch queue.
+export async function apiScanCompanies(limit = 25): Promise<{ scanned: number; queued: number }> {
+  return call<{ scanned: number; queued: number }>(
+    '/api/db/companies/scan',
+    { method: 'POST', body: JSON.stringify({ limit }) },
+  );
+}
+
 export async function apiGetCommentCounts(paperIds: string[]): Promise<Record<string, number>> {
   if (paperIds.length === 0) return {};
   const { counts } = await call<{ counts: Record<string, number> }>(

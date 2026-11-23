@@ -95,6 +95,12 @@ export const db = {
           CREATE INDEX IF NOT EXISTS idx_papers_author_list_lower
             ON papers USING gin (lower_author_list(author_list))
         `);
+        // Company directory: group papers by the organisation detected from
+        // their PDFs without scanning the whole library each time.
+        await pool.query(`
+          CREATE INDEX IF NOT EXISTS idx_papers_user_org
+            ON papers (user_id, organization) WHERE organization IS NOT NULL
+        `);
         await pool.query(`DROP INDEX IF EXISTS idx_papers_author_list`);
         // "Liked" papers — a lightweight signal distinct from the library
         // (bookmark). Mirrors the library table. Idempotent so existing DBs
@@ -706,6 +712,85 @@ export const db = {
       papers: rows.map(rowToPaper),
       total: Number(countRows[0]?.total ?? 0),
     };
+  },
+
+  // Companies/labs detected from paper PDFs, ranked by how many papers in the
+  // library they appear on.
+  async getTopCompanies(userId, { query = '', limit = 24, offset = 0 } = {}) {
+    const q = String(query ?? '').trim();
+    const lim = Math.min(100, Math.max(1, Math.trunc(Number(limit) || 24)));
+    const off = Math.max(0, Math.trunc(Number(offset) || 0));
+    const { rows } = await pool.query(
+      `SELECT organization AS name, count(*)::int AS papers
+       FROM papers
+       WHERE user_id=$1 AND organization IS NOT NULL AND organization <> ''
+         AND ($2 = '' OR organization ILIKE '%' || $2 || '%')
+       GROUP BY organization
+       ORDER BY papers DESC, name
+       LIMIT $3 OFFSET $4`,
+      [userId, q, lim + 1, off],
+    );
+    const hasMore = rows.length > lim;
+    return {
+      companies: rows.slice(0, lim).map(r => ({ name: r.name, papers: Number(r.papers) })),
+      hasMore,
+    };
+  },
+
+  async getCompanyPapers(userId, name, { limit = 20, offset = 0 } = {}) {
+    const company = String(name ?? '').trim();
+    const lim = Math.min(100, Math.max(1, Math.trunc(Number(limit) || 20)));
+    const off = Math.max(0, Math.trunc(Number(offset) || 0));
+    if (!company) return { papers: [], total: 0 };
+    const [{ rows }, { rows: countRows }] = await Promise.all([
+      pool.query(
+        `SELECT ${PAPER_COLS}
+         FROM papers p
+         WHERE p.user_id=$1 AND p.organization=$2
+         ORDER BY p.digest_date DESC, p.id DESC
+         LIMIT $3 OFFSET $4`,
+        [userId, company, lim, off],
+      ),
+      pool.query(
+        `SELECT count(*)::int AS total
+         FROM papers p
+         WHERE p.user_id=$1 AND p.organization=$2`,
+        [userId, company],
+      ),
+    ]);
+    return {
+      papers: rows.map(rowToPaper),
+      total: Number(countRows[0]?.total ?? 0),
+    };
+  },
+
+  async getOrganizationCoverage(userId) {
+    const { rows } = await pool.query(
+      `SELECT count(*) FILTER (WHERE organization_checked_at IS NOT NULL)::int AS checked,
+              count(*)::int AS total
+       FROM papers WHERE user_id=$1`,
+      [userId],
+    );
+    return { checked: Number(rows[0]?.checked ?? 0), total: Number(rows[0]?.total ?? 0) };
+  },
+
+  // Recent papers whose first page has not been read yet. Papers with stored
+  // full text can be classified without another download.
+  async getOrganizationScanCandidates(userId, limit = 10) {
+    const lim = Math.min(25, Math.max(1, Math.trunc(Number(limit) || 10)));
+    const { rows } = await pool.query(
+      `SELECT id, arxiv_id, left(full_text, 4000) AS full_text
+       FROM papers
+       WHERE user_id=$1 AND organization_checked_at IS NULL
+         AND (
+           full_text IS NOT NULL
+           OR arxiv_id ~ '^(\\d{4}\\.\\d{4,5}|[a-z-]+(\\.[A-Z]{2})?/\\d{7})(v\\d+)?$'
+         )
+       ORDER BY digest_date DESC
+       LIMIT $2`,
+      [userId, lim],
+    );
+    return rows.map(r => ({ id: r.id, arxivId: r.arxiv_id, fullText: r.full_text }));
   },
 
   // Library-wide aggregates for the Dashboard. The papers list is paginated, so

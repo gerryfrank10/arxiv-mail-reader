@@ -13,6 +13,7 @@ import CollectionsView from './CollectionsView';
 import MagazineView from './MagazineView';
 import NobelView from './NobelView';
 import AuthorsView from './AuthorsView';
+import CompaniesView from './CompaniesView';
 import AISuggestPanel from './AISuggestPanel';
 import SettingsModal from './SettingsModal';
 import { usePapers } from '../contexts/PapersContext';
@@ -29,7 +30,7 @@ import { AIActivityProvider } from '../contexts/AIActivityContext';
 import AIActivityPanel from './AIActivityPanel';
 import AutoPaperCache from './AutoPaperCache';
 
-export type ActiveView = 'inbox' | 'library' | 'discover' | 'tracking' | 'authors' | 'books' | 'writer' | 'collections' | 'magazine' | 'nobel';
+export type ActiveView = 'inbox' | 'library' | 'discover' | 'tracking' | 'authors' | 'companies' | 'books' | 'writer' | 'collections' | 'magazine' | 'nobel';
 
 function AppLayoutInner() {
   const { selectedPaper } = usePapers();
@@ -56,6 +57,7 @@ function AppLayoutInner() {
     switch (activeView) {
       case 'tracking':     return <TrackingView />;
       case 'authors':      return <AuthorsView />;
+      case 'companies':    return <CompaniesView />;
       case 'discover':     return <DiscoverView />;
       case 'library':      return <LibraryView />;
       case 'books':        return <BooksView />;
@@ -67,8 +69,8 @@ function AppLayoutInner() {
     }
   };
 
-  // Authors and the Nobel Prize directory are full-width views; the other
-  // workspaces keep their contextual sidebar.
+  // Authors, Companies and the Nobel Prize directory are full-width views;
+  // the other workspaces keep their contextual sidebar.
   return (
     <div className="flex h-screen overflow-hidden bg-slate-50">
       <AppRail
@@ -78,7 +80,7 @@ function AppLayoutInner() {
         onSettings={() => setShowSettings(true)}
         onActivity={() => setShowActivity(true)}
       />
-      {activeView !== 'authors' && activeView !== 'nobel' && (
+      {activeView !== 'authors' && activeView !== 'companies' && activeView !== 'nobel' && (
         <Sidebar activeView={activeView} setActiveView={setActiveView} />
       )}
       <main className="flex-1 overflow-hidden">

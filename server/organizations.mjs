@@ -22,6 +22,7 @@ const ORGANIZATIONS = [
   { name: 'Tencent',         re: /\btencent\b/i },
   { name: 'Baidu',           re: /\bbaidu\b/i },
   { name: 'DeepSeek',        re: /\bdeepseek\b/i },
+  { name: 'Moonshot AI',     re: /\bmoonshot\s+ai\b|\bkimi\b/i },
   { name: 'Mistral AI',      re: /\bmistral\s+ai\b/i },
   { name: 'Salesforce',      re: /\bsalesforce\b/i },
   { name: 'Adobe',           re: /\badobe\b/i },

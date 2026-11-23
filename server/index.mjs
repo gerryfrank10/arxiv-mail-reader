@@ -1283,6 +1283,40 @@ app.post('/api/db/organizations', (req, res) => withUser(req, res, async (uid) =
   res.json({ organizations, pending: pending.map(r => r.id) });
 }));
 
+// ---------- companies / labs directory ----------
+app.get('/api/db/companies', (req, res) => withUser(req, res, async (uid) => {
+  const limit = Math.min(100, Math.max(1, Math.trunc(Number(req.query.limit) || 24)));
+  const offset = Math.max(0, Math.trunc(Number(req.query.offset) || 0));
+  const query = String(req.query.q ?? '').trim();
+  const [companies, coverage] = await Promise.all([
+    db.getTopCompanies(uid, { query, limit, offset }),
+    db.getOrganizationCoverage(uid),
+  ]);
+  res.json({ ...companies, coverage });
+}));
+app.get('/api/db/companies/:name/papers', (req, res) => withUser(req, res, async (uid) => {
+  const limit = Math.min(100, Math.max(1, Math.trunc(Number(req.query.limit) || 20)));
+  const offset = Math.max(0, Math.trunc(Number(req.query.offset) || 0));
+  const { papers, total } = await db.getCompanyPapers(uid, req.params.name, { limit, offset });
+  res.json({ papers, total, hasMore: offset + papers.length < total });
+}));
+app.post('/api/db/companies/scan', (req, res) => withUser(req, res, async (uid) => {
+  const limit = Math.min(25, Math.max(1, Math.trunc(Number(req.body?.limit) || 10)));
+  const candidates = await db.getOrganizationScanCandidates(uid, limit);
+  let scanned = 0;
+  const pending = [];
+  for (const row of candidates) {
+    if (row.fullText) {
+      await db.setOrganization(uid, row.id, detectOrganization(row.fullText));
+      scanned += 1;
+    } else {
+      pending.push(row);
+    }
+  }
+  resolveOrganizations(uid, pending);
+  res.json({ scanned, queued: pending.length });
+}));
+
 // library
 app.get('/api/db/library', (req, res) => withUser(req, res, async (uid) => {
   res.json({ items: await db.getLibrary(uid) });

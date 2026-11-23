@@ -1,4 +1,4 @@
-import { Inbox, Compass, Target, BookMarked, Library, Pen, Sparkles, Settings, RefreshCw, FolderOpen, Newspaper, Activity, LogOut, ChevronsLeft, ChevronsRight, ChevronDown, Medal, Users } from 'lucide-react';
+import { Inbox, Compass, Target, BookMarked, Library, Pen, Sparkles, Settings, RefreshCw, FolderOpen, Newspaper, Activity, LogOut, ChevronsLeft, ChevronsRight, ChevronDown, Medal, Users, Building2 } from 'lucide-react';
 import { useState, useRef, useEffect, useMemo } from 'react';
 import { useAIActivity } from '../contexts/AIActivityContext';
 import { ActiveView } from './AppLayout';
@@ -95,8 +95,13 @@ export default function AppRail({ activeView, setActiveView, onAISuggest, onSett
     { id: 'inbox',    icon: <Inbox size={18} />, label: 'Inbox',    hint: 'Papers from your digests', badge: unreadCount || null,        accent: 'blue' },
     { id: 'discover', icon: <Compass size={18} />, label: 'Discover', hint: 'Search any research topic', badge: null,                     accent: 'indigo' },
     { id: 'tracking', icon: <Target size={18} className={scoring ? 'animate-pulse' : ''} />, label: 'Tracking', hint: 'Topics you follow', badge: trackingNewCount || null, accent: 'emerald' },
-    { id: 'authors',  icon: <Users size={18} />, label: 'Authors',  hint: 'People whose work you follow', badge: favouriteAuthors.length || null, accent: 'rose' },
     { id: 'library',  icon: <BookMarked size={18} />, label: 'Library',  hint: 'Papers you saved', badge: savedPapers.length || null,         accent: 'amber' },
+  ];
+  // Directories of who writes the papers — kept together so the Reading list
+  // stays focused on the papers themselves.
+  const peopleItems: RailItem[] = [
+    { id: 'authors',   icon: <Users     size={18} />, label: 'Authors',   hint: 'People whose work you follow', badge: favouriteAuthors.length || null, accent: 'rose' },
+    { id: 'companies', icon: <Building2 size={18} />, label: 'Companies', hint: 'Labs and companies behind your papers', badge: null, accent: 'cyan' },
   ];
   const workspaceItems: RailItem[] = [
     { id: 'books',       icon: <Library    size={18} />, label: 'Books',       hint: 'Reading lists and books', badge: null, accent: 'cyan' },
@@ -211,6 +216,8 @@ export default function AppRail({ activeView, setActiveView, onAISuggest, onSett
       <nav className={`flex flex-col gap-0.5 w-full ${expanded ? '' : 'items-center'}`}>
         {renderSectionLabel('Reading')}
         {readingItems.map(renderItem)}
+        {renderSectionLabel('People & labs')}
+        {peopleItems.map(renderItem)}
         {renderSectionLabel('Workspaces')}
         {workspaceItems.map(renderItem)}
         {renderSectionLabel('Explore')}
