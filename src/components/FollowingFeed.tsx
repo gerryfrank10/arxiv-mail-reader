@@ -6,6 +6,7 @@ import { useLibrary } from '../contexts/LibraryContext';
 import { useAuthors } from '../contexts/AuthorsContext';
 import { apiGetFollowingPapers } from '../utils/researchApi';
 import type { Paper } from '../types';
+import PaperImagePreview from './PaperImagePreview';
 
 const PAGE = 20;
 
@@ -13,7 +14,7 @@ const PAGE = 20;
 // explicitly follows. Server mode pages through the whole library; local mode
 // filters the in-memory list.
 export default function FollowingFeed({ onManageAuthors }: { onManageAuthors?: () => void }) {
-  const { papers, storageMode, setSelectedPaper } = usePapers();
+  const { papers, storageMode, setSelectedPaper, updatePaperMeta } = usePapers();
   const { isLiked, likePaper, unlikePaper, isSaved, savePaper, unsavePaper } = useLibrary();
   const { favouriteAuthors } = useAuthors();
 
@@ -191,6 +192,7 @@ export default function FollowingFeed({ onManageAuthors }: { onManageAuthors?: (
                       </button>
                     </div>
                   )}
+                  <PaperImagePreview paper={paper} storageMode={storageMode} updatePaperMeta={updatePaperMeta} />
                 </div>
               );
             })}
