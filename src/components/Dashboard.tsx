@@ -513,6 +513,13 @@ function FeedTab({ onOpenAuthors }: { onOpenAuthors?: () => void }) {
                         >
                           <Heart size={11} /> Favourite author{paper.relevance.authorName ? ` · ${paper.relevance.authorName}` : ''}
                         </span>
+                      ) : paper.relevance.source === 'interest' ? (
+                        <span
+                          className="ml-auto inline-flex items-center gap-1 font-medium text-emerald-700"
+                          title={paper.relevance.rationale}
+                        >
+                          <Sparkles size={11} /> Interest match
+                        </span>
                       ) : (
                         <span className="ml-auto inline-flex items-center gap-1 font-medium text-sky-700" title={paper.relevance.rationale}>
                           <Target size={11} /> {paper.relevance.score} · {paper.relevance.trackerName}

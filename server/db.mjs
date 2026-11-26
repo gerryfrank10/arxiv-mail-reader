@@ -30,6 +30,11 @@ const authorDirectoryCache = new Map();
 const AUTHOR_CACHE_TTL_MS = 60_000;
 const AUTHOR_CACHE_MAX = 120;
 
+// Interest keywords are derived from the user's favourites and the library's
+// word frequencies; both change slowly, so cache them for a few minutes.
+const interestKeywordCache = new Map();
+const INTEREST_CACHE_TTL_MS = 5 * 60_000;
+
 // Sign-ins stay valid for a year, and every authenticated request inside the
 // last ~35 days of that window pushes the expiry back to a full year, so
 // people who keep using the app are never signed out.
@@ -94,6 +99,12 @@ export const db = {
         await pool.query(`
           CREATE INDEX IF NOT EXISTS idx_papers_author_list_lower
             ON papers USING gin (lower_author_list(author_list))
+        `);
+        // Content-based feed signal: match inbox papers against the keywords
+        // of the user's favourites. Expression index so no table rewrite.
+        await pool.query(`
+          CREATE INDEX IF NOT EXISTS idx_papers_search_tsv
+            ON papers USING gin (to_tsvector('english', coalesce(title, '') || ' ' || coalesce(abstract, '')))
         `);
         // Company directory: group papers by the organisation detected from
         // their PDFs without scanning the whole library each time.
@@ -438,10 +449,70 @@ export const db = {
     return { papers: rows.map(rowToPaper), total };
   },
 
-  // Ranked feed combines tracker scores with author affinity: papers written
-  // by authors of the user's liked/saved papers. No date or random bias.
+  // Distinctive keywords from the titles of liked/saved papers, weighted
+  // TF-IDF-style against the inbox: frequent in favourites but rare across the
+  // library means a real interest, not a generic word like "learning". Powers
+  // the content-based "interest" signal in the For you feed.
+  async getInterestKeywords(userId) {
+    const cached = interestKeywordCache.get(userId);
+    if (cached && Date.now() - cached.at < INTEREST_CACHE_TTL_MS) return cached.keywords;
+    const { rows } = await pool.query(
+      `WITH favourites AS (
+         SELECT paper_id FROM likes   WHERE user_id=$1
+         UNION
+         SELECT paper_id FROM library WHERE user_id=$1
+       ), stats AS (
+         -- Word -> how many favourite titles contain it. tsvector_to_array gives
+         -- the same stemmed, stopword-free lexemes ts_stat would, without
+         -- needing a literal SQL string (which breaks uuid parameter typing).
+         SELECT word, count(*)::int AS ndoc
+         FROM (
+           SELECT DISTINCT f.paper_id,
+                  unnest(tsvector_to_array(to_tsvector('english', coalesce(p.title, '')))) AS word
+           FROM favourites f
+           JOIN papers p ON p.user_id=$1 AND p.id=f.paper_id
+         ) per_doc
+         WHERE length(word) > 3
+         GROUP BY word
+       ), candidate_words AS (
+         SELECT word, ndoc FROM stats
+         WHERE length(word) > 3
+         ORDER BY ndoc DESC, word
+         LIMIT 80
+       ), inbox AS (
+         SELECT count(*)::float AS n FROM papers WHERE user_id=$1 AND source='email'
+       )
+       SELECT cw.word,
+              (cw.ndoc * ln((i.n + 1) / (df.c + 1)))::float AS weight
+       FROM candidate_words cw
+       CROSS JOIN inbox i
+       CROSS JOIN LATERAL (
+         -- Capped count: once a word appears more often than the distinctiveness
+         -- cutoff it is too common to be a signal, so stop counting early.
+         SELECT count(*)::float AS c FROM (
+           SELECT 1 FROM papers p
+           WHERE p.user_id=$1 AND p.source='email'
+             AND to_tsvector('english', coalesce(p.title, '') || ' ' || coalesce(p.abstract, ''))
+                 @@ to_tsquery('english', cw.word)
+           LIMIT greatest(25, (SELECT n FROM inbox) * 0.05)::int + 1
+         ) capped
+       ) df
+       WHERE df.c BETWEEN 1 AND greatest(25, i.n * 0.05)
+       ORDER BY weight DESC, cw.ndoc DESC
+       LIMIT 10`,
+      [userId],
+    );
+    const keywords = rows.map(r => ({ word: r.word, weight: Number(r.weight) }));
+    interestKeywordCache.set(userId, { at: Date.now(), keywords });
+    return keywords;
+  },
+
+  // Ranked feed combines three signals: tracker scores, author affinity
+  // (papers by authors of liked/saved papers), and a content-based "interest"
+  // push of unread inbox papers matching the favourites' distinctive keywords.
   async getRelevantPapers(userId, { limit = 10, offset = 0, author = '' } = {}) {
     const cols = PAPER_COLS;
+    const keywords = await this.getInterestKeywords(userId);
     const cte = `WITH enabled_trackers AS (
          SELECT id, name, min_score FROM trackers
           WHERE user_id=$1 AND enabled
@@ -507,6 +578,29 @@ export const db = {
          FROM papers p
          WHERE $2 <> '' AND p.user_id=$1
            AND lower_author_list(p.author_list) && ARRAY[$2]::text[]
+       ), interest_keywords AS (
+         SELECT kw.word, kw.weight
+         FROM unnest($3::text[], $4::float8[]) AS kw(word, weight)
+       ), interest_matches AS (
+         -- Content-based push: unread inbox papers whose title/abstract match
+         -- the distinctive keywords of the user's favourites. The GIN index
+         -- on the tsvector expression keeps each keyword lookup cheap, and the
+         -- keywords were pre-filtered to rare-in-library terms.
+         SELECT p.id AS paper_id,
+                count(*)::int AS hits,
+                sum(ik.weight)::float AS wsum,
+                array_agg(ik.word ORDER BY ik.weight DESC) AS words,
+                max(p.digest_date) AS newest
+         FROM papers p
+         JOIN interest_keywords ik
+           ON to_tsvector('english', coalesce(p.title, '') || ' ' || coalesce(p.abstract, ''))
+              @@ to_tsquery('english', ik.word)
+         WHERE p.user_id=$1 AND p.source='email'
+           AND p.id NOT IN (SELECT paper_id FROM favourites)
+           AND NOT EXISTS (
+             SELECT 1 FROM read_states rs WHERE rs.user_id=$1 AND rs.paper_id=p.id
+           )
+         GROUP BY p.id
        ), candidates AS (
          SELECT tm.paper_id,
                 tm.score::int AS base_score,
@@ -530,6 +624,17 @@ export const db = {
          UNION ALL
          SELECT af.paper_id, af.base_score, af.kind, af.label, af.rationale
          FROM author_filter af
+         UNION ALL
+         SELECT im.paper_id,
+                LEAST(88, 35 + im.hits*8 + LEAST(20, round(im.wsum)::int)
+                  + CASE WHEN im.newest > now() - interval '30 days' THEN 6
+                         WHEN im.newest > now() - interval '90 days' THEN 3
+                         ELSE 0 END)::int,
+                'interest'::text,
+                'Interest match'::text,
+                ('Similar to your favourites: ' || array_to_string(im.words[1:4], ', '))::text
+         FROM interest_matches im
+         WHERE im.hits > 0
        ), best AS (
          SELECT DISTINCT ON (paper_id) *
          FROM candidates
@@ -547,8 +652,8 @@ export const db = {
          JOIN papers p ON p.user_id=$1 AND p.id=b.paper_id
          WHERE $2 = '' OR lower_author_list(p.author_list) && ARRAY[$2]::text[]
          ORDER BY b.base_score DESC, p.digest_date DESC, p.id DESC
-         LIMIT $3 OFFSET $4`,
-        [userId, authorKey, lim, off],
+         LIMIT $5 OFFSET $6`,
+        [userId, authorKey, keywords.map(k => k.word), keywords.map(k => k.weight), lim, off],
       ),
       pool.query(
         `${cte}
@@ -556,7 +661,7 @@ export const db = {
          FROM best b
          JOIN papers p ON p.user_id=$1 AND p.id=b.paper_id
          WHERE $2 = '' OR lower_author_list(p.author_list) && ARRAY[$2]::text[]`,
-        [userId, authorKey],
+        [userId, authorKey, keywords.map(k => k.word), keywords.map(k => k.weight)],
       ),
     ]);
     return {
@@ -2266,8 +2371,10 @@ function rowToPaper(r) {
     thumbnailAvailable: !!r.thumbnail_has_image,
     relevance: r.relevance_score == null ? undefined : {
       score: Number(r.relevance_score),
-      source: r.relevance_source === 'author' ? 'author' : 'tracker',
-      trackerName: r.relevance_source === 'author' ? undefined : (r.relevance_label ?? undefined),
+      source: r.relevance_source === 'author' ? 'author'
+        : r.relevance_source === 'interest' ? 'interest'
+        : 'tracker',
+      trackerName: r.relevance_source === 'tracker' ? (r.relevance_label ?? undefined) : undefined,
       authorName:  r.relevance_source === 'author' ? (r.relevance_label ?? undefined) : undefined,
       rationale:   r.relevance_rationale ?? '',
     },

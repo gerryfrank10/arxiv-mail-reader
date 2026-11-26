@@ -40,7 +40,7 @@ export interface Paper {
   // authorship with the user's liked/saved papers.
   relevance?: {
     score: number;
-    source: 'tracker' | 'author';
+    source: 'tracker' | 'author' | 'interest';
     trackerName?: string;
     authorName?: string;
     rationale: string;
